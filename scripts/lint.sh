@@ -17,6 +17,7 @@ SWIFT_DIRS=(
     tools/audiotap/Sources
     tools/audiotap/Tests
     tools/meeting-simulator/Sources
+    tools/mt-batch/Sources
     tools/mt-cli/Sources
     tools/mt-cli/Tests
     scripts/generate_menu_bar_gifs.swift

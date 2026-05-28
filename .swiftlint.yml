@@ -6,6 +6,7 @@ included:
   - tools/audiotap/Sources
   - tools/audiotap/Tests
   - tools/meeting-simulator/Sources
+  - tools/mt-batch/Sources
   - tools/mt-cli/Sources
   - tools/mt-cli/Tests
   - scripts/generate_menu_bar_gifs.swift
@@ -16,6 +17,7 @@ excluded:
   - app/MeetingTranscriber/.build
   - tools/audiotap/.build
   - tools/meeting-simulator/.build
+  - tools/mt-batch/.build
 
 opt_in_rules:
   - anonymous_argument_in_multiline_closure
