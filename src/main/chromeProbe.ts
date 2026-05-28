@@ -27,11 +27,56 @@
  */
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { promises as fsp } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 import { BrowserWindow } from 'electron'
 import type { ChromeMeetSnapshot, ChromeMeetTab } from '../shared/types'
 import { setAutomationChromeState } from './permissions'
 
 const execFileP = promisify(execFile)
+
+/**
+ * Bridge the reliable Electron Chrome detection to the engine. The engine's
+ * own window-title detector (CGWindowList) only sees the FRONTMOST Chrome
+ * tab, so a Meet running in a background tab/window — or while the user looks
+ * at another app — is invisible to it and never gets recorded. This probe,
+ * by contrast, reads ALL tabs by URL regardless of focus, so we hand the
+ * engine that reliable signal: a small JSON file the engine's
+ * `ElectronSignalDetector` reads and turns into a recording. We refresh
+ * `updatedAt` every tick (heartbeat, so the engine can treat a stale file as
+ * gone if Mintr quits) and delete it when no Meet is open.
+ */
+const ENGINE_IPC_DIR = join(
+  homedir(),
+  'Library',
+  'Application Support',
+  'MeetingTranscriber',
+  'ipc'
+)
+const ACTIVE_MEETING_SIGNAL = join(ENGINE_IPC_DIR, 'active_meeting.json')
+
+async function writeActiveMeetingSignal(tab: ChromeMeetTab | null): Promise<void> {
+  try {
+    if (!tab) {
+      await fsp.rm(ACTIVE_MEETING_SIGNAL, { force: true })
+      return
+    }
+    await fsp.mkdir(ENGINE_IPC_DIR, { recursive: true })
+    const payload = JSON.stringify({
+      meetingId: tab.meetingId,
+      title: `${tab.meetingId} - Google Meet`,
+      browserBundleId: tab.browser,
+      url: tab.url,
+      updatedAt: Date.now()
+    })
+    const tmp = `${ACTIVE_MEETING_SIGNAL}.tmp`
+    await fsp.writeFile(tmp, payload, 'utf-8')
+    await fsp.rename(tmp, ACTIVE_MEETING_SIGNAL)
+  } catch {
+    // Best-effort — a failed signal write must never break the probe loop.
+  }
+}
 
 /**
  * Browsers we know how to probe, in priority order. The AppleScript
@@ -97,6 +142,9 @@ export function stopChromeProbe(): void {
     clearInterval(state.timer)
     state.timer = null
   }
+  // Engine is no longer watching — remove the signal so a stale file can't
+  // trigger a recording later.
+  void writeActiveMeetingSignal(null)
 }
 
 async function tick(): Promise<void> {
@@ -105,6 +153,9 @@ async function tick(): Promise<void> {
   try {
     const tab = await findFirstMeetTab()
     updateSnapshot({ available: true, tab })
+    // Refresh (or clear) the engine signal every tick so it acts as a
+    // heartbeat the engine can age out if Mintr stops updating it.
+    await writeActiveMeetingSignal(tab)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     // osascript exit codes:
@@ -117,6 +168,9 @@ async function tick(): Promise<void> {
     } else {
       updateSnapshot({ available: false, error: msg, tab: null })
     }
+    // Can't confirm a meeting this tick — clear the signal so the engine
+    // doesn't record against a detection we can no longer verify.
+    await writeActiveMeetingSignal(null)
   } finally {
     state.busy = false
   }
