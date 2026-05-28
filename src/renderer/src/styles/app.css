@@ -226,112 +226,170 @@
   -webkit-app-region: no-drag;
 }
 
-/* ---------- Home / Recording view ---------- */
+/* ---------- Home / Recording view ----------
+ *
+ * Token strategy: prefer the v0.7 surface/space/radius/shadow/text tokens
+ * (introduced by Ticket A). Fall back to the v0.6 equivalents so the work
+ * still renders correctly if integrated before A lands. All references go
+ * through `var(--new, var(--old, literal))` so neither path silently breaks.
+ */
 
 .home {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: var(--space-6, 28px);
   max-width: 560px;
 }
 
 .status-card {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 24px;
+  gap: var(--space-4, 16px);
+  padding: var(--space-6, 24px);
   border: 1px solid var(--divider);
-  border-radius: 10px;
-  background: var(--bg-elev);
+  border-radius: var(--radius-xl, 12px);
+  /* Solid surface — no transparency. */
+  background: var(--surface-base, var(--bg-elev));
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
 }
 
 .status-indicator {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 13px;
+  gap: var(--space-2, 8px);
+  font-size: var(--text-label-size, 11px);
   color: var(--fg-muted);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
+  font-weight: 600;
 }
 
+/*
+ * The home status icon. Sized to match the label rather than the old 8px
+ * dot, with per-state coloring so each phase has a distinct read. The
+ * Loader2 (transcribing) icon picks up the spin animation defined below;
+ * recording gets a gentle pulse to mirror the original dot behaviour
+ * without competing with the icon's own outline.
+ */
+.home-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.home-status-icon--idle {
+  color: var(--fg-subtle);
+}
+.home-status-icon--watching {
+  color: var(--fg);
+}
+.home-status-icon--recording {
+  color: var(--danger);
+  animation: home-status-pulse 1.4s ease-in-out infinite;
+}
+.home-status-icon--transcribing {
+  color: var(--fg);
+}
+
+@keyframes home-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@keyframes home-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.home-status-icon--spin {
+  animation: home-status-spin 1s linear infinite;
+}
+
+/* Legacy dot left in place for any code paths that still render it.
+   New code uses .home-status-icon above. */
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--status-idle);
 }
-
-.status-dot--watching {
-  background: var(--status-watching);
-}
-
+.status-dot--watching { background: var(--status-watching); }
 .status-dot--recording {
   background: var(--status-recording);
-  animation: pulse 1.4s ease-in-out infinite;
+  animation: home-status-pulse 1.4s ease-in-out infinite;
 }
-
 .status-dot--transcribing {
   background: var(--status-transcribing);
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+  animation: home-status-pulse 1.4s ease-in-out infinite;
 }
 
 .status-headline {
-  font-size: 24px;
+  font-size: var(--text-display-size, 28px);
+  line-height: var(--text-display-line-height, 1.15);
   font-weight: 600;
   letter-spacing: -0.02em;
+  color: var(--fg);
 }
 
 .status-detail {
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--text-body-size, 13px);
+  line-height: 1.5;
 }
 
 .progress-bar {
   width: 100%;
   height: 4px;
   background: var(--divider);
-  border-radius: 2px;
+  border-radius: var(--radius-full, 999px);
   overflow: hidden;
 }
 
 .progress-bar__fill {
   height: 100%;
-  background: var(--fg);
+  /* Filled portion picks up the brand accent. */
+  background: var(--accent);
   transition: width 200ms ease;
 }
 
 .actions-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2, 8px);
   flex-wrap: wrap;
+  margin-top: var(--space-1, 4px);
 }
 
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 16px;
+  gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px) var(--space-4, 16px);
   border: 1px solid var(--divider-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
   background: transparent;
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--text-body-size, 13px);
   font-weight: 500;
-  transition: background 80ms ease, border-color 80ms ease;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
 }
+.btn > svg { flex-shrink: 0; }
 
 .btn:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover, var(--bg-hover));
 }
 
 .btn:active {
-  background: var(--bg-active);
+  background: var(--surface-active, var(--bg-active));
+}
+
+.btn:focus-visible {
+  outline: var(--focus-ring, 2px solid var(--fg));
+  outline-offset: 2px;
 }
 
 .btn--primary {
@@ -351,7 +409,37 @@
 }
 
 .btn--danger:hover {
-  background: rgba(255, 85, 85, 0.08);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* ── Recognised speakers banner ──────────────────────────────
+   Replaces the inline italic "Recognised: …" line below the status
+   card. Solid raised surface, leading icon, subtle elevation. */
+.recognised-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2, 8px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--surface-raised, var(--bg-elev));
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-md, 6px);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+  font-size: var(--text-caption-size, 12px);
+  color: var(--fg);
+  line-height: 1.5;
+}
+.recognised-banner__icon {
+  color: var(--fg-muted);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.recognised-banner__body { min-width: 0; }
+.recognised-banner__label {
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.recognised-banner__names {
+  color: var(--fg);
 }
 
 /* ---------- Meetings view ---------- */
@@ -370,28 +458,46 @@
   height: 100%;
 }
 
+/*
+ * Meeting list rows.
+ *
+ * Border-left accent stripe on the active row replaces the old bg-active
+ * full-fill — the row still recolors on hover/active but the 3px stripe
+ * is what makes the selection unambiguous from across the list. Padding
+ * uses the v0.7 space scale so density matches the rest of the app.
+ *
+ * Each row carries its own bottom divider; the wrap above stops the last
+ * divider from doubling with the panel border.
+ */
 .meetings__row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 14px 20px;
+  gap: var(--space-1, 4px);
+  padding: var(--space-4, 14px) var(--space-5, 20px);
   border-bottom: 1px solid var(--divider);
+  border-left: 3px solid transparent;
   cursor: pointer;
-  transition: background 80ms ease;
+  transition: background 80ms ease, border-left-color 80ms ease;
   outline: none;
+  background: transparent;
 }
 
 .meetings__row:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover, var(--bg-hover));
 }
 
 .meetings__row:focus-visible {
-  background: var(--bg-hover);
-  box-shadow: inset 2px 0 0 var(--fg);
+  background: var(--surface-hover, var(--bg-hover));
+  outline: var(--focus-ring, 2px solid var(--fg));
+  outline-offset: -2px;
 }
 
 .meetings__row--active {
-  background: var(--bg-active);
+  background: var(--surface-active, var(--bg-active));
+  border-left-color: var(--accent);
+}
+.meetings__row--active:hover {
+  background: var(--surface-active, var(--bg-active));
 }
 
 .meetings__row--editing {
@@ -401,18 +507,20 @@
 .meetings__row-main {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2, 8px);
   min-width: 0;
 }
 
 .meetings__row-title {
   flex: 1;
   font-weight: 500;
-  font-size: 13px;
+  font-size: var(--text-body-size, 13px);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--fg);
+  letter-spacing: -0.005em;
 }
 
 /*
@@ -440,7 +548,7 @@
   background: transparent;
   color: var(--fg-muted);
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
   cursor: pointer;
   opacity: 0;
   flex-shrink: 0;
@@ -451,7 +559,7 @@
     border-color 80ms ease;
 }
 .meetings__row-edit:hover {
-  background: var(--bg-elevated, var(--bg-elev));
+  background: var(--surface-raised, var(--bg-elev));
   color: var(--fg);
   border-color: var(--divider);
 }
@@ -469,25 +577,31 @@
 .meetings__row-input {
   flex: 1;
   min-width: 0;
-  background: var(--bg-elevated);
+  background: var(--surface-raised, var(--bg-elev));
   color: var(--fg);
   border: 1px solid var(--divider-strong);
-  border-radius: 4px;
-  padding: 2px 6px;
+  border-radius: var(--radius-md, 6px);
+  padding: var(--space-1, 4px) var(--space-2, 8px);
   font: inherit;
   font-weight: 500;
-  font-size: 13px;
+  font-size: var(--text-body-size, 13px);
   outline: none;
+  transition: border-color 80ms ease;
 }
 .meetings__row-input:focus {
-  border-color: var(--fg);
+  border-color: var(--accent);
 }
 
 .meetings__row-meta {
   display: flex;
-  gap: 10px;
-  font-size: 11px;
-  color: var(--fg-muted);
+  gap: var(--space-2, 8px);
+  font-size: var(--text-caption-size, 12px);
+  color: var(--fg-subtle);
+  align-items: center;
+}
+
+.meetings__row-meta-duration {
+  font-variant-numeric: tabular-nums;
 }
 
 .meetings__detail {
@@ -540,38 +654,106 @@
 .settings {
   display: flex;
   flex-direction: column;
-  gap: 28px;
-  max-width: 560px;
+  gap: var(--space-5, 20px);
+  max-width: 640px;
 }
 
-.settings__group {
+/*
+ * Each section is a solid card with a leading icon + heading on top,
+ * a divider, and rows below. Mirrors the iOS-style + Linear-style group
+ * convention so the eye can scan top-to-bottom.
+ */
+.settings-section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  padding: var(--space-5, 20px);
+  background: var(--surface-base, var(--bg-elev));
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-lg, 10px);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
 }
 
-.settings__label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-muted);
-}
-
-.settings__value {
+.settings-section__header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2, 8px);
+  padding-bottom: var(--space-3, 12px);
+  border-bottom: 1px solid var(--divider);
+  margin-bottom: var(--space-3, 12px);
 }
 
+.settings-section__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+.settings-section__title {
+  margin: 0;
+  font-size: var(--text-h1-size, 16px);
+  line-height: var(--text-h1-line-height, 1.3);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.settings-section__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+}
+
+/* Individual row inside a section: label, optional description, value row. */
+.settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  padding-block: var(--space-2, 8px);
+}
+
+.settings-row__label {
+  font-size: var(--text-body-size, 13px);
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.settings-row__description {
+  font-size: var(--text-caption-size, 12px);
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+.settings-row__description--top {
+  margin-bottom: var(--space-3, 12px);
+}
+
+.settings-row__value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-2, 8px);
+}
+
+.settings-row__error {
+  margin-top: var(--space-2, 8px);
+  font-size: var(--text-caption-size, 12px);
+  color: var(--danger);
+}
+
+/* Path display — the immutable read-only folder path. Inset chip on a raised
+   surface. */
 .settings__path {
   flex: 1;
-  padding: 8px 12px;
-  border: 1px solid var(--divider-strong);
-  border-radius: 6px;
-  background: var(--bg-elev);
-  font-family:
-    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 12px;
+  min-width: 0;
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-md, 6px);
+  background: var(--surface-raised, var(--bg-elev));
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace);
+  font-size: var(--text-caption-size, 12px);
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -581,16 +763,23 @@
 .theme-toggle {
   display: inline-flex;
   border: 1px solid var(--divider-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
   overflow: hidden;
   width: fit-content;
+  background: var(--surface-base, var(--bg-elev));
 }
 
 .theme-toggle__option {
-  padding: 6px 14px;
-  font-size: 12px;
+  padding: var(--space-2, 6px) var(--space-4, 14px);
+  font-size: var(--text-caption-size, 12px);
+  font-weight: 500;
   color: var(--fg-muted);
+  background: transparent;
+  border: none;
   border-right: 1px solid var(--divider-strong);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 80ms ease, color 80ms ease;
 }
 
 .theme-toggle__option:last-child {
@@ -598,41 +787,208 @@
 }
 
 .theme-toggle__option:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover, var(--bg-hover));
   color: var(--fg);
 }
 
 .theme-toggle__option--active {
-  background: var(--bg-active);
+  background: var(--surface-active, var(--bg-active));
   color: var(--fg);
 }
 
-.about-block {
-  border: 1px solid var(--divider);
-  border-radius: 8px;
-  padding: 16px 20px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  line-height: 1.7;
-}
+/* ── Tag manager ──────────────────────────────────────────────
+   Compact rows: circular colour swatch, click-to-rename name,
+   trash-icon delete. The native colour input is hidden inside the
+   swatch label so the swatch itself becomes a clickable circle. */
 
-.about-block__row {
+.tag-manager {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  margin-bottom: var(--space-3, 12px);
 }
 
-.about-block__row + .about-block__row {
-  margin-top: 6px;
+.tag-manager__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding-block: var(--space-1, 4px);
 }
 
-.about-block a {
+.tag-manager__swatch {
+  position: relative;
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full, 999px);
+  border: 1px solid var(--divider-strong);
+  cursor: pointer;
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.tag-manager__swatch:hover {
+  transform: scale(1.06);
+  box-shadow: 0 0 0 2px var(--surface-hover, var(--bg-hover));
+}
+.tag-manager__swatch:focus-within {
+  outline: var(--focus-ring, 2px solid var(--fg));
+  outline-offset: 2px;
+}
+
+.tag-manager__color-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+  background: none;
+}
+
+.tag-manager__name {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--fg);
+  font-size: var(--text-body-size, 13px);
+  font-weight: 500;
+  padding: var(--space-1, 4px) var(--space-2, 8px);
+  cursor: text;
+  border-radius: var(--radius-md, 6px);
+  font-family: inherit;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+.tag-manager__name:hover {
+  background: var(--surface-hover, var(--bg-hover));
+}
+
+.tag-manager__name-input {
+  flex: 1;
+  background: var(--surface-raised, var(--bg-elev));
+  color: var(--fg);
+  border: 1px solid var(--divider-strong);
+  border-radius: var(--radius-md, 6px);
+  padding: var(--space-1, 4px) var(--space-2, 8px);
+  font-size: var(--text-body-size, 13px);
+  font-weight: 500;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 80ms ease;
+}
+.tag-manager__name-input:focus {
+  border-color: var(--accent);
+}
+.tag-manager__name-input--add {
+  font-weight: 400;
+}
+
+.tag-manager__delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md, 6px);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.tag-manager__delete:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.tag-manager__delete:focus-visible {
+  outline: var(--focus-ring, 2px solid var(--fg));
+  outline-offset: 2px;
+}
+
+.tag-manager__add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+}
+
+/* ── About brand block ────────────────────────────────────────
+   Replaces the flat key/value rows with a friendlier mark + copy
+   layout. The lucide Sparkles glyph is used as a placeholder mark
+   because the .icns file isn't directly renderable from a CSS
+   url(); a future iteration can swap it for the actual .png. */
+
+.about-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4, 16px);
+  padding-block: var(--space-2, 8px);
+}
+
+.about-brand__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-lg, 10px);
+  background: var(--surface-raised, var(--bg-elev));
+  color: var(--fg);
+  border: 1px solid var(--divider);
+  flex-shrink: 0;
+}
+
+.about-brand__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.about-brand__name {
+  font-size: var(--text-body-size, 14px);
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: -0.005em;
+}
+
+.about-brand__tagline {
+  font-size: var(--text-caption-size, 12px);
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+.about-brand__version {
+  font-size: var(--text-caption-size, 12px);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  padding: var(--space-1, 4px) var(--space-2, 8px);
+  background: var(--surface-raised, var(--bg-elev));
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-full, 999px);
+  flex-shrink: 0;
+}
+
+.about-links {
+  margin-top: var(--space-3, 12px);
+  padding-top: var(--space-3, 12px);
+  border-top: 1px solid var(--divider);
+  font-size: var(--text-caption-size, 12px);
+}
+
+.about-links__link {
   color: var(--fg);
   text-decoration: none;
   border-bottom: 1px solid var(--divider-strong);
+  transition: border-color 80ms ease;
 }
-
-.about-block a:hover {
+.about-links__link:hover {
   border-bottom-color: var(--fg);
 }
 
@@ -1002,6 +1358,7 @@
   border-right: 1px solid var(--divider);
   height: 100%;
   min-height: 0;
+  background: var(--surface-base, var(--bg));
 }
 
 .meetings__list-wrap .meetings__list {
@@ -1010,49 +1367,78 @@
   min-height: 0;
 }
 
-/* ── Tag filter row + chips ────────────────────────────────── */
+.meetings__list-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  padding: var(--space-4, 16px) var(--space-5, 20px);
+}
+
+/* ── Tag filter row + chips ──────────────────────────────────
+ *
+ * Filter strip above the meetings list. The "All" chip carries a leading
+ * Filter glyph so the row's purpose reads at-a-glance. Active chips fill
+ * with the tag color at ~25% alpha (already in place from v0.5) and add
+ * a lucide Check after the label. Inactive chips have a hairline border.
+ */
 
 .tag-filter-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 10px 12px;
+  gap: var(--space-1, 4px);
+  padding: var(--space-3, 10px) var(--space-3, 12px);
   border-bottom: 1px solid var(--divider);
+  background: var(--surface-base, var(--bg));
 }
 
 .tag-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  font-size: 11px;
+  gap: var(--space-1, 6px);
+  padding: var(--space-1, 4px) var(--space-2, 10px);
+  font-size: var(--text-label-size, 11px);
+  font-weight: 500;
+  letter-spacing: 0.02em;
   background: transparent;
   color: var(--fg);
-  border: 1px solid var(--divider);
-  border-radius: 999px;
+  border: 1px solid var(--divider-strong);
+  border-radius: var(--radius-full, 999px);
   cursor: pointer;
   font-family: inherit;
   white-space: nowrap;
   flex-shrink: 0;
+  transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
 }
 .tag-chip:hover {
-  background: var(--bg-elevated);
+  background: var(--surface-hover, var(--bg-hover));
+  border-color: var(--fg-muted);
+}
+.tag-chip:focus-visible {
+  outline: var(--focus-ring, 2px solid var(--fg));
+  outline-offset: 2px;
 }
 .tag-chip--active {
   /* Filled at ~25% alpha using the per-tag color exposed as --chip-color
-     (set inline by the React render). Falls back to elevated bg when no
+     (set inline by the React render). Falls back to subtle accent when no
      chip color is provided (e.g. the "All" chip). The border keeps the
      full-strength tag color, set inline via borderColor. */
-  background: color-mix(in srgb, var(--chip-color, var(--fg)) 25%, transparent);
-  border-color: var(--chip-color, var(--fg));
+  background: color-mix(in srgb, var(--chip-color, var(--accent)) 25%, transparent);
+  border-color: var(--chip-color, var(--accent));
+  color: var(--fg);
+}
+
+.tag-chip__leading-icon {
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.tag-chip--active .tag-chip__leading-icon {
   color: var(--fg);
 }
 
 .tag-chip__check {
-  margin-left: 4px;
-  font-size: 10px;
-  line-height: 1;
-  opacity: 0.9;
+  color: var(--fg);
+  flex-shrink: 0;
+  margin-left: 2px;
 }
 .tag-chip__dot {
   display: inline-block;
@@ -1062,22 +1448,35 @@
   flex-shrink: 0;
 }
 
-/* ── Meeting list tag pills ────────────────────────────────── */
+/* ── Meeting list tag pills ──────────────────────────────────
+ *
+ * Tiny pills under each row title; prepend a Tag glyph and use the label
+ * type-scale. Color contrast against tag.color is enforced by the dark
+ * (bg) foreground we hand the lucide icon below.
+ */
 
 .meetings__row-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 4px;
+  gap: var(--space-1, 4px);
+  margin-top: var(--space-1, 4px);
 }
 .meetings__row-tag-pill {
-  font-size: 9px;
-  padding: 2px 7px;
-  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--text-label-size, 10px);
+  padding: var(--space-1, 2px) var(--space-2, 7px);
+  border-radius: var(--radius-full, 999px);
   color: var(--bg);
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+}
+.meetings__row-tag-icon {
+  color: var(--bg);
+  flex-shrink: 0;
+  opacity: 0.7;
 }
 
 /* ── Tab strip ─────────────────────────────────────────────── */
@@ -1414,69 +1813,101 @@
   color: var(--fg-dim);
 }
 
-/* ── Recent meetings on Home ───────────────────────────────── */
+/* ── Recent meetings on Home ─────────────────────────────────
+ *
+ * Solid surface cards (no transparency) with a hover lift: 1px translate
+ * up + a shadow that registers the elevation. Title gets the body type;
+ * meta line uses caption/subtle. The lucide Tag glyph on pills mirrors
+ * the new meeting-list pill design.
+ */
 
 .recent-meetings {
-  margin-top: 32px;
+  margin-top: var(--space-6, 24px);
 }
 .recent-meetings__heading {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--fg-dim);
+  font-size: var(--text-label-size, 11px);
+  font-weight: 600;
+  color: var(--fg-muted);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin: 0 0 12px;
+  letter-spacing: 0.06em;
+  margin: 0 0 var(--space-3, 12px);
 }
 .recent-meetings__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 8px;
+  gap: var(--space-3, 12px);
 }
 .recent-card {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  padding: 12px 14px;
-  background: var(--bg-elevated);
+  gap: var(--space-2, 8px);
+  padding: var(--space-4, 16px);
+  background: var(--surface-base, var(--bg-elev));
   color: var(--fg);
   border: 1px solid var(--divider);
-  border-radius: 8px;
+  border-radius: var(--radius-lg, 10px);
   cursor: pointer;
   font-family: inherit;
   text-align: left;
+  transform: translateY(0);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.04));
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 80ms ease;
 }
 .recent-card:hover {
-  border-color: var(--fg);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.10));
+  border-color: var(--divider-strong);
+}
+.recent-card:focus-visible {
+  outline: var(--focus-ring, 2px solid var(--fg));
+  outline-offset: 2px;
 }
 .recent-card__title {
-  font-size: 13px;
+  font-size: var(--text-body-size, 14px);
   font-weight: 500;
   width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--fg);
+  letter-spacing: -0.005em;
 }
 .recent-card__meta {
-  font-size: 11px;
-  color: var(--fg-dim);
+  font-size: var(--text-caption-size, 12px);
+  color: var(--fg-subtle);
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
+}
+.recent-card__meta-duration {
+  font-variant-numeric: tabular-nums;
 }
 .recent-card__tags {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1, 4px);
   flex-wrap: wrap;
 }
 .recent-card__tag {
-  font-size: 9px;
-  padding: 1px 6px;
-  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--text-label-size, 10px);
+  padding: var(--space-1, 2px) var(--space-2, 7px);
+  border-radius: var(--radius-full, 999px);
   color: var(--bg);
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+}
+.recent-card__tag-icon {
+  color: var(--bg);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.recent-card__tag-name {
+  line-height: 1;
 }
 
 /* ── Tighten action row when overflow risk ─────────────────── */
@@ -1650,4 +2081,94 @@
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+}
+
+/* ============================================================
+ * v0.7.0 additions (Ticket C)
+ *
+ * Skeleton loaders + lucide-driven empty state. Both are shared
+ * components used by Home (Recent meetings) and the Meetings list.
+ * ============================================================ */
+
+/*
+ * Skeleton shimmer row. We animate `background-position` across a wide
+ * gradient that includes a brighter "sweep" band, then offset it across
+ * the row over ~1.4s. Background-position is GPU-cheap so the shimmer
+ * stays at 60fps even with several rows on screen.
+ */
+.skeleton-row {
+  height: 56px;
+  border-radius: var(--radius-lg, 10px);
+  background-color: var(--surface-raised, var(--bg-elev));
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--fg) 6%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-position: 200% 0;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  border: 1px solid var(--divider);
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-row {
+    animation: none;
+  }
+  .home-status-icon--spin {
+    animation: none;
+  }
+}
+
+/*
+ * Empty state — soft icon + helpful copy. Used by Home recent-meetings
+ * and the meetings list. The icon picks up `--fg-subtle` so it stays
+ * present but doesn't compete with the title.
+ */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-6, 32px) var(--space-5, 20px);
+  text-align: center;
+  border: 1px dashed var(--divider-strong);
+  border-radius: var(--radius-lg, 10px);
+  background: transparent;
+}
+
+.empty-state__icon {
+  color: var(--fg-subtle);
+  margin-bottom: var(--space-1, 4px);
+}
+
+.empty-state__title {
+  font-size: var(--text-body-size, 14px);
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.empty-state__hint {
+  font-size: var(--text-caption-size, 12px);
+  color: var(--fg-muted);
+  line-height: 1.5;
+  max-width: 320px;
+}
+
+/* Variant shown inside the meeting list pane — no border, smaller
+   padding so it doesn't overshadow the surrounding chrome. */
+.empty-state--in-list {
+  border: none;
+  padding: var(--space-6, 32px) var(--space-4, 16px);
 }

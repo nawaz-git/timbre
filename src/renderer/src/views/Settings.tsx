@@ -1,4 +1,14 @@
+import type { ReactNode } from 'react'
 import { useCallback, useState } from 'react'
+import {
+  Folder,
+  Info,
+  Palette,
+  Plus,
+  Sparkles,
+  Tag as TagIcon,
+  Trash2
+} from 'lucide-react'
 import { useSettings } from '../state/settings'
 import { useTags } from '../state/tags'
 import type { TagDef, ThemeMode } from '../../../shared/types'
@@ -13,8 +23,61 @@ const THEME_LABEL: Record<ThemeMode, string> = {
 const APP_VERSION = APP_VERSION_PLACEHOLDER
 
 const NEW_TAG_PALETTE = [
-  '#9aa0a6', '#8ab4f8', '#a1e3a1', '#fdd663', '#c58af9', '#f28b82', '#79d5ff', '#ff8a65'
+  '#9aa0a6',
+  '#8ab4f8',
+  '#a1e3a1',
+  '#fdd663',
+  '#c58af9',
+  '#f28b82',
+  '#79d5ff',
+  '#ff8a65'
 ]
+
+/**
+ * Settings sections share the same card shell: heading row (lucide icon +
+ * label) above a divider, body rows below. Pulled out as a component so the
+ * structure is uniform across Output / Appearance / Tags / About — the
+ * exact pattern Linear and iOS Settings both lean on.
+ */
+function Section({
+  icon,
+  title,
+  children
+}: {
+  icon: JSX.Element
+  title: string
+  children: ReactNode
+}): JSX.Element {
+  return (
+    <section className="settings-section">
+      <header className="settings-section__header">
+        <span className="settings-section__icon" aria-hidden="true">
+          {icon}
+        </span>
+        <h2 className="settings-section__title">{title}</h2>
+      </header>
+      <div className="settings-section__body">{children}</div>
+    </section>
+  )
+}
+
+function SettingsRow({
+  label,
+  description,
+  children
+}: {
+  label: string
+  description?: string
+  children: ReactNode
+}): JSX.Element {
+  return (
+    <div className="settings-row">
+      <div className="settings-row__label">{label}</div>
+      {description && <div className="settings-row__description">{description}</div>}
+      <div className="settings-row__value">{children}</div>
+    </div>
+  )
+}
 
 export function SettingsView(): JSX.Element {
   const { settings, setSettings } = useSettings()
@@ -45,7 +108,9 @@ export function SettingsView(): JSX.Element {
     try {
       await addTag(name, newTagColor)
       setNewTagName('')
-      setNewTagColor(NEW_TAG_PALETTE[(NEW_TAG_PALETTE.indexOf(newTagColor) + 1) % NEW_TAG_PALETTE.length])
+      setNewTagColor(
+        NEW_TAG_PALETTE[(NEW_TAG_PALETTE.indexOf(newTagColor) + 1) % NEW_TAG_PALETTE.length]
+      )
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       setTagError(msg)
@@ -76,14 +141,23 @@ export function SettingsView(): JSX.Element {
   }, [editingId, editingName, updateTag])
 
   if (!settings) {
-    return <div className="empty">Loading settings…</div>
+    return (
+      <div className="settings">
+        <div className="skeleton-row" />
+        <div className="skeleton-row" />
+        <div className="skeleton-row" />
+      </div>
+    )
   }
 
   return (
     <div className="settings">
-      <div className="settings__group">
-        <div className="settings__label">Output folder (file imports)</div>
-        <div className="settings__value">
+      {/* ── Output ─────────────────────────────────────────────────── */}
+      <Section icon={<Folder size={16} />} title="Output">
+        <SettingsRow
+          label="Output folder"
+          description="Where transcripts from imported audio files are saved."
+        >
           <div className="settings__path" title={settings.outputFolder}>
             {settings.outputFolder}
           </div>
@@ -95,18 +169,13 @@ export function SettingsView(): JSX.Element {
           >
             Choose…
           </button>
-        </div>
-      </div>
+        </SettingsRow>
 
-      <div className="settings__group">
-        <div className="settings__label">Live recordings folder</div>
-        <div className="settings__value">
-          <div
-            className="settings__path"
-            title="The bundled engine writes live recordings to ~/Downloads/MeetingTranscriber/. Both file imports and live recordings show up unified in the Meetings tab."
-          >
-            ~/Downloads/MeetingTranscriber/
-          </div>
+        <SettingsRow
+          label="Live recordings folder"
+          description="The bundled engine writes live recordings here. Both file imports and live recordings show up unified in the Meetings tab."
+        >
+          <div className="settings__path">~/Downloads/MeetingTranscriber/</div>
           <button
             className="btn"
             onClick={() => {
@@ -115,120 +184,111 @@ export function SettingsView(): JSX.Element {
           >
             Open in Finder
           </button>
-        </div>
-      </div>
+        </SettingsRow>
+      </Section>
 
-      <div className="settings__group">
-        <div className="settings__label">Theme</div>
-        <div className="theme-toggle" role="group" aria-label="Theme">
-          {THEME_OPTIONS.map((t) => (
-            <button
-              key={t}
-              className={
-                'theme-toggle__option' +
-                (settings.theme === t ? ' theme-toggle__option--active' : '')
-              }
-              onClick={() => {
-                void onTheme(t)
-              }}
-            >
-              {THEME_LABEL[t]}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Tags ─────────────────────────────────────────────────── */}
-      <div className="settings__group">
-        <div className="settings__label">Tags</div>
-        <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginBottom: 12 }}>
-          Apply tags to meetings to filter the Meetings list by project or type. Click a swatch
-          to change a tag's colour, or the name to rename it.
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
-          {tags.map((tag) => (
-            <div
-              key={tag.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 12,
-                padding: '6px 0'
-              }}
-            >
-              <input
-                type="color"
-                value={tag.color}
-                onChange={(e) => void onUpdateTagColor(tag, e.target.value)}
-                style={{
-                  width: 24,
-                  height: 24,
-                  padding: 0,
-                  border: 'none',
-                  background: 'none',
-                  cursor: 'pointer'
-                }}
-                title="Change colour"
-              />
-              {editingId === tag.id ? (
-                <input
-                  autoFocus
-                  value={editingName}
-                  onChange={(e) => setEditingName(e.target.value)}
-                  onBlur={() => void commitEditTag()}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void commitEditTag()
-                    if (e.key === 'Escape') setEditingId(null)
-                  }}
-                  className="speaker-rename-input"
-                  style={{ flex: 1 }}
-                />
-              ) : (
-                <button
-                  onClick={() => beginEditTag(tag)}
-                  style={{
-                    flex: 1,
-                    textAlign: 'left',
-                    background: 'none',
-                    border: 'none',
-                    color: 'var(--fg)',
-                    fontSize: 13,
-                    padding: '2px 4px',
-                    cursor: 'text',
-                    borderRadius: 4
-                  }}
-                  title="Click to rename"
-                >
-                  {tag.name}
-                </button>
-              )}
+      {/* ── Appearance ─────────────────────────────────────────────── */}
+      <Section icon={<Palette size={16} />} title="Appearance">
+        <SettingsRow label="Theme" description="Follow the system, or force light or dark.">
+          <div className="theme-toggle" role="group" aria-label="Theme">
+            {THEME_OPTIONS.map((t) => (
               <button
-                className="btn btn--small"
+                key={t}
+                className={
+                  'theme-toggle__option' +
+                  (settings.theme === t ? ' theme-toggle__option--active' : '')
+                }
                 onClick={() => {
-                  if (confirm(`Delete tag "${tag.name}"? Meetings keep their tag ids but the label disappears.`)) {
-                    void deleteTag(tag.id)
-                  }
+                  void onTheme(t)
                 }}
               >
-                Delete
+                {THEME_LABEL[t]}
               </button>
-            </div>
-          ))}
+            ))}
+          </div>
+        </SettingsRow>
+      </Section>
+
+      {/* ── Tags ───────────────────────────────────────────────────── */}
+      <Section icon={<TagIcon size={16} />} title="Tags">
+        <div className="settings-row__description settings-row__description--top">
+          Apply tags to meetings to filter the Meetings list by project or type. Click a swatch
+          to change a tag&apos;s colour, or the name to rename it.
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input
-            type="color"
-            value={newTagColor}
-            onChange={(e) => setNewTagColor(e.target.value)}
-            style={{
-              width: 24,
-              height: 24,
-              padding: 0,
-              border: 'none',
-              background: 'none',
-              cursor: 'pointer'
-            }}
-          />
+
+        {tags.length > 0 && (
+          <div className="tag-manager">
+            {tags.map((tag) => (
+              <div key={tag.id} className="tag-manager__row">
+                <label
+                  className="tag-manager__swatch"
+                  style={{ background: tag.color }}
+                  title="Change colour"
+                >
+                  <input
+                    type="color"
+                    value={tag.color}
+                    onChange={(e) => void onUpdateTagColor(tag, e.target.value)}
+                    className="tag-manager__color-input"
+                    aria-label={`Change colour for ${tag.name}`}
+                  />
+                </label>
+                {editingId === tag.id ? (
+                  <input
+                    autoFocus
+                    value={editingName}
+                    onChange={(e) => setEditingName(e.target.value)}
+                    onBlur={() => void commitEditTag()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void commitEditTag()
+                      if (e.key === 'Escape') setEditingId(null)
+                    }}
+                    className="tag-manager__name-input"
+                  />
+                ) : (
+                  <button
+                    onClick={() => beginEditTag(tag)}
+                    className="tag-manager__name"
+                    title="Click to rename"
+                  >
+                    {tag.name}
+                  </button>
+                )}
+                <button
+                  className="tag-manager__delete"
+                  aria-label={`Delete ${tag.name}`}
+                  title={`Delete ${tag.name}`}
+                  onClick={() => {
+                    if (
+                      confirm(
+                        `Delete tag "${tag.name}"? Meetings keep their tag ids but the label disappears.`
+                      )
+                    ) {
+                      void deleteTag(tag.id)
+                    }
+                  }}
+                >
+                  <Trash2 size={12} aria-hidden="true" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="tag-manager__add">
+          <label
+            className="tag-manager__swatch"
+            style={{ background: newTagColor }}
+            title="Pick colour"
+          >
+            <input
+              type="color"
+              value={newTagColor}
+              onChange={(e) => setNewTagColor(e.target.value)}
+              className="tag-manager__color-input"
+              aria-label="New tag colour"
+            />
+          </label>
           <input
             value={newTagName}
             onChange={(e) => setNewTagName(e.target.value)}
@@ -236,43 +296,49 @@ export function SettingsView(): JSX.Element {
               if (e.key === 'Enter') void onAddTag()
             }}
             placeholder="New tag name…"
-            className="speaker-rename-input"
-            style={{ flex: 1 }}
+            className="tag-manager__name-input tag-manager__name-input--add"
           />
           <button
             className="btn btn--primary btn--small"
             onClick={() => void onAddTag()}
             disabled={!newTagName.trim()}
           >
-            Add tag
+            <Plus size={14} aria-hidden="true" />
+            <span>Add tag</span>
           </button>
         </div>
         {tagError && (
-          <div className="status-detail" style={{ color: 'var(--danger, #ef4444)' }}>
+          <div className="settings-row__error" role="alert">
             {tagError}
           </div>
         )}
-      </div>
+      </Section>
 
-      <div className="settings__group">
-        <div className="settings__label">About</div>
-        <div className="about-block">
-          <div className="about-block__row">
-            <span>Meeting Transcriber</span>
-            <span>v{APP_VERSION}</span>
+      {/* ── About ──────────────────────────────────────────────────── */}
+      <Section icon={<Info size={16} />} title="About">
+        <div className="about-brand">
+          <span className="about-brand__mark" aria-hidden="true">
+            <Sparkles size={20} />
+          </span>
+          <div className="about-brand__copy">
+            <div className="about-brand__name">Meeting Transcriber</div>
+            <div className="about-brand__tagline">
+              On-device meeting transcription. Audio never leaves your Mac.
+            </div>
           </div>
-          <div className="about-block__row">
-            <span>Project</span>
-            <a
-              href="https://github.com/nawazpasha/meeting-transcriber"
-              target="_blank"
-              rel="noreferrer"
-            >
-              github.com/nawazpasha/meeting-transcriber
-            </a>
-          </div>
+          <span className="about-brand__version">v{APP_VERSION}</span>
         </div>
-      </div>
+        <div className="about-links">
+          <a
+            href="https://github.com/nawazpasha/meeting-transcriber"
+            target="_blank"
+            rel="noreferrer"
+            className="about-links__link"
+          >
+            github.com/nawazpasha/meeting-transcriber
+          </a>
+        </div>
+      </Section>
     </div>
   )
 }
