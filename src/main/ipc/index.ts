@@ -21,13 +21,15 @@ import {
 import {
   addSpeakerToMeeting,
   exportMeeting,
+  previewExportMeeting,
   listMeetings,
   liveRecordingsRoot,
   readTranscript,
   reassignSegmentSpeaker,
   renameMeetingTitle,
   renameSpeakerInMeeting,
-  setMeetingTags
+  setMeetingTags,
+  type ExportPreview
 } from '../meetings'
 import {
   getStatus,
@@ -269,6 +271,29 @@ export function registerIpcHandlers(): void {
         await fs.writeFile(result.filePath, payload.body)
       }
       return { savedTo: result.filePath }
+    }
+  )
+
+  // Preview-only sibling to `meetings:export`. Returns the would-be
+  // export payload in-memory so the renderer can show it in the new
+  // Export-tab preview pane WITHOUT prompting the user to pick a save
+  // path. The Save dialog flow stays the only writer to disk — this
+  // handler never touches the filesystem beyond `fs.stat` for audio.
+  ipcMain.handle(
+    IPC.meetingsExportPreview,
+    async (
+      _event,
+      meetingId: string,
+      format: ExportFormat,
+      title: string
+    ): Promise<ExportPreview> => {
+      const settings = await readSettings()
+      return previewExportMeeting(
+        settings.outputFolder,
+        meetingId,
+        format,
+        title || 'Meeting'
+      )
     }
   )
 

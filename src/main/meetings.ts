@@ -750,3 +750,67 @@ export async function exportMeeting(
     contentType: 'application/x-subrip'
   }
 }
+
+/** Renderer-facing preview payload returned by `previewExportMeeting`. */
+export interface ExportPreview {
+  /** Suggested filename (with extension). */
+  filename: string
+  /** UTF-8 string body for text formats. EMPTY for binary (audio). */
+  body: string
+  /** MIME type. */
+  contentType: string
+  /** True if the payload is binary and intentionally omitted from `body`. */
+  isBinary?: boolean
+  /** File size in bytes — only set for binary formats so the renderer
+   *  can show a human-readable summary without serialising the bytes. */
+  sizeBytes?: number
+}
+
+/**
+ * Build an in-memory preview payload for the Export tab. Mirrors
+ * `exportMeeting()` for text formats so what you see in the preview is
+ * byte-identical to what the Save dialog flow writes. For `audio`, we
+ * deliberately skip reading the WAV body — the renderer only needs the
+ * filename + size to render a "binary file, X MB" placeholder card.
+ */
+export async function previewExportMeeting(
+  outputFolder: string,
+  meetingId: string,
+  format: 'txt' | 'md' | 'json' | 'srt' | 'audio',
+  title: string
+): Promise<ExportPreview> {
+  if (format === 'audio') {
+    // Resolve the audio path WITHOUT reading the file. The `audio` branch
+    // of `exportMeeting` would otherwise load the entire WAV into memory
+    // and then serialise it across IPC — wasteful for preview, since the
+    // pane shows only a size/filename card.
+    if (meetingId.startsWith('engine:')) {
+      throw new Error('Live-recording meetings do not have audio export available.')
+    }
+    const folderId = meetingId.startsWith('imported:')
+      ? meetingId.slice('imported:'.length)
+      : meetingId
+    if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+      throw new Error(`Invalid meeting id: ${meetingId}`)
+    }
+    const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || folderId
+    const audioPath = join(outputFolder, folderId, 'audio.wav')
+    const stat = await fs.stat(audioPath)
+    return {
+      filename: `${safeTitle}.wav`,
+      body: '',
+      contentType: 'audio/wav',
+      isBinary: true,
+      sizeBytes: stat.size
+    }
+  }
+  // Text formats: reuse the canonical export helper. Its body is always a
+  // string for txt/md/json/srt (Buffer only for audio, handled above).
+  const payload = await exportMeeting(outputFolder, meetingId, format, title)
+  const body = typeof payload.body === 'string' ? payload.body : payload.body.toString('utf-8')
+  return {
+    filename: payload.filename,
+    body,
+    contentType: payload.contentType
+  }
+}

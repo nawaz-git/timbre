@@ -151,6 +151,7 @@ export const IPC = {
   speakersDelete: 'speakers:delete',
   meetingsRenameTitle: 'meetings:renameTitle',
   meetingsExport: 'meetings:export',
+  meetingsExportPreview: 'meetings:exportPreview',
   meetingsSetTags: 'meetings:setTags',
   tagsList: 'tags:list',
   tagsAdd: 'tags:add',

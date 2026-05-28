@@ -64,6 +64,23 @@ const api = {
       title: string
     ): Promise<{ savedTo?: string; canceled?: boolean }> =>
       ipcRenderer.invoke(IPC.meetingsExport, meetingId, format, title),
+    /**
+     * In-memory preview of what `export()` would write. Renderer uses this
+     * to populate the Export-tab preview pane before the user commits to
+     * saving. Audio is returned as metadata-only (no body) — the renderer
+     * shows a size card instead of binary contents.
+     */
+    exportPreview: (
+      meetingId: string,
+      format: ExportFormat,
+      title: string
+    ): Promise<{
+      filename: string
+      body: string
+      contentType: string
+      isBinary?: boolean
+      sizeBytes?: number
+    }> => ipcRenderer.invoke(IPC.meetingsExportPreview, meetingId, format, title),
     setTags: (meetingId: string, tagIds: string[]): Promise<{ tagIds: string[] }> =>
       ipcRenderer.invoke(IPC.meetingsSetTags, meetingId, tagIds)
   },
