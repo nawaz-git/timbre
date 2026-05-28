@@ -155,6 +155,14 @@ const api = {
     restartHelper: (): Promise<{ ok: boolean; message?: string }> =>
       ipcRenderer.invoke(IPC.systemRestartHelper),
     /**
+     * Open Finder with the bundled MeetingTranscriber.app highlighted so
+     * the user can drag it directly onto System Settings → Screen
+     * Recording's "+" dialog. macOS doesn't allow apps to add their own
+     * TCC entries — drag-and-drop from Finder is the canonical path.
+     */
+    revealHelper: (): Promise<{ revealed: boolean; path?: string }> =>
+      ipcRenderer.invoke(IPC.systemRevealHelper),
+    /**
      * Subscribe to capture-watchdog signals (v0.13+). Fires when the
      * Chrome probe reports a live Meet for >25s but the bundled engine
      * helper hasn't written anything — i.e. the helper is silently

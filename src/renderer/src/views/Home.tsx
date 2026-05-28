@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Clock,
   ExternalLink,
+  FolderOpen,
   Inbox,
   Loader2,
   Mic,
@@ -325,6 +326,14 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
             >
               <ExternalLink size={14} aria-hidden="true" />
               <span>Open Screen Recording</span>
+            </button>
+            <button
+              className="btn btn--small"
+              onClick={() => void window.api.system.revealHelper()}
+              title="Reveal MeetingTranscriber.app in Finder so you can drag it onto the Screen Recording + dialog"
+            >
+              <FolderOpen size={14} aria-hidden="true" />
+              <span>Reveal helper in Finder</span>
             </button>
             <button
               className="btn btn--small"

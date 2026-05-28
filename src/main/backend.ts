@@ -219,43 +219,80 @@ export function isLiveActive(): boolean {
 }
 
 /**
- * Hard-kill any existing MeetingTranscriber.app helper process.
+ * Hard-kill any existing MeetingTranscriber helper process.
  *
  * Critical for fresh TCC state. macOS caches Screen Recording / Mic
  * permission at process launch — granting the permission *afterwards*
  * doesn't refresh a running process. v0.12 → v0.13 shipped without this
  * step and we saw a 4-hour-old helper sitting on stale "denied" TCC even
  * after the user granted permission in System Settings, writing zero
- * audio for the whole window. Synchronous so callers can sequence
- * "killHelper → spawn fresh helper" without a race.
+ * audio for the whole window.
+ *
+ * v0.15+: kills ANY MeetingTranscriber Mach-O the user has running, not
+ * just the bundled one. With LaunchServices dedup, v0.12-v0.14 sometimes
+ * left a *standalone* /Applications/MeetingTranscriber.app helper running
+ * with stale TCC. We're the only thing on the system that should be
+ * launching this binary, so killing siblings is safe and prevents a
+ * surprise zombie process from grabbing audio output.
  */
 export function killLiveRecorderSync(): { killed: number } {
   let killed = 0
+  // First: kill anything we own a handle to (the cheap path).
+  if (liveProcess && liveProcess.pid && !liveProcess.killed) {
+    try {
+      liveProcess.kill('SIGTERM')
+      killed += 1
+    } catch (err) {
+      console.warn('[live-recorder] direct kill failed', err)
+    }
+  }
+  // Second: belt-and-suspenders pkill of every MeetingTranscriber binary
+  // path on the system. Match the BINARY name inside the .app bundle —
+  // any other process named that exactly is going to be a copy of our
+  // engine. We intentionally don't constrain to a path prefix here so a
+  // standalone install that's stealing our slot via LaunchServices still
+  // gets cleaned up.
   try {
-    // Match the actual binary path inside our bundle so we don't
-    // accidentally kill a user's standalone MeetingTranscriber install
-    // (which would live in /Applications/MeetingTranscriber.app, not
-    // inside Mintr's resources).
     const result = spawnSync(
       '/usr/bin/pkill',
-      ['-f', 'Mintr.app/Contents/Resources/MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber'],
+      ['-f', 'MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber'],
       { stdio: ['ignore', 'pipe', 'pipe'] }
     )
-    // pkill returns 0 if at least one process was matched and signaled,
-    // 1 if no process matched. Either is fine; we just want NO helper
-    // running after this call.
-    if (result.status === 0) killed = 1
+    if (result.status === 0) killed += 1
   } catch (err) {
-    console.warn('[live-recorder] killLiveRecorderSync failed', err)
+    console.warn('[live-recorder] pkill failed', err)
   }
   liveProcess = null
   return { killed }
 }
 
 /**
- * Spawn the bundled MeetingTranscriber.app via macOS `open` so it inherits
- * its own TCC identity (mic/screen recording). The user grants these once on
- * first launch.
+ * Spawn the bundled MeetingTranscriber helper.
+ *
+ * Critical implementation detail: we `spawn` the helper's binary
+ * DIRECTLY at its exact bundled path, rather than going through
+ * `/usr/bin/open` (which dispatches via LaunchServices). LaunchServices
+ * dedups apps by bundle id — and if the user happens to have a
+ * separate `MeetingTranscriber.app` installed in `/Applications` (e.g.
+ * a leftover from before Mintr was created), both copies register the
+ * same `com.meetingtranscriber.app` bundle id and LaunchServices can
+ * silently launch the wrong binary. Confirmed bug in v0.12-v0.14:
+ *
+ *   `ps -ef` showed
+ *     /Applications/MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber
+ *   running when we asked it to launch
+ *     /Applications/Mintr.app/Contents/Resources/MeetingTranscriber.app/...
+ *
+ * Spawning the inner binary directly via `spawn(execPath, [])` bypasses
+ * LaunchServices entirely. macOS launches THAT exact Mach-O at THAT
+ * exact path with no dedup. TCC still applies (entries keyed by bundle
+ * id), and the kernel records the running binary's path against the
+ * TCC bookmark — so the user's "MeetingTranscriber" Screen Recording
+ * entry only matches when its stored path bookmark equals the bundled
+ * helper path.
+ *
+ * Side benefit: we get a real PID we can `kill` directly. The old
+ * `open`-then-detach pattern left us no handle on the actual helper.
  *
  * v0.14+: always force-kills any existing helper first so the new
  * launch picks up freshly-granted TCC. The `isLiveActive()` short-circuit
@@ -281,27 +318,58 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
   // window titles for as long as it lives.
   killLiveRecorderSync()
 
-  // Step 2: launch fresh. `open -n` would force a new instance even when
-  // one is running, but we just guaranteed none is. Use plain `open`.
-  const args = [appPath]
-  const child = spawn('/usr/bin/open', args, {
+  // Step 2: resolve the inner Mach-O binary inside the .app bundle.
+  // For `Foo.app` the executable lives at `Foo.app/Contents/MacOS/<exec>`
+  // where `<exec>` is whatever the bundle's Info.plist sets
+  // CFBundleExecutable to (defaulting to the bundle's basename).
+  const execName = appPath.split('/').pop()?.replace(/\.app$/, '') ?? 'MeetingTranscriber'
+  const execPath = join(appPath, 'Contents', 'MacOS', execName)
+  if (!existsSync(execPath)) {
+    return {
+      ok: false,
+      message: `Helper binary not found at ${execPath}`
+    }
+  }
+
+  // Step 3: launch the binary directly — NO `open`, NO LaunchServices.
+  // `detached: false` keeps the helper as a child of Mintr so quitting
+  // Mintr cleans up the helper too (the OS sends SIGHUP on parent exit).
+  const child = spawn(execPath, [], {
+    cwd: appPath,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...env }
+    env: { ...process.env, ...env },
+    detached: false
+  })
+
+  child.stdout?.on('data', (chunk: Buffer) => {
+    // The helper emits to os.log primarily, but anything that does land
+    // on stdout (e.g. crash banners on launch) is useful diagnostic
+    // info — forward to Electron's console so we can read it in the
+    // packaged-app log stream.
+    console.log('[live-recorder:stdout]', chunk.toString('utf-8').trimEnd())
   })
 
   child.stderr?.on('data', (chunk: Buffer) => {
-    console.warn('[live-recorder:stderr]', chunk.toString('utf-8').trim())
+    console.warn('[live-recorder:stderr]', chunk.toString('utf-8').trimEnd())
   })
 
-  child.on('close', () => {
-    // `open` exits as soon as it has launched the app — that's not the app
-    // quitting, just `open` returning. We treat the live recorder as
-    // "running" until the user clicks Stop, which triggers `stopLiveRecorder`.
+  child.on('close', (code, signal) => {
+    if (code !== null && code !== 0) {
+      console.warn(`[live-recorder] helper exited with code ${code}`)
+    }
+    if (signal) {
+      console.warn(`[live-recorder] helper killed by signal ${signal}`)
+    }
+    liveProcess = null
+  })
+
+  child.on('error', (err) => {
+    console.error('[live-recorder] spawn error', err)
     liveProcess = null
   })
 
   liveProcess = child
-  return { ok: true, appPath }
+  return { ok: true, appPath: execPath }
 }
 
 /**

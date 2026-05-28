@@ -357,6 +357,17 @@ export function registerIpcHandlers(): void {
     setImmediate(() => app.quit())
   })
 
+  ipcMain.handle(IPC.systemRevealHelper, async (): Promise<{ revealed: boolean; path?: string }> => {
+    const { resolveLiveRecorderApp } = await import('../backend')
+    const appPath = resolveLiveRecorderApp()
+    if (!appPath) return { revealed: false }
+    // `shell.showItemInFolder` highlights the .app bundle inside its
+    // parent (Mintr's Resources/), where the user can grab it and drop
+    // onto the Screen Recording "+" dialog.
+    shell.showItemInFolder(appPath)
+    return { revealed: true, path: appPath }
+  })
+
   ipcMain.handle(
     IPC.systemRestartHelper,
     async (): Promise<{ ok: boolean; message?: string }> => {

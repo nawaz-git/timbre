@@ -180,7 +180,14 @@ export const IPC = {
    * helper, because macOS does not refresh permission state for a
    * running process.
    */
-  systemRestartHelper: 'system:restartHelper'
+  systemRestartHelper: 'system:restartHelper',
+  /**
+   * Reveal the bundled helper .app in Finder so the user can drag it
+   * onto System Settings → Screen Recording's "+" dialog. macOS won't
+   * let us programmatically add a TCC entry — drag-and-drop from
+   * Finder is the canonical user-driven way.
+   */
+  systemRevealHelper: 'system:revealHelper'
 } as const
 
 /** Export format kinds for `meetings:export`. */
