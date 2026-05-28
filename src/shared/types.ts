@@ -7,6 +7,8 @@ export interface Settings {
   theme: ThemeMode
   /** Default number-of-speakers hint applied to file imports. */
   numSpeakers: NumSpeakersHint
+  /** Whether the left sidebar is collapsed to icon-only mode. */
+  sidebarCollapsed: boolean
 }
 
 export type RecordingState = 'idle' | 'watching' | 'recording' | 'transcribing'

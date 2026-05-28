@@ -88,6 +88,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const [titleEditing, setTitleEditing] = useState(false)
   const [titleValue, setTitleValue] = useState('')
 
+  // Inline list-row rename — separate from the detail-pane title editor.
+  const [rowEditingId, setRowEditingId] = useState<string | null>(null)
+  const [rowEditingValue, setRowEditingValue] = useState('')
+
   // Speaker picker — which cluster name is open?
   const [pickerForCluster, setPickerForCluster] = useState<string | null>(null)
   const [enrolledSpeakers, setEnrolledSpeakers] = useState<EnrolledSpeaker[]>([])
@@ -308,6 +312,33 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     }
   }, [selectedMeeting, titleValue, refresh])
 
+  const beginRowRename = useCallback((m: MeetingSummary) => {
+    setRowEditingId(m.id)
+    setRowEditingValue(m.title)
+  }, [])
+
+  const cancelRowRename = useCallback(() => {
+    setRowEditingId(null)
+    setRowEditingValue('')
+  }, [])
+
+  const commitRowRename = useCallback(async () => {
+    const id = rowEditingId
+    if (!id) return
+    const original = meetings.find((m) => m.id === id)
+    const next = rowEditingValue.trim()
+    setRowEditingId(null)
+    setRowEditingValue('')
+    if (!original || !next || next === original.title) return
+    try {
+      await window.api.meetings.renameTitle(id, next)
+      await refresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setStatusBanner(`Rename failed: ${msg}`)
+    }
+  }, [rowEditingId, rowEditingValue, meetings, refresh])
+
   const onPickSpeaker = useCallback(
     async (clusterName: string, newName: string) => {
       if (!selectedId) return
@@ -426,45 +457,106 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             </div>
           )}
           {!loading &&
-            filteredMeetings.map((m) => (
-              <button
-                key={m.id}
-                className={
-                  'meetings__row' + (m.id === selectedId ? ' meetings__row--active' : '')
-                }
-                onClick={() => {
-                  void onSelect(m)
-                }}
-              >
-                <div className="meetings__row-title">{m.title}</div>
-                <div className="meetings__row-meta">
-                  <span>{formatDate(m.date)}</span>
-                  <span>·</span>
-                  <span>{formatDuration(m.durationSeconds)}</span>
-                  <span>·</span>
-                  <span>
-                    {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
-                  </span>
-                </div>
-                {m.tagIds.length > 0 && (
-                  <div className="meetings__row-tags">
-                    {m.tagIds.map((id) => {
-                      const t = tagById(id)
-                      if (!t) return null
-                      return (
-                        <span
-                          key={id}
-                          className="meetings__row-tag-pill"
-                          style={{ background: t.color }}
-                        >
-                          {t.name}
-                        </span>
-                      )
-                    })}
+            filteredMeetings.map((m) => {
+              const isEditing = rowEditingId === m.id
+              const canRename = !m.id.startsWith('engine:')
+              return (
+                <div
+                  key={m.id}
+                  role="button"
+                  tabIndex={0}
+                  className={
+                    'meetings__row' +
+                    (m.id === selectedId ? ' meetings__row--active' : '') +
+                    (isEditing ? ' meetings__row--editing' : '')
+                  }
+                  onClick={() => {
+                    if (isEditing) return
+                    void onSelect(m)
+                  }}
+                  onKeyDown={(e) => {
+                    if (isEditing) return
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      void onSelect(m)
+                    }
+                  }}
+                >
+                  <div className="meetings__row-main">
+                    {isEditing ? (
+                      <input
+                        autoFocus
+                        className="meetings__row-input"
+                        value={rowEditingValue}
+                        onChange={(e) => setRowEditingValue(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          e.stopPropagation()
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            void commitRowRename()
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault()
+                            cancelRowRename()
+                          }
+                        }}
+                        onBlur={() => void commitRowRename()}
+                      />
+                    ) : (
+                      <div className="meetings__row-title">{m.title}</div>
+                    )}
+                    {!isEditing && canRename && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className="meetings__row-edit"
+                        aria-label="Rename meeting"
+                        title="Rename meeting"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          beginRowRename(m)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            beginRowRename(m)
+                          }
+                        }}
+                      >
+                        ✎
+                      </span>
+                    )}
                   </div>
-                )}
-              </button>
-            ))}
+                  <div className="meetings__row-meta">
+                    <span>{formatDate(m.date)}</span>
+                    <span>·</span>
+                    <span>{formatDuration(m.durationSeconds)}</span>
+                    <span>·</span>
+                    <span>
+                      {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
+                    </span>
+                  </div>
+                  {m.tagIds.length > 0 && (
+                    <div className="meetings__row-tags">
+                      {m.tagIds.map((id) => {
+                        const t = tagById(id)
+                        if (!t) return null
+                        return (
+                          <span
+                            key={id}
+                            className="meetings__row-tag-pill"
+                            style={{ background: t.color }}
+                          >
+                            {t.name}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
         </div>
       </div>
 

@@ -24,15 +24,40 @@ import {
  */
 const ENGINE_DEFAULT_ROOT = join(homedir(), 'Downloads', 'MeetingTranscriber')
 
-/** Pretty-print a folder name like `2026-05-28_team-sync` → `Team sync · 2026-05-28`. */
+/**
+ * Pretty-print a folder name like
+ * `2026-05-28_10-41-22_2026-05-23-api-as-a-service-strategy`
+ * → `API as a service strategy`.
+ *
+ * Folders produced by mt-batch encode the import timestamp first
+ * (`YYYY-MM-DD_HH-MM-SS_`) followed by the source filename — which itself
+ * often begins with its own `YYYY-MM-DD-` date prefix. We strip both, then
+ * convert the human-readable slug to sentence case. The first word, if it's
+ * a short all-lowercase token (≤4 chars, e.g. `api`, `eod`, `ml`), is
+ * upper-cased on the assumption it's an acronym.
+ */
 function titleFromFolderName(name: string): string {
-  const m = name.match(/^(\d{4}-\d{2}-\d{2})[_\- ]+(.+)$/)
-  if (m) {
-    const date = m[1]
-    const rest = m[2].replace(/[_\-]+/g, ' ').trim()
-    return `${rest.charAt(0).toUpperCase()}${rest.slice(1)} · ${date}`
+  let rest = name
+  // 1. Strip the mt-batch import-timestamp prefix `YYYY-MM-DD_HH-MM-SS_`.
+  const importPrefix = rest.match(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_(.+)$/)
+  if (importPrefix) rest = importPrefix[1]
+  // 2. Strip a leading source-filename date `YYYY-MM-DD-` (or `YYYY-MM-DD_`).
+  rest = rest.replace(/^\d{4}-\d{2}-\d{2}[-_]/, '')
+  // 3. Replace separators with spaces and collapse whitespace.
+  rest = rest.replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!rest) return name
+  // 4. Sentence-case: capitalize the first character; if the first word is a
+  //    short all-lowercase token (2-3 letters) it's almost certainly an
+  //    acronym (api, eod, ml, ai, ux …) so uppercase it instead. 4+ letter
+  //    words like "team" or "just" fall through to plain capitalization.
+  const parts = rest.split(' ')
+  const first = parts[0]
+  if (/^[a-z]{2,3}$/.test(first)) {
+    parts[0] = first.toUpperCase()
+  } else {
+    parts[0] = first.charAt(0).toUpperCase() + first.slice(1)
   }
-  return name.replace(/[_\-]+/g, ' ')
+  return parts.join(' ')
 }
 
 /**
