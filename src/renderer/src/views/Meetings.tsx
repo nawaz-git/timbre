@@ -126,6 +126,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // Status banner
   const [statusBanner, setStatusBanner] = useState<string | null>(null)
 
+  // Cascade banner — non-blocking nudge shown after a successful rename or
+  // per-segment reassign. Tracks the LAST speaker the user just touched so
+  // a second reassign within the same visit updates (not stacks) the banner.
+  // Cleared on meeting switch, after a re-analyse completes, or when the
+  // user clicks "Later". Holding only a string keeps this state cheap and
+  // tied to the meeting-session lifecycle.
+  const [lastReassignedSpeaker, setLastReassignedSpeaker] = useState<string | null>(null)
+
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
@@ -169,6 +177,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     async (m: MeetingSummary) => {
       setSelectedId(m.id)
       setStatusBanner(null)
+      setLastReassignedSpeaker(null)
       setTitleEditing(false)
       setPickerForCluster(null)
       setPickerForSegment(null)
@@ -200,6 +209,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         if (reanalyzeJobId && ev.jobId === reanalyzeJobId) {
           setReanalyzeJobId(null)
           setStatusBanner('Re-analysis complete.')
+          // The cascade just ran — any other clusters that were really the
+          // renamed speaker will have been picked up by the global-DB match.
+          // The banner has done its job; clear it.
+          setLastReassignedSpeaker(null)
           if (selectedId) void loadTranscript(selectedId)
         }
       } else if (ev.event === 'error' && reanalyzeJobId && ev.jobId === reanalyzeJobId) {
@@ -436,6 +449,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             ? `Assigned "${newName}" — enrolled their voice for next time.`
             : `Renamed to "${newName}".`
         )
+        // Show (or update) the cascade banner for this meeting-session.
+        setLastReassignedSpeaker(newName)
         setPickerForCluster(null)
         await loadTranscript(selectedId)
         await loadEnrolled()
@@ -459,6 +474,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         await window.api.meetings.reassignSegment(selectedId, segmentIndex, newName)
         setPickerForSegment(null)
         setStatusBanner(`Segment ${segmentIndex + 1} → "${newName}".`)
+        // Per-segment reassign also benefits from a re-analyse: the user's
+        // mental model is "I just told the app this voice is Bob, propagate it".
+        // Setting the banner to the new name (replacing, not stacking) keeps
+        // one banner per meeting-session even after multiple reassigns.
+        setLastReassignedSpeaker(newName)
         await loadTranscript(selectedId)
         await refresh()
       } catch (err) {
@@ -505,6 +525,27 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       setStatusBanner(`Re-analyse failed: ${msg}`)
     }
   }, [selectedId, reanalyzeSpeakers])
+
+  /**
+   * One-click cascade from the banner: re-run mt-batch with the meeting's
+   * existing speaker count as the hint so the diarizer keeps the same
+   * cluster count, but with the updated global-DB centroid now in play.
+   * Any cluster matching the renamed speaker's voice will pick up the name
+   * automatically. Falls back to "auto" if speakerCount is unknown.
+   */
+  const onCascadeReanalyze = useCallback(async () => {
+    if (!selectedId || !selectedMeeting) return
+    const hint: number | undefined =
+      selectedMeeting.speakerCount > 0 ? selectedMeeting.speakerCount : undefined
+    setStatusBanner('Re-analysing — keep this window open…')
+    try {
+      const job = await window.api.meetings.reanalyze(selectedId, hint)
+      setReanalyzeJobId(job.jobId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setStatusBanner(`Re-analyse failed: ${msg}`)
+    }
+  }, [selectedId, selectedMeeting])
 
   const onExport = useCallback(
     async (format: ExportFormat) => {
@@ -910,6 +951,52 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 <span className="player-bar__time">
                   {duration > 0 ? formatHHMMSS(duration) : '—'}
                 </span>
+              </div>
+            )}
+
+            {/* ── Cascade banner ──────────────────────────────────────────
+                Shown after a successful cluster rename or per-segment reassign
+                on the currently-selected meeting. One banner per meeting visit:
+                a second reassign updates the speaker name in place rather than
+                stacking. Auto-dismisses on the next successful re-analyse. */}
+            {lastReassignedSpeaker && (
+              <div
+                className="cascade-banner"
+                style={{ borderLeftColor: colorForSpeaker(lastReassignedSpeaker) }}
+                role="status"
+              >
+                <span className="cascade-banner__icon" aria-hidden="true">
+                  ⟳
+                </span>
+                <div className="cascade-banner__body">
+                  <div className="cascade-banner__line">
+                    Updated <strong>&ldquo;{lastReassignedSpeaker}&rdquo;</strong>&apos;s voice
+                    in your enrolled list.
+                  </div>
+                  <div className="cascade-banner__line cascade-banner__line--dim">
+                    Re-analyse this meeting to apply{' '}
+                    <strong>&ldquo;{lastReassignedSpeaker}&rdquo;</strong> everywhere their
+                    voice appears.
+                  </div>
+                </div>
+                <div className="cascade-banner__actions">
+                  <button
+                    type="button"
+                    className="btn btn--small btn--primary"
+                    onClick={() => void onCascadeReanalyze()}
+                    disabled={reanalyzeJobId !== null}
+                  >
+                    {reanalyzeJobId !== null ? 'Re-analysing…' : 'Re-analyse now'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--small"
+                    onClick={() => setLastReassignedSpeaker(null)}
+                    disabled={reanalyzeJobId !== null}
+                  >
+                    Later
+                  </button>
+                </div>
               </div>
             )}
 
