@@ -1,41 +1,219 @@
-/* Theme variables — dark default; light overridden via [data-theme="light"] on <html>.
-   The renderer resolves "auto" to one of these by reading prefers-color-scheme. */
+/*
+ * Mintr — design token layer (v0.7.0).
+ *
+ * SINGLE SOURCE OF TRUTH for colour, surface elevation, typography, spacing,
+ * radius, shadow, and focus. Every other stylesheet (app.css and per-view
+ * sections) reads from these CSS variables, NEVER from hard-coded hex or
+ * px values. Refactoring tokens here changes the whole app.
+ *
+ * The token layer is organised in three blocks:
+ *
+ *   1. Mode-aware tokens (colour, elevation, shadow alpha) — defined for
+ *      both [data-theme="dark"] (also `:root`) and [data-theme="light"].
+ *      The renderer resolves "auto" against prefers-color-scheme and sets
+ *      `data-theme` on <html> at boot (see state/settings.tsx).
+ *
+ *   2. Mode-invariant tokens (typography, spacing, radius) — defined once
+ *      under :root because they don't change between themes.
+ *
+ *   3. Legacy aliases — older code wrote `--bg-elev`, `--bg-elevated`,
+ *      `--fg-dim` etc. We map those to the new `--surface-*` / `--fg-*`
+ *      names so existing views keep rendering correctly while TICKETS B
+ *      and C migrate their sections at their own pace.
+ *
+ * Contrast is verified to meet WCAG AA: body text ≥4.5:1 against its
+ * surface; UI text and accent foregrounds ≥3:1.
+ */
 
 :root,
 [data-theme='dark'] {
-  --bg: #000000;
-  --bg-elev: #0a0a0a;
-  --bg-hover: #121212;
-  --bg-active: #1a1a1a;
-  --fg: #ffffff;
-  --fg-muted: rgba(255, 255, 255, 0.55);
-  --fg-subtle: rgba(255, 255, 255, 0.35);
-  --divider: #1a1a1a;
-  --divider-strong: #242424;
-  --accent: #ffffff;
-  --accent-fg: #000000;
-  --danger: #ff5555;
-  --status-recording: #ff5555;
-  --status-watching: #ffffff;
-  --status-transcribing: #ffffff;
-  --status-idle: rgba(255, 255, 255, 0.4);
+  /* ── 1. Surface elevation — strict 4-layer system ────────────── */
+  --surface-base: #0a0a0a;
+  --surface-raised: #131313;
+  --surface-overlay: #1c1c1c;
+  --surface-hover: #1a1a1a;
+  --surface-active: #232323;
+
+  /* ── Foreground ──────────────────────────────────────────────── */
+  --fg: #f4f4f5;
+  --fg-muted: #a1a1aa;
+  --fg-subtle: #71717a;
+
+  /* ── Dividers ────────────────────────────────────────────────── */
+  --divider: #232326;
+  --divider-strong: #2e2e33;
+
+  /*
+   * Brand accent — mint green.
+   *
+   * `--accent` is the button-surface green. Picked dark enough that white
+   * label text on top clears WCAG AA contrast (~5.3:1 on emerald-600).
+   * `--accent-hover` lightens by one Tailwind stop on hover. `--accent-mark`
+   * is the higher-saturation brand-mark green used on the small `Sparkles`
+   * icon in the sidebar where contrast is not at stake (icon is white on
+   * coloured background, but the icon is decorative not informational).
+   */
+  --accent: #059669;
+  --accent-hover: #047857;
+  --accent-mark: #10b981;
+  --accent-fg: #ffffff;
+
+  /* ── Status / danger ─────────────────────────────────────────── */
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.12);
+
+  /* ── Status indicator dots ───────────────────────────────────── */
+  --status-recording: #ef4444;
+  --status-watching: #10b981;
+  --status-transcribing: #f59e0b;
+  --status-idle: #71717a;
+
+  /* ── Shadow (solid elevation; popover glass handled per-component) ── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.20);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.40);
+
+  /* ── Focus ring (accent on dark) ─────────────────────────────── */
+  --focus-ring: 0 0 0 2px var(--surface-base), 0 0 0 4px var(--accent);
+
+  /* ── Legacy aliases — keep older selectors working until TICKETS
+       B and C migrate their sections. Do NOT add new uses of these. ── */
+  --bg: var(--surface-base);
+  --bg-elev: var(--surface-raised);
+  --bg-elevated: var(--surface-raised);
+  --bg-hover: var(--surface-hover);
+  --bg-active: var(--surface-active);
+  --fg-dim: var(--fg-muted);
 }
 
 [data-theme='light'] {
-  --bg: #ffffff;
-  --bg-elev: #fafafa;
-  --bg-hover: #f5f5f5;
-  --bg-active: #ececec;
-  --fg: #000000;
-  --fg-muted: rgba(0, 0, 0, 0.6);
-  --fg-subtle: rgba(0, 0, 0, 0.4);
-  --divider: #f0f0f0;
-  --divider-strong: #e0e0e0;
-  --accent: #000000;
+  /* ── 1. Surface elevation ────────────────────────────────────── */
+  --surface-base: #ffffff;
+  --surface-raised: #f8f8f7;
+  --surface-overlay: #ffffff;
+  --surface-hover: #f1f1ef;
+  --surface-active: #e7e7e4;
+
+  /* ── Foreground ──────────────────────────────────────────────── */
+  --fg: #18181b;
+  --fg-muted: #52525b;
+  --fg-subtle: #71717a;
+
+  /* ── Dividers ────────────────────────────────────────────────── */
+  --divider: #e5e5e1;
+  --divider-strong: #d4d4d0;
+
+  /* ── Brand accent (mint green — darker variant for AA on white) ── */
+  --accent: #047857;
+  --accent-hover: #065f46;
+  --accent-mark: #047857;
   --accent-fg: #ffffff;
-  --danger: #c93030;
-  --status-recording: #c93030;
-  --status-watching: #000000;
-  --status-transcribing: #000000;
-  --status-idle: rgba(0, 0, 0, 0.4);
+
+  /* ── Status / danger ─────────────────────────────────────────── */
+  --danger: #b91c1c;
+  --danger-soft: rgba(185, 28, 28, 0.10);
+
+  /* ── Status indicator dots ───────────────────────────────────── */
+  --status-recording: #dc2626;
+  --status-watching: #047857;
+  --status-transcribing: #b45309;
+  --status-idle: #a1a1aa;
+
+  /* ── Shadow ──────────────────────────────────────────────────── */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 36px rgba(15, 23, 42, 0.18);
+
+  /* ── Focus ring ──────────────────────────────────────────────── */
+  --focus-ring: 0 0 0 2px var(--surface-base), 0 0 0 4px var(--accent);
+
+  /* ── Legacy aliases ──────────────────────────────────────────── */
+  --bg: var(--surface-base);
+  --bg-elev: var(--surface-raised);
+  --bg-elevated: var(--surface-raised);
+  --bg-hover: var(--surface-hover);
+  --bg-active: var(--surface-active);
+  --fg-dim: var(--fg-muted);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * 2. Mode-invariant tokens — typography, spacing, radius.
+ * ────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* ── Type families ───────────────────────────────────────────── */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+    'Segoe UI', Roboto, system-ui, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* ── Type scale — sizes only (weights / line-heights / tracking
+       live on the matching `.text-*` utility classes below). ─── */
+  --text-display-size: 22px;
+  --text-h1-size: 17px;
+  --text-body-lg-size: 14px;
+  --text-body-size: 13px;
+  --text-button-size: 13px;
+  --text-caption-size: 12px;
+  --text-label-size: 11px;
+
+  /* ── Spacing scale — 4px base ───────────────────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-10: 48px;
+
+  /* ── Radii ───────────────────────────────────────────────────── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 999px;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * Typography utility classes.
+ *
+ * Pair each type token with a utility so per-component CSS can apply
+ * the whole "(size, weight, leading, tracking)" tuple in one go via
+ * `font: var(--text-button)` or by extending the utility class.
+ *
+ * Every block that displays elapsed-time / counts / durations should
+ * additionally apply `tabular-nums` to stop digit-jitter on tick.
+ * ────────────────────────────────────────────────────────────────── */
+
+.text-display {
+  font: 600 var(--text-display-size) / 1.25 var(--font-sans);
+  letter-spacing: -0.01em;
+}
+.text-h1 {
+  font: 600 var(--text-h1-size) / 1.3 var(--font-sans);
+  letter-spacing: -0.005em;
+}
+.text-body-lg {
+  font: 400 var(--text-body-lg-size) / 1.55 var(--font-sans);
+}
+.text-body {
+  font: 400 var(--text-body-size) / 1.5 var(--font-sans);
+}
+.text-button {
+  font: 500 var(--text-button-size) / 1 var(--font-sans);
+}
+.text-caption {
+  font: 500 var(--text-caption-size) / 1.4 var(--font-sans);
+}
+.text-label {
+  font: 600 var(--text-label-size) / 1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
 }

@@ -1,4 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
+import {
+  Home as HomeIcon,
+  Mic,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings as SettingsIcon,
+  Sparkles
+} from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { SettingsProvider, useSettings } from './state/settings'
 import { TagsProvider } from './state/tags'
 import { HomeView } from './views/Home'
@@ -12,8 +21,8 @@ interface NavItem {
   label: string
   subtitle: string
   title: string
-  /** Single-glyph icon shown in both collapsed and expanded modes. */
-  icon: string
+  /** Lucide component rendered at 18px inside the nav-item icon slot. */
+  Icon: LucideIcon
 }
 
 const NAV: NavItem[] = [
@@ -22,21 +31,21 @@ const NAV: NavItem[] = [
     label: 'Home',
     title: 'Home',
     subtitle: 'Record and import audio',
-    icon: '⏺'
+    Icon: HomeIcon
   },
   {
     key: 'meetings',
     label: 'Meetings',
     title: 'Meetings',
     subtitle: 'Past transcripts',
-    icon: '⚏'
+    Icon: Mic
   },
   {
     key: 'settings',
     label: 'Settings',
     title: 'Settings',
     subtitle: 'Preferences and about',
-    icon: '⚙'
+    Icon: SettingsIcon
   }
 ]
 
@@ -85,29 +94,41 @@ function AppShell(): JSX.Element {
           aria-label={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
           title={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
         >
-          <span aria-hidden="true">{collapsed ? '›' : '‹'}</span>
+          {collapsed ? (
+            <PanelLeftOpen size={14} strokeWidth={1.75} aria-hidden="true" />
+          ) : (
+            <PanelLeftClose size={14} strokeWidth={1.75} aria-hidden="true" />
+          )}
         </button>
         <div className="sidebar__brand">
-          <span className="sidebar__brand-mark" />
-          <span className="sidebar__brand-label">Transcriber</span>
+          <span className="sidebar__brand-mark" aria-hidden="true">
+            <Sparkles size={14} strokeWidth={2} />
+          </span>
+          <span className="sidebar__brand-label">Mintr</span>
         </div>
-        <nav className="sidebar__nav">
-          {NAV.map((item) => (
-            <button
-              key={item.key}
-              className={
-                'sidebar__nav-item' + (view === item.key ? ' sidebar__nav-item--active' : '')
-              }
-              onClick={() => setView(item.key)}
-              title={collapsed ? item.label : undefined}
-              aria-label={item.label}
-            >
-              <span className="sidebar__nav-icon" aria-hidden="true">
-                {item.icon}
-              </span>
-              <span className="sidebar__nav-label">{item.label}</span>
-            </button>
-          ))}
+        <nav className="sidebar__nav" aria-label="Primary">
+          {NAV.map((item) => {
+            const { Icon } = item
+            const active = view === item.key
+            return (
+              <button
+                key={item.key}
+                type="button"
+                className={
+                  'sidebar__nav-item' + (active ? ' sidebar__nav-item--active' : '')
+                }
+                onClick={() => setView(item.key)}
+                title={collapsed ? item.label : undefined}
+                aria-label={item.label}
+                aria-current={active ? 'page' : undefined}
+              >
+                <span className="sidebar__nav-icon" aria-hidden="true">
+                  <Icon size={18} strokeWidth={1.75} />
+                </span>
+                <span className="sidebar__nav-label">{item.label}</span>
+              </button>
+            )
+          })}
         </nav>
         <div className="sidebar__footer">
           On-device transcription.
@@ -118,8 +139,10 @@ function AppShell(): JSX.Element {
 
       <main className="content">
         <header className="content__header">
-          <div className="content__title">{current.title}</div>
-          <div className="content__subtitle">{current.subtitle}</div>
+          <div>
+            <div className="content__title">{current.title}</div>
+            <div className="content__subtitle">{current.subtitle}</div>
+          </div>
         </header>
         <div className="content__body">
           {view === 'home' && <HomeView onOpenMeeting={openMeeting} />}

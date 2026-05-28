@@ -258,7 +258,7 @@ export function SettingsView(): JSX.Element {
         <div className="settings__label">About</div>
         <div className="about-block">
           <div className="about-block__row">
-            <span>Meeting Transcriber</span>
+            <span>Mintr</span>
             <span>v{APP_VERSION}</span>
           </div>
           <div className="about-block__row">

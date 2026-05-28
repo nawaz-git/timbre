@@ -1,7 +1,8 @@
 {
-  "name": "meeting-transcriber",
-  "version": "0.6.0",
-  "description": "Meeting Transcriber — Mac desktop app for on-device meeting transcription",
+  "name": "mintr",
+  "productName": "Mintr",
+  "version": "0.7.0",
+  "description": "Mintr — Mac desktop app for on-device meeting transcription.",
   "main": "./out/main/index.js",
   "author": "contact@nawaz.ai",
   "homepage": "https://github.com/nawazpasha/meeting-transcriber",
@@ -22,7 +23,8 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
-    "electron-store": "^10.0.0"
+    "electron-store": "^10.0.0",
+    "lucide-react": "^1.16.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
