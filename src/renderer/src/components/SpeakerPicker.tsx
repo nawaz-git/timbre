@@ -12,6 +12,15 @@ interface SpeakerPickerProps {
   onPick: (name: string) => Promise<void> | void
   /** Called on dismiss. */
   onClose: () => void
+  /**
+   * When true, hide the "Also in this meeting" group and the ✓ current-name
+   * header. Used by the "+ Add speaker" flow where neither makes sense
+   * (there's no current cluster, and listing in-meeting speakers would
+   * just be noise — the caller already filters them out of `enrolled`).
+   */
+  hideInMeetingGroup?: boolean
+  /** Optional placeholder for the new-name input (defaults to "New name…"). */
+  newNamePlaceholder?: string
 }
 
 /**
@@ -26,7 +35,15 @@ interface SpeakerPickerProps {
  *   New name: [______________] Save
  */
 export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
-  const { current, inThisMeeting, enrolled, onPick, onClose } = props
+  const {
+    current,
+    inThisMeeting,
+    enrolled,
+    onPick,
+    onClose,
+    hideInMeetingGroup,
+    newNamePlaceholder
+  } = props
   const [newValue, setNewValue] = useState('')
   const [busy, setBusy] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -67,12 +84,14 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
 
   return (
     <div ref={wrapRef} className="speaker-picker">
-      <div className="speaker-picker__current">
-        <span className="speaker-picker__current-dot">✓</span>
-        <span>{current}</span>
-      </div>
+      {!hideInMeetingGroup && (
+        <div className="speaker-picker__current">
+          <span className="speaker-picker__current-dot">✓</span>
+          <span>{current}</span>
+        </div>
+      )}
 
-      {others.length > 0 && (
+      {!hideInMeetingGroup && others.length > 0 && (
         <>
           <div className="speaker-picker__group-label">Also in this meeting</div>
           {others.map((name) => (
@@ -114,7 +133,7 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
           onKeyDown={(e) => {
             if (e.key === 'Enter') void handlePick(newValue)
           }}
-          placeholder="New name…"
+          placeholder={newNamePlaceholder ?? 'New name…'}
           disabled={busy}
           className="speaker-picker__input"
         />

@@ -43,6 +43,17 @@ const api = {
       newName: string
     ): Promise<{ enrolled: boolean }> =>
       ipcRenderer.invoke(IPC.meetingsRenameSpeaker, meetingId, oldName, newName),
+    reassignSegment: (
+      meetingId: string,
+      segmentIndex: number,
+      newSpeaker: string
+    ): Promise<{ speakerCount: number; newSpeaker: string }> =>
+      ipcRenderer.invoke(IPC.meetingsReassignSegment, meetingId, segmentIndex, newSpeaker),
+    addSpeaker: (
+      meetingId: string,
+      speakerName: string
+    ): Promise<{ additionalSpeakers: string[] }> =>
+      ipcRenderer.invoke(IPC.meetingsAddSpeaker, meetingId, speakerName),
     reanalyze: (meetingId: string, numSpeakers?: number): Promise<BackendJob> =>
       ipcRenderer.invoke(IPC.meetingsReanalyze, meetingId, numSpeakers),
     renameTitle: (meetingId: string, newTitle: string): Promise<{ title: string }> =>

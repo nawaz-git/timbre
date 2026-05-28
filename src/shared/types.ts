@@ -40,6 +40,12 @@ export interface MeetingSummary {
   hasAudio: boolean
   /** Tag IDs applied to this meeting (resolved against the global tag list). */
   tagIds: string[]
+  /**
+   * User-added speakers not auto-detected by diarization. Surfaced here so
+   * the renderer can offer them in the per-segment reassignment picker
+   * without an extra round-trip. Stored on `metadata.json → additionalSpeakers`.
+   */
+  additionalSpeakers: string[]
 }
 
 /** A category label that can be applied to one or more meetings. */
@@ -134,6 +140,8 @@ export const IPC = {
   meetingsOpen: 'meetings:open',
   meetingsTranscript: 'meetings:transcript',
   meetingsRenameSpeaker: 'meetings:renameSpeaker',
+  meetingsReassignSegment: 'meetings:reassignSegment',
+  meetingsAddSpeaker: 'meetings:addSpeaker',
   meetingsReanalyze: 'meetings:reanalyze',
   fileImport: 'file:import',
   backendSpawn: 'backend:spawn',

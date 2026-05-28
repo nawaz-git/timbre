@@ -878,6 +878,19 @@
   font-size: 12px;
   padding-top: 2px;
 }
+.segment-row__speaker-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+/*
+ * The speaker label is its own clickable target — it opens the
+ * per-segment reassignment dropdown without firing the row's seek
+ * action (the segment row stops event propagation on click of this
+ * button). Hover affordance: subtle underline + pointer cursor.
+ */
 .segment-row__speaker {
   font-weight: 600;
   font-size: 13px;
@@ -885,6 +898,38 @@
   overflow: hidden;
   text-overflow: ellipsis;
   padding-top: 1px;
+  background: none;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding-left: 0;
+  padding-right: 0;
+  border-radius: 3px;
+  transition: text-decoration-color 80ms ease, background 80ms ease;
+  text-decoration: underline dotted transparent;
+  text-underline-offset: 3px;
+  max-width: 100%;
+}
+.segment-row__speaker:hover {
+  text-decoration-color: currentColor;
+  background: var(--bg);
+}
+.segment-row__speaker:focus-visible {
+  outline: 1px solid var(--fg);
+  outline-offset: 1px;
+}
+
+/*
+ * Anchor for the SpeakerPicker dropdown that pops out of a segment row.
+ * Positioned absolutely under the speaker label so it doesn't push the
+ * surrounding text around when it opens.
+ */
+.segment-row__picker-anchor {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 50;
 }
 .segment-row__text {
   font-size: 14px;
@@ -1089,6 +1134,40 @@
   font-size: 12px;
   font-family: inherit;
   outline: none;
+}
+
+/*
+ * "+ Add speaker" button on the Speakers tab. Dashed border distinguishes
+ * it from real speaker pills so the action affordance is unambiguous.
+ */
+.add-speaker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px dashed var(--divider-strong);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.add-speaker-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
+/*
+ * Variant for manually-added speakers (not auto-detected). Dashed border
+ * mirrors the add-button so they read as "user-added" at a glance.
+ */
+.speaker-pill--added {
+  border-style: dashed !important;
+  opacity: 0.85;
+  cursor: default;
 }
 
 /* ── Export grid ───────────────────────────────────────────── */

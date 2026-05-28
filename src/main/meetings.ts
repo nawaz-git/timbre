@@ -100,6 +100,12 @@ interface MetadataFile {
   title?: string
   /** Tag ids applied to this meeting. */
   tags?: string[]
+  /**
+   * Speakers the user explicitly added to this meeting (people who were
+   * present but not auto-detected by diarization). Surfaced in the
+   * per-segment reassignment picker.
+   */
+  additionalSpeakers?: string[]
 }
 
 interface TranscriptJSON {
@@ -143,7 +149,10 @@ async function listPerFolderMeetings(root: string): Promise<MeetingSummary[]> {
       speakerCount:
         transcriptJson?.speakerCount ?? speakers?.length ?? metadata?.speakerCount ?? 0,
       hasAudio,
-      tagIds: Array.isArray(metadata?.tags) ? metadata.tags : []
+      tagIds: Array.isArray(metadata?.tags) ? metadata.tags : [],
+      additionalSpeakers: Array.isArray(metadata?.additionalSpeakers)
+        ? metadata.additionalSpeakers
+        : []
     })
   }
   return results
@@ -188,7 +197,8 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       durationSeconds: 0, // engine doesn't write duration sidecar; left as 0
       speakerCount: 0, // engine doesn't write speakers sidecar; left as 0
       hasAudio: false, // engine recordings live in ../recordings/ with different naming
-      tagIds: []
+      tagIds: [],
+      additionalSpeakers: []
     })
   }
   return results
@@ -482,6 +492,145 @@ export async function renameMeetingTitle(
   return {
     title: existing.title?.trim() ? existing.title : titleFromFolderName(folderId)
   }
+}
+
+/**
+ * Reassign the speaker of a SINGLE transcript segment — used by the
+ * per-segment dropdown in the Transcript tab. Unlike
+ * `renameSpeakerInMeeting`, this does NOT touch the cluster: other
+ * segments sharing the old speaker name stay as they were. Useful for
+ * fixing one-off diarization misses where a single utterance was tagged
+ * to the wrong speaker.
+ *
+ * The `transcript.txt` patch is identified by zero-based index over the
+ * `[HH:MM:SS] {anyName}:` line matches, NOT by global regex replacement
+ * — speaker names can repeat in transcript bodies and we MUST only
+ * rewrite the target line's name.
+ */
+export async function reassignSegmentSpeaker(
+  outputFolder: string,
+  meetingId: string,
+  segmentIndex: number,
+  newSpeaker: string
+): Promise<{ speakerCount: number; newSpeaker: string }> {
+  const trimmed = newSpeaker.trim()
+  if (!trimmed) throw new Error('New speaker name must not be empty')
+  if (!Number.isInteger(segmentIndex) || segmentIndex < 0) {
+    throw new Error(`Invalid segment index: ${segmentIndex}`)
+  }
+  if (meetingId.startsWith('engine:')) {
+    throw new Error(
+      'Live-recording meetings cannot be reassigned from the Electron UI yet — only file-imported meetings carry the per-segment structure.'
+    )
+  }
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${meetingId}`)
+  }
+  const folder = join(outputFolder, folderId)
+
+  // 1. Patch transcript.json — flip just this one segment's speaker.
+  const jsonPath = join(folder, 'transcript.json')
+  interface TJSON {
+    segments?: Array<{ speaker?: string; start?: number; end?: number; text?: string }>
+    speakerCount?: number
+    [k: string]: unknown
+  }
+  let parsed: TJSON
+  try {
+    const raw = await fs.readFile(jsonPath, 'utf-8')
+    parsed = JSON.parse(raw) as TJSON
+  } catch {
+    throw new Error(`transcript.json missing for meeting ${meetingId}`)
+  }
+  if (!parsed.segments || segmentIndex >= parsed.segments.length) {
+    throw new Error(
+      `Segment index ${segmentIndex} out of range (transcript has ${parsed.segments?.length ?? 0} segments)`
+    )
+  }
+  parsed.segments[segmentIndex].speaker = trimmed
+  // Recompute distinct speaker count so the list view stays accurate.
+  const distinct = new Set<string>()
+  for (const seg of parsed.segments) {
+    if (typeof seg.speaker === 'string' && seg.speaker.length > 0) distinct.add(seg.speaker)
+  }
+  parsed.speakerCount = distinct.size
+  await fs.writeFile(jsonPath, JSON.stringify(parsed, null, 2), 'utf-8')
+
+  // 2. Patch transcript.txt by line index — find the Nth `[HH:MM:SS] X:`
+  //    line and replace ONLY its speaker name. Lines without that prefix
+  //    (blank lines, wrapped text, etc.) are passed through unchanged.
+  const txtPath = join(folder, 'transcript.txt')
+  try {
+    const raw = await fs.readFile(txtPath, 'utf-8')
+    const lines = raw.split('\n')
+    // Capture: 1=timestamp bracket, 2=space, 3=name (lazy up to colon), 4=rest
+    const lineRe = /^(\[\d\d:\d\d:\d\d\])(\s+)([^:\n]+?)(:.*)$/
+    let matched = -1
+    for (let i = 0; i < lines.length; i++) {
+      if (lineRe.test(lines[i])) {
+        matched++
+        if (matched === segmentIndex) {
+          lines[i] = lines[i].replace(lineRe, `$1$2${trimmed}$4`)
+          break
+        }
+      }
+    }
+    if (matched >= segmentIndex) {
+      await fs.writeFile(txtPath, lines.join('\n'), 'utf-8')
+    }
+    // If matched < segmentIndex the .txt is out of sync with the .json
+    // (e.g. legacy partial output) — the .json patch above is the source
+    // of truth for the UI, so we silently skip.
+  } catch {
+    // transcript.txt may not exist on partial outputs — non-fatal.
+  }
+
+  return { speakerCount: distinct.size, newSpeaker: trimmed }
+}
+
+/**
+ * Append a user-added speaker to a meeting's `metadata.json →
+ * additionalSpeakers`. De-duped, trimmed, empty-rejecting. These names
+ * surface in the per-segment reassignment picker so users can tag people
+ * who were present but missed by auto-diarization.
+ */
+export async function addSpeakerToMeeting(
+  outputFolder: string,
+  meetingId: string,
+  speakerName: string
+): Promise<{ additionalSpeakers: string[] }> {
+  const trimmed = speakerName.trim()
+  if (!trimmed) throw new Error('Speaker name must not be empty')
+  if (meetingId.startsWith('engine:')) {
+    throw new Error(
+      'Live-recording meetings cannot have additional speakers added from the Electron UI yet.'
+    )
+  }
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${meetingId}`)
+  }
+  const folder = join(outputFolder, folderId)
+  const metaPath = join(folder, 'metadata.json')
+  const existing = (await safeReadJson<MetadataFile>(metaPath)) ?? {}
+  const current = Array.isArray(existing.additionalSpeakers) ? existing.additionalSpeakers : []
+  // De-dupe while preserving original order; trim each entry.
+  const seen = new Set<string>()
+  const merged: string[] = []
+  for (const n of [...current, trimmed]) {
+    const v = typeof n === 'string' ? n.trim() : ''
+    if (!v || seen.has(v)) continue
+    seen.add(v)
+    merged.push(v)
+  }
+  existing.additionalSpeakers = merged
+  await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+  return { additionalSpeakers: merged }
 }
 
 // ─── Export helpers ─────────────────────────────────────────────────────
