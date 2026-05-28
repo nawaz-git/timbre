@@ -16,6 +16,18 @@ export interface Settings {
    * Surfaced in Settings → Output and via the tray menu.
    */
   autoStartWatching: boolean
+  // ── TICKET-UI-003 / TICKET-IPC-002 merge region (onboarding) ──────────
+  // Added by the renderer lane so typecheck passes standalone. The IPC
+  // lane (TICKET-IPC-002) owns the canonical definition — if both branches
+  // add this field, keep ONE copy when merging (identical shape, no
+  // conflict expected).
+  /**
+   * Epoch ms when the user finished (or skipped) the first-run onboarding
+   * wizard. `undefined` => never onboarded => App.tsx mounts the wizard
+   * instead of the normal shell. Cleared by `onboarding.reset()`.
+   */
+  onboardingCompletedAt?: number
+  // ── end TICKET-UI-003 / TICKET-IPC-002 merge region ───────────────────
 }
 
 export type RecordingState = 'idle' | 'watching' | 'recording' | 'transcribing'
@@ -296,3 +308,41 @@ export interface CaptureWatchdogSignal {
   /** Wall-clock ms when the signal flipped. UI uses this to render time-since. */
   firedAt?: number
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// TICKET-UI-003 / TICKET-IPC-002 merge region — onboarding contract types
+//
+// These types are the contract the onboarding wizard codes against. The IPC
+// lane (TICKET-IPC-002) is the canonical owner of these definitions and also
+// adds them to this file. They are duplicated here so the renderer lane
+// (TICKET-UI-003) typechecks standalone. When the two branches merge, KEEP
+// ONE copy of each — the shapes are intended to be identical, so a textual
+// dedupe is the only resolution needed (no semantic conflict).
+// ════════════════════════════════════════════════════════════════════════
+
+/** The three TCC services the bundled MintrEngine helper needs granted. */
+export type OnboardingService = 'screen-recording' | 'microphone' | 'accessibility'
+
+/**
+ * Per-service grant state from the helper's point of view. `not-determined`
+ * means the OS has never been asked (yellow chip); `denied` is an explicit
+ * "Don't Allow" (red); `granted` is good (green); `unknown` is a query
+ * failure treated as neutral by the UI.
+ */
+export type GrantStatus = 'granted' | 'denied' | 'not-determined' | 'unknown'
+
+/**
+ * Snapshot of the bundled helper's permission state, returned by
+ * `window.api.onboarding.probe()`. `watchLoopRunning` is the engine-health
+ * signal the wizard waits for after a restart-and-verify.
+ */
+export interface HelperPermissionSnapshot {
+  screenRecording: GrantStatus
+  microphone: GrantStatus
+  accessibility: GrantStatus
+  /** True once the helper's capture watch-loop is confirmed alive. */
+  watchLoopRunning: boolean
+}
+// ════════════════════════════════════════════════════════════════════════
+// end TICKET-UI-003 / TICKET-IPC-002 merge region
+// ════════════════════════════════════════════════════════════════════════
