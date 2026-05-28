@@ -526,22 +526,36 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
             {recent.map((m) => (
               <button
                 key={m.id}
-                className="recent-card"
+                className={'recent-card' + (m.isLive ? ' recent-card--live' : '')}
                 onClick={() => onOpenMeeting(m.id)}
                 title={m.title}
               >
-                <div className="recent-card__title">{m.title}</div>
-                <div className="recent-card__meta">
-                  <span>{formatDate(m.date)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span className="recent-card__meta-duration">
-                    {formatDuration(m.durationSeconds)}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
-                  </span>
+                <div className="recent-card__title">
+                  <span className="recent-card__title-text">{m.title}</span>
+                  {m.isLive && (
+                    <span className="recent-card__live-badge" aria-label="Recording in progress">
+                      <span className="recent-card__live-dot" aria-hidden="true" />
+                      <span>LIVE</span>
+                    </span>
+                  )}
                 </div>
+                {m.isLive ? (
+                  <div className="recent-card__meta recent-card__meta--live">
+                    Recording in progress — full transcript will appear when meeting ends.
+                  </div>
+                ) : (
+                  <div className="recent-card__meta">
+                    <span>{formatDate(m.date)}</span>
+                    <span aria-hidden="true">·</span>
+                    <span className="recent-card__meta-duration">
+                      {formatDuration(m.durationSeconds)}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span>
+                      {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
+                    </span>
+                  </div>
+                )}
                 {m.tagIds.length > 0 && (
                   <div className="recent-card__tags">
                     {m.tagIds.map((id) => {
