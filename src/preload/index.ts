@@ -90,7 +90,9 @@ const api = {
       sizeBytes?: number
     }> => ipcRenderer.invoke(IPC.meetingsExportPreview, meetingId, format, title),
     setTags: (meetingId: string, tagIds: string[]): Promise<{ tagIds: string[] }> =>
-      ipcRenderer.invoke(IPC.meetingsSetTags, meetingId, tagIds)
+      ipcRenderer.invoke(IPC.meetingsSetTags, meetingId, tagIds),
+    delete: (meetingId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.meetingsDelete, meetingId)
   },
   speakers: {
     list: (): Promise<EnrolledSpeaker[]> => ipcRenderer.invoke(IPC.speakersList),

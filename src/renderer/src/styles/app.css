@@ -3233,6 +3233,58 @@
  * Item list uses the same chevron-less single-line pattern as the
  * speaker picker for visual unity. */
 
+/* Per-row overflow (⋮) menu — same positioning + surface language as
+   .tag-picker, with a compact action list (Edit title / Edit tags / Delete). */
+.row-menu {
+  position: fixed;
+  min-width: 180px;
+  background: var(--surface-overlay, var(--bg-elevated, var(--bg-elev)));
+  border: 1px solid var(--divider-strong);
+  border-radius: var(--radius-lg, 10px);
+  box-shadow:
+    var(--shadow-lg, 0 12px 36px rgba(0, 0, 0, 0.32)),
+    0 0 0 1px rgba(0, 0, 0, 0.04);
+  padding: var(--space-2, 8px) 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  animation: tag-picker-in 120ms ease-out;
+}
+.row-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body-size, 13px);
+  text-align: left;
+  cursor: pointer;
+  transition: background 80ms ease, color 80ms ease;
+}
+.row-menu__item:hover {
+  background: var(--surface-hover, var(--bg-hover));
+}
+.row-menu__item:focus-visible {
+  outline: none;
+  background: var(--surface-hover, var(--bg-hover));
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.row-menu__icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+}
+.row-menu__item--danger,
+.row-menu__item--danger .row-menu__icon {
+  color: var(--danger, #ef4444);
+}
+.row-menu__item--danger:hover {
+  background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
+}
+
 .tag-picker {
   /* Positioned with `position: fixed` against the trigger icon's
      viewport-space getBoundingClientRect, so the popover escapes the

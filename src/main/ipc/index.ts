@@ -30,6 +30,7 @@ import {
 } from '../backend'
 import {
   addSpeakerToMeeting,
+  deleteMeeting,
   exportMeeting,
   previewExportMeeting,
   listMeetings,
@@ -333,6 +334,11 @@ export function registerIpcHandlers(): void {
       return setMeetingTags(settings.outputFolder, meetingId, tagIds)
     }
   )
+
+  ipcMain.handle(IPC.meetingsDelete, async (_event, meetingId: string): Promise<void> => {
+    const settings = await readSettings()
+    return deleteMeeting(settings.outputFolder, meetingId)
+  })
 
   // ── system:* — tray + permissions surface ─────────────────────────────
   // These are the channels the new Home banner + the tray menu hit. They

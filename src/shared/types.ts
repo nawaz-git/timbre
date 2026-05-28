@@ -186,6 +186,7 @@ export const IPC = {
   meetingsExport: 'meetings:export',
   meetingsExportPreview: 'meetings:exportPreview',
   meetingsSetTags: 'meetings:setTags',
+  meetingsDelete: 'meetings:delete',
   tagsList: 'tags:list',
   tagsAdd: 'tags:add',
   tagsUpdate: 'tags:update',

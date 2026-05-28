@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs'
 import { homedir } from 'os'
-import { basename, join } from 'path'
+import { basename, dirname, join } from 'path'
 import type {
   MeetingSummary,
   MeetingTranscript,
@@ -228,6 +228,54 @@ async function listPerFolderMeetings(root: string): Promise<MeetingSummary[]> {
  * meeting-transcriber-style: `<root>/protocols/YYYYMMDD_HHmm_<slug>.{txt,md}`
  * plus `<root>/recordings/YYYYMMDD_HHmm_<slug>_app.wav` etc.
  */
+/**
+ * Sidecar that stores the user-set title + tags for an engine (live-recording)
+ * meeting. Engine recordings are flat files (no per-meeting folder), so we keep
+ * a `<prefix>.meta.json` next to the protocol `.txt`. Only `.txt` files are
+ * treated as meetings by the lister, so this sidecar never shows up as a phantom
+ * meeting. Mirrors the `metadata.json` mechanism used for imported folders.
+ */
+function engineMetaPath(prefix: string): string {
+  return join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.meta.json`)
+}
+
+/**
+ * Resolve the metadata-file path for a meeting id, abstracting over the two
+ * backing stores: engine recordings → `protocols/<prefix>.meta.json`; imported
+ * folders → `<outputFolder>/<folder>/metadata.json`. Throws for `live:` ids
+ * (no file on disk yet) and malformed ids.
+ */
+function engineOrFolderMetaPath(outputFolder: string, meetingId: string): string {
+  if (meetingId.startsWith('live:')) {
+    throw new Error('A live recording in progress has not been saved yet — try again once it ends.')
+  }
+  if (meetingId.startsWith('engine:')) {
+    const prefix = meetingId.slice('engine:'.length)
+    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
+      throw new Error(`Invalid engine prefix: ${prefix}`)
+    }
+    return engineMetaPath(prefix)
+  }
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${meetingId}`)
+  }
+  return join(outputFolder, folderId, 'metadata.json')
+}
+
+/** Filename-derived fallback title for a meeting id (when no user-set title). */
+function fallbackTitleForId(meetingId: string): string {
+  if (meetingId.startsWith('engine:')) {
+    return titleFromEnginePrefix(meetingId.slice('engine:'.length))
+  }
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  return titleFromFolderName(folderId)
+}
+
 async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]> {
   const protocolsDir = join(root, 'protocols')
   let entries: string[]
@@ -268,15 +316,18 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       }
     }
 
+    // User-set title/tags live in the sidecar (written by renameMeetingTitle /
+    // setMeetingTags). Fall back to the filename-derived title and no tags.
+    const meta = await safeReadJson<MetadataFile>(engineMetaPath(prefix))
     results.push({
       id: `engine:${prefix}`,
-      title: titleFromEnginePrefix(prefix),
+      title: meta?.title?.trim() ? meta.title : titleFromEnginePrefix(prefix),
       folderPath: protocolsDir,
       date: stat.mtime.toISOString(),
       durationSeconds,
       speakerCount,
       hasAudio: audioPath !== null,
-      tagIds: [],
+      tagIds: Array.isArray(meta?.tags) ? meta.tags : [],
       additionalSpeakers: []
     })
   }
@@ -576,21 +627,12 @@ export async function setMeetingTags(
   meetingId: string,
   tagIds: string[]
 ): Promise<{ tagIds: string[] }> {
-  if (meetingId.startsWith('engine:')) {
-    throw new Error('Live-recording meetings cannot be tagged from the Electron UI yet.')
-  }
-  const folderId = meetingId.startsWith('imported:')
-    ? meetingId.slice('imported:'.length)
-    : meetingId
-  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
-    throw new Error(`Invalid meeting id: ${meetingId}`)
-  }
-  const folder = join(outputFolder, folderId)
-  const metaPath = join(folder, 'metadata.json')
-  const existing = (await safeReadJson<MetadataFile>(metaPath)) ?? {}
   // De-dupe + reject empties.
   const clean = Array.from(new Set(tagIds.filter((t) => typeof t === 'string' && t.length > 0)))
+  const metaPath = engineOrFolderMetaPath(outputFolder, meetingId)
+  const existing = (await safeReadJson<MetadataFile>(metaPath)) ?? {}
   existing.tags = clean
+  await fs.mkdir(dirname(metaPath), { recursive: true })
   await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
   return { tagIds: clean }
 }
@@ -605,8 +647,57 @@ export async function renameMeetingTitle(
   meetingId: string,
   newTitle: string
 ): Promise<{ title: string }> {
+  const trimmed = newTitle.trim()
+  const metaPath = engineOrFolderMetaPath(outputFolder, meetingId)
+  const existing = (await safeReadJson<MetadataFile>(metaPath)) ?? {}
+  if (trimmed) {
+    existing.title = trimmed
+  } else {
+    delete existing.title
+  }
+  await fs.mkdir(dirname(metaPath), { recursive: true })
+  await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+  return {
+    title: existing.title?.trim() ? existing.title : fallbackTitleForId(meetingId)
+  }
+}
+
+/**
+ * Permanently delete a meeting and all its on-disk files.
+ *   - `engine:<prefix>` → removes `protocols/<prefix>.{txt,md,meta.json}` and
+ *     every `recordings/<prefix>*` sidecar (mix/mic/app WAVs, 16k, segments,
+ *     naming).
+ *   - `imported:<folder>` → removes the whole meeting folder.
+ *   - `live:*` → refused (stop the recording first).
+ * Idempotent: missing files are ignored (`force: true`).
+ */
+export async function deleteMeeting(outputFolder: string, meetingId: string): Promise<void> {
+  if (meetingId.startsWith('live:')) {
+    throw new Error('Stop the live recording before deleting it.')
+  }
   if (meetingId.startsWith('engine:')) {
-    throw new Error('Live-recording meetings cannot be renamed from the Electron UI yet.')
+    const prefix = meetingId.slice('engine:'.length)
+    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
+      throw new Error(`Invalid engine prefix: ${prefix}`)
+    }
+    const protocolsDir = join(ENGINE_DEFAULT_ROOT, 'protocols')
+    await Promise.all(
+      ['txt', 'md', 'meta.json'].map((ext) =>
+        fs.rm(join(protocolsDir, `${prefix}.${ext}`), { force: true })
+      )
+    )
+    const recordingsDir = join(ENGINE_DEFAULT_ROOT, 'recordings')
+    try {
+      const files = await fs.readdir(recordingsDir)
+      await Promise.all(
+        files
+          .filter((f) => f.startsWith(prefix))
+          .map((f) => fs.rm(join(recordingsDir, f), { force: true }))
+      )
+    } catch {
+      // recordings dir may not exist (e.g. protocol-only meeting) — nothing to do.
+    }
+    return
   }
   const folderId = meetingId.startsWith('imported:')
     ? meetingId.slice('imported:'.length)
@@ -614,19 +705,7 @@ export async function renameMeetingTitle(
   if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
     throw new Error(`Invalid meeting id: ${meetingId}`)
   }
-  const trimmed = newTitle.trim()
-  const folder = join(outputFolder, folderId)
-  const metaPath = join(folder, 'metadata.json')
-  const existing = (await safeReadJson<MetadataFile>(metaPath)) ?? {}
-  if (trimmed) {
-    existing.title = trimmed
-  } else {
-    delete existing.title
-  }
-  await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
-  return {
-    title: existing.title?.trim() ? existing.title : titleFromFolderName(folderId)
-  }
+  await fs.rm(join(outputFolder, folderId), { recursive: true, force: true })
 }
 
 /**

@@ -9,17 +9,20 @@ import {
   FileText,
   Filter,
   Inbox,
+  MoreVertical,
   Pause,
   Play,
   RefreshCw,
   SkipBack,
   SkipForward,
   Subtitles,
-  Tag as TagIcon
+  Tag as TagIcon,
+  Trash2
 } from 'lucide-react'
 import { formatDate, formatDuration } from '../state/format'
 import { useTags } from '../state/tags'
 import { PencilIcon } from '../components/PencilIcon'
+import { RowMenu } from '../components/RowMenu'
 import { SpeakerPicker } from '../components/SpeakerPicker'
 import { TagPicker } from '../components/TagPicker'
 import type {
@@ -191,6 +194,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // viewport coords (it lives outside the list's scroll container).
   const [tagPickerForRowId, setTagPickerForRowId] = useState<string | null>(null)
   const [tagPickerAnchor, setTagPickerAnchor] = useState<HTMLElement | null>(null)
+
+  // Per-row overflow (⋮) menu — id of the row whose kebab menu is open, plus
+  // its anchor button. The menu hosts Edit title / Edit tags / Delete; opening
+  // "Edit tags" hands the same anchor to the TagPicker.
+  const [rowMenuForId, setRowMenuForId] = useState<string | null>(null)
+  const [rowMenuAnchor, setRowMenuAnchor] = useState<HTMLElement | null>(null)
 
   // Speaker picker — which cluster name is open?
   const [pickerForCluster, setPickerForCluster] = useState<string | null>(null)
@@ -670,6 +679,28 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     }
   }, [rowEditingId, rowEditingValue, meetings, refresh])
 
+  const onDeleteMeeting = useCallback(
+    async (m: MeetingSummary) => {
+      const ok = window.confirm(
+        `Delete "${m.title}"?\n\nThis permanently removes its transcript and recording from disk. This can't be undone.`
+      )
+      if (!ok) return
+      try {
+        await window.api.meetings.delete(m.id)
+        // If the deleted meeting was open in the detail pane, clear it.
+        if (selectedId === m.id) {
+          setSelectedId(null)
+          setTranscript(null)
+        }
+        await refresh()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setStatusBanner(`Delete failed: ${msg}`)
+      }
+    },
+    [selectedId, refresh]
+  )
+
   const onPickSpeaker = useCallback(
     async (clusterName: string, newName: string) => {
       if (!selectedId) return
@@ -918,9 +949,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           {!loading &&
             filteredMeetings.map((m) => {
               const isEditing = rowEditingId === m.id
-              // TICKET-001: live placeholder rows are in-memory and
-              // can't be renamed (no metadata.json yet) or tagged.
-              const canRename = !m.id.startsWith('engine:') && !m.isLive
+              // Live placeholder rows are in-memory (no file on disk yet), so
+              // they carry no actions menu — only saved meetings do.
               return (
                 <div
                   key={m.id}
@@ -982,22 +1012,25 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                             type="button"
                             className={
                               'meetings__row-action' +
-                              (tagPickerForRowId === m.id
+                              (rowMenuForId === m.id || tagPickerForRowId === m.id
                                 ? ' meetings__row-action--open'
                                 : '')
                             }
-                            aria-label="Apply tags"
-                            title="Apply tags"
-                            aria-haspopup="dialog"
-                            aria-expanded={tagPickerForRowId === m.id}
+                            aria-label="Meeting actions"
+                            title="Meeting actions"
+                            aria-haspopup="menu"
+                            aria-expanded={rowMenuForId === m.id}
                             onClick={(e) => {
                               e.stopPropagation()
-                              if (tagPickerForRowId === m.id) {
-                                setTagPickerForRowId(null)
-                                setTagPickerAnchor(null)
+                              // Any open tag popover closes when the menu opens.
+                              setTagPickerForRowId(null)
+                              setTagPickerAnchor(null)
+                              if (rowMenuForId === m.id) {
+                                setRowMenuForId(null)
+                                setRowMenuAnchor(null)
                               } else {
-                                setTagPickerForRowId(m.id)
-                                setTagPickerAnchor(e.currentTarget)
+                                setRowMenuForId(m.id)
+                                setRowMenuAnchor(e.currentTarget)
                               }
                             }}
                             onKeyDown={(e) => {
@@ -1006,8 +1039,56 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                               }
                             }}
                           >
-                            <TagIcon size={14} strokeWidth={2} aria-hidden="true" />
+                            <MoreVertical size={15} strokeWidth={2} aria-hidden="true" />
                           </button>
+                          {rowMenuForId === m.id && (
+                            <RowMenu
+                              anchorEl={rowMenuAnchor}
+                              onClose={() => {
+                                setRowMenuForId(null)
+                                setRowMenuAnchor(null)
+                              }}
+                              items={[
+                                {
+                                  key: 'rename',
+                                  label: 'Edit title',
+                                  icon: <PencilIcon size={13} />,
+                                  onSelect: () => {
+                                    setRowMenuForId(null)
+                                    setRowMenuAnchor(null)
+                                    beginRowRename(m)
+                                  }
+                                },
+                                {
+                                  key: 'tags',
+                                  label: 'Edit tags',
+                                  icon: (
+                                    <TagIcon size={13} strokeWidth={2} aria-hidden="true" />
+                                  ),
+                                  onSelect: () => {
+                                    // Hand the kebab button to the TagPicker as
+                                    // its anchor, then close the menu.
+                                    setTagPickerForRowId(m.id)
+                                    setTagPickerAnchor(rowMenuAnchor)
+                                    setRowMenuForId(null)
+                                  }
+                                },
+                                {
+                                  key: 'delete',
+                                  label: 'Delete meeting',
+                                  icon: (
+                                    <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
+                                  ),
+                                  danger: true,
+                                  onSelect: () => {
+                                    setRowMenuForId(null)
+                                    setRowMenuAnchor(null)
+                                    void onDeleteMeeting(m)
+                                  }
+                                }
+                              ]}
+                            />
+                          )}
                           {tagPickerForRowId === m.id && (
                             <TagPicker
                               allTags={allTags}
@@ -1023,27 +1104,6 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                             />
                           )}
                         </div>
-                        {canRename && (
-                          <button
-                            type="button"
-                            className="meetings__row-action"
-                            aria-label="Rename meeting"
-                            title="Rename meeting"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              beginRowRename(m)
-                            }}
-                            onKeyDown={(e) => {
-                              // Stop bubbling so the row's keydown handler
-                              // doesn't also fire "open meeting" on Enter/Space.
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.stopPropagation()
-                              }
-                            }}
-                          >
-                            <PencilIcon size={14} />
-                          </button>
-                        )}
                       </div>
                     )}
                   </div>
@@ -1531,7 +1591,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     statusBanner.startsWith('Export failed') ||
                     statusBanner.startsWith('Tag update failed') ||
                     statusBanner.startsWith('Reassign failed') ||
-                    statusBanner.startsWith('Add speaker failed')
+                    statusBanner.startsWith('Add speaker failed') ||
+                    statusBanner.startsWith('Delete failed')
                       ? 'var(--danger, #ef4444)'
                       : undefined
                 }}
