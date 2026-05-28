@@ -10,7 +10,8 @@ import type {
   MeetingSummary,
   MeetingTranscript,
   RecordingStatus,
-  Settings
+  Settings,
+  TagDef
 } from '../shared/types'
 
 /**
@@ -51,11 +52,21 @@ const api = {
       format: ExportFormat,
       title: string
     ): Promise<{ savedTo?: string; canceled?: boolean }> =>
-      ipcRenderer.invoke(IPC.meetingsExport, meetingId, format, title)
+      ipcRenderer.invoke(IPC.meetingsExport, meetingId, format, title),
+    setTags: (meetingId: string, tagIds: string[]): Promise<{ tagIds: string[] }> =>
+      ipcRenderer.invoke(IPC.meetingsSetTags, meetingId, tagIds)
   },
   speakers: {
     list: (): Promise<EnrolledSpeaker[]> => ipcRenderer.invoke(IPC.speakersList),
     delete: (name: string): Promise<void> => ipcRenderer.invoke(IPC.speakersDelete, name)
+  },
+  tags: {
+    list: (): Promise<TagDef[]> => ipcRenderer.invoke(IPC.tagsList),
+    add: (name: string, color: string): Promise<TagDef> =>
+      ipcRenderer.invoke(IPC.tagsAdd, name, color),
+    update: (id: string, patch: { name?: string; color?: string }): Promise<TagDef> =>
+      ipcRenderer.invoke(IPC.tagsUpdate, id, patch),
+    delete: (id: string): Promise<void> => ipcRenderer.invoke(IPC.tagsDelete, id)
   },
   file: {
     import: (): Promise<ImportResult> => ipcRenderer.invoke(IPC.fileImport)

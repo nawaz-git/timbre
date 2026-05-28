@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRecordingStatus } from '../state/recording'
 import { useSettings } from '../state/settings'
-import { formatDuration } from '../state/format'
+import { useTags } from '../state/tags'
+import { formatDate, formatDuration } from '../state/format'
 import type {
   BackendEvent,
-  NumSpeakersHint,
+  MeetingSummary,
   RecordingState,
   SpeakerMatch
 } from '../../../shared/types'
@@ -23,12 +24,6 @@ const HEADLINE: Record<RecordingState, string> = {
   transcribing: 'Transcribing audio.'
 }
 
-const NUM_SPEAKERS_OPTIONS: NumSpeakersHint[] = ['auto', 2, 3, 4, 5, 6]
-
-function labelForNumSpeakers(v: NumSpeakersHint): string {
-  return v === 'auto' ? 'Auto' : `${v} speakers`
-}
-
 interface JobBanner {
   jobId: string
   filePath: string
@@ -38,13 +33,35 @@ interface JobBanner {
   matches?: SpeakerMatch[]
 }
 
-export function HomeView(): JSX.Element {
-  const { settings, setSettings } = useSettings()
+interface HomeViewProps {
+  onOpenMeeting: (id: string) => void
+}
+
+export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
+  const { settings } = useSettings()
+  const { byId: tagById } = useTags()
   const { status, start, stop } = useRecordingStatus()
   const [banner, setBanner] = useState<JobBanner | null>(null)
+  const [recent, setRecent] = useState<MeetingSummary[]>([])
+
+  const loadRecent = useCallback(async () => {
+    try {
+      const list = await window.api.meetings.list()
+      setRecent(list.slice(0, 5))
+    } catch (err) {
+      console.error('Failed to load recent meetings', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadRecent()
+  }, [loadRecent])
 
   useEffect(() => {
     const unsub = window.api.backend.onEvent((ev: BackendEvent) => {
+      if (ev.event === 'done') {
+        void loadRecent()
+      }
       setBanner((current) => {
         if (!current || current.jobId !== ev.jobId) return current
         switch (ev.event) {
@@ -80,7 +97,7 @@ export function HomeView(): JSX.Element {
       })
     })
     return unsub
-  }, [])
+  }, [loadRecent])
 
   const onToggleWatch = useCallback(async () => {
     if (status.state === 'idle') await start()
@@ -105,7 +122,7 @@ export function HomeView(): JSX.Element {
       jobId: job.jobId,
       filePath: result.filePath,
       phase: 'queued',
-      message: 'Queued for transcription…'
+      message: 'Queued for transcription. Speaker count is auto-detected — if the result looks wrong, open the meeting and use "Re-analyse…" with an explicit count.'
     })
   }, [settings])
 
@@ -128,12 +145,9 @@ export function HomeView(): JSX.Element {
     (status.state === 'transcribing' ||
       (banner !== null && banner.phase !== 'done' && banner.phase !== 'error'))
 
-  const onChangeNumSpeakers = useCallback(
-    async (v: NumSpeakersHint) => {
-      if (!settings) return
-      await setSettings({ numSpeakers: v })
-    },
-    [settings, setSettings]
+  const recognised = useMemo(
+    () => banner?.matches?.filter((m) => m.enrolled) ?? [],
+    [banner]
   )
 
   return (
@@ -182,39 +196,6 @@ export function HomeView(): JSX.Element {
           </button>
         </div>
 
-        {settings && (
-          <div className="num-speakers-row" style={{ marginTop: 12 }}>
-            <span style={{ color: 'var(--fg-dim)', fontSize: 13 }}>Speaker count for next import:</span>
-            <select
-              value={String(settings.numSpeakers)}
-              onChange={(e) => {
-                const raw = e.target.value
-                const v: NumSpeakersHint = raw === 'auto' ? 'auto' : (Number(raw) as NumSpeakersHint)
-                void onChangeNumSpeakers(v)
-              }}
-              className="num-speakers-select"
-              style={{
-                background: 'var(--bg-elevated)',
-                color: 'var(--fg)',
-                border: '1px solid var(--divider)',
-                borderRadius: 6,
-                padding: '4px 8px',
-                fontSize: 13,
-                marginLeft: 8
-              }}
-            >
-              {NUM_SPEAKERS_OPTIONS.map((opt) => (
-                <option key={String(opt)} value={String(opt)}>
-                  {labelForNumSpeakers(opt)}
-                </option>
-              ))}
-            </select>
-            <span style={{ color: 'var(--fg-dim)', fontSize: 12, marginLeft: 8 }}>
-              Set explicitly (e.g. 2) if Auto collapses everyone to one speaker.
-            </span>
-          </div>
-        )}
-
         {banner && (
           <div
             className="status-detail"
@@ -227,27 +208,61 @@ export function HomeView(): JSX.Element {
               `Job ${banner.jobId.slice(0, 8)} — ${banner.phase}${
                 banner.progress !== undefined ? ` (${banner.progress}%)` : ''
               }`}
-            {banner.matches && banner.matches.length > 0 && (
+            {recognised.length > 0 && (
               <div style={{ marginTop: 6 }}>
-                {banner.matches.filter((m) => m.enrolled).length > 0 ? (
-                  <span>
-                    Recognised:{' '}
-                    {banner.matches
-                      .filter((m) => m.enrolled)
-                      .map((m) => `${m.enrolled} (${Math.round(m.similarity * 100)}%)`)
-                      .join(', ')}
-                  </span>
-                ) : (
-                  <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>
-                    No enrolled voices matched. Rename a speaker in the Meetings tab to enrol them
-                    for next time.
-                  </span>
-                )}
+                Recognised:{' '}
+                {recognised
+                  .map((m) => `${m.enrolled} (${Math.round(m.similarity * 100)}%)`)
+                  .join(', ')}
               </div>
             )}
           </div>
         )}
       </div>
+
+      {recent.length > 0 && (
+        <div className="recent-meetings">
+          <h3 className="recent-meetings__heading">Recent meetings</h3>
+          <div className="recent-meetings__grid">
+            {recent.map((m) => (
+              <button
+                key={m.id}
+                className="recent-card"
+                onClick={() => onOpenMeeting(m.id)}
+                title={m.title}
+              >
+                <div className="recent-card__title">{m.title}</div>
+                <div className="recent-card__meta">
+                  <span>{formatDate(m.date)}</span>
+                  <span>·</span>
+                  <span>{formatDuration(m.durationSeconds)}</span>
+                  <span>·</span>
+                  <span>
+                    {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
+                  </span>
+                </div>
+                {m.tagIds.length > 0 && (
+                  <div className="recent-card__tags">
+                    {m.tagIds.map((id) => {
+                      const t = tagById(id)
+                      if (!t) return null
+                      return (
+                        <span
+                          key={id}
+                          className="recent-card__tag"
+                          style={{ background: t.color }}
+                        >
+                          {t.name}
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -10,7 +10,8 @@ import type {
   MeetingSummary,
   MeetingTranscript,
   RecordingStatus,
-  Settings
+  Settings,
+  TagDef
 } from '../../shared/types'
 import {
   deleteSpeakerFromGlobalDB,
@@ -23,7 +24,8 @@ import {
   liveRecordingsRoot,
   readTranscript,
   renameMeetingTitle,
-  renameSpeakerInMeeting
+  renameSpeakerInMeeting,
+  setMeetingTags
 } from '../meetings'
 import {
   getStatus,
@@ -32,7 +34,14 @@ import {
   startWatching,
   stopWatching
 } from '../recording'
-import { readSettings, writeSettings } from '../settings'
+import {
+  addTag,
+  deleteTag,
+  readSettings,
+  readTags,
+  updateTag,
+  writeSettings
+} from '../settings'
 
 /** Register every IPC handler. Called once after `app.whenReady()`. */
 export function registerIpcHandlers(): void {
@@ -228,6 +237,32 @@ export function registerIpcHandlers(): void {
         await fs.writeFile(result.filePath, payload.body)
       }
       return { savedTo: result.filePath }
+    }
+  )
+
+  ipcMain.handle(IPC.tagsList, async (): Promise<TagDef[]> => readTags())
+
+  ipcMain.handle(
+    IPC.tagsAdd,
+    async (_event, name: string, color: string): Promise<TagDef> => addTag(name, color)
+  )
+
+  ipcMain.handle(
+    IPC.tagsUpdate,
+    async (
+      _event,
+      id: string,
+      patch: { name?: string; color?: string }
+    ): Promise<TagDef> => updateTag(id, patch)
+  )
+
+  ipcMain.handle(IPC.tagsDelete, async (_event, id: string): Promise<void> => deleteTag(id))
+
+  ipcMain.handle(
+    IPC.meetingsSetTags,
+    async (_event, meetingId: string, tagIds: string[]): Promise<{ tagIds: string[] }> => {
+      const settings = await readSettings()
+      return setMeetingTags(settings.outputFolder, meetingId, tagIds)
     }
   )
 }

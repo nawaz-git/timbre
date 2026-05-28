@@ -73,6 +73,8 @@ interface MetadataFile {
   speakerCount?: number
   /** User-set display title — overrides the folder-derived default. */
   title?: string
+  /** Tag ids applied to this meeting. */
+  tags?: string[]
 }
 
 interface TranscriptJSON {
@@ -115,7 +117,8 @@ async function listPerFolderMeetings(root: string): Promise<MeetingSummary[]> {
       durationSeconds: transcriptJson?.duration ?? metadata?.durationSeconds ?? 0,
       speakerCount:
         transcriptJson?.speakerCount ?? speakers?.length ?? metadata?.speakerCount ?? 0,
-      hasAudio
+      hasAudio,
+      tagIds: Array.isArray(metadata?.tags) ? metadata.tags : []
     })
   }
   return results
@@ -159,7 +162,8 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       date: stat.mtime.toISOString(),
       durationSeconds: 0, // engine doesn't write duration sidecar; left as 0
       speakerCount: 0, // engine doesn't write speakers sidecar; left as 0
-      hasAudio: false // engine recordings live in ../recordings/ with different naming
+      hasAudio: false, // engine recordings live in ../recordings/ with different naming
+      tagIds: []
     })
   }
   return results
@@ -389,6 +393,36 @@ export async function reanalyzeMeeting(opts: {
 export function numSpeakersHintToInt(hint: NumSpeakersHint | undefined): number | undefined {
   if (typeof hint === 'number') return hint
   return undefined
+}
+
+/**
+ * Update the tags applied to a meeting. The `tagIds` are user-managed
+ * identifiers from the global tag list; we don't validate them against the
+ * tag store here (the renderer-side picker only surfaces real ones, and
+ * keeping a stale tag id is harmless — the list view filters out unknowns).
+ */
+export async function setMeetingTags(
+  outputFolder: string,
+  meetingId: string,
+  tagIds: string[]
+): Promise<{ tagIds: string[] }> {
+  if (meetingId.startsWith('engine:')) {
+    throw new Error('Live-recording meetings cannot be tagged from the Electron UI yet.')
+  }
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${meetingId}`)
+  }
+  const folder = join(outputFolder, folderId)
+  const metaPath = join(folder, 'metadata.json')
+  const existing = (await safeReadJson<MetadataFile>(metaPath)) ?? {}
+  // De-dupe + reject empties.
+  const clean = Array.from(new Set(tagIds.filter((t) => typeof t === 'string' && t.length > 0)))
+  existing.tags = clean
+  await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+  return { tagIds: clean }
 }
 
 /**

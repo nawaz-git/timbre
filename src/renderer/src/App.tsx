@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { SettingsProvider } from './state/settings'
+import { TagsProvider } from './state/tags'
 import { HomeView } from './views/Home'
 import { MeetingsView } from './views/Meetings'
 import { SettingsView } from './views/Settings'
@@ -21,7 +22,13 @@ const NAV: NavItem[] = [
 
 function AppShell(): JSX.Element {
   const [view, setView] = useState<ViewKey>('home')
+  const [initialMeetingId, setInitialMeetingId] = useState<string | null>(null)
   const current = NAV.find((n) => n.key === view) ?? NAV[0]
+
+  const openMeeting = useCallback((id: string) => {
+    setInitialMeetingId(id)
+    setView('meetings')
+  }, [])
 
   return (
     <div className="app">
@@ -56,8 +63,13 @@ function AppShell(): JSX.Element {
           <div className="content__subtitle">{current.subtitle}</div>
         </header>
         <div className="content__body">
-          {view === 'home' && <HomeView />}
-          {view === 'meetings' && <MeetingsView />}
+          {view === 'home' && <HomeView onOpenMeeting={openMeeting} />}
+          {view === 'meetings' && (
+            <MeetingsView
+              initialMeetingId={initialMeetingId}
+              onInitialMeetingConsumed={() => setInitialMeetingId(null)}
+            />
+          )}
           {view === 'settings' && <SettingsView />}
         </div>
       </main>
@@ -68,7 +80,9 @@ function AppShell(): JSX.Element {
 export default function App(): JSX.Element {
   return (
     <SettingsProvider>
-      <AppShell />
+      <TagsProvider>
+        <AppShell />
+      </TagsProvider>
     </SettingsProvider>
   )
 }

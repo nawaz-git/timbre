@@ -1,6 +1,7 @@
 import { app } from 'electron'
+import { randomUUID } from 'crypto'
 import { join } from 'path'
-import type { NumSpeakersHint, Settings, ThemeMode } from '../shared/types'
+import type { NumSpeakersHint, Settings, TagDef, ThemeMode } from '../shared/types'
 
 // electron-store v10 is ESM-only — load it via dynamic import the first time we need it.
 // We cache the resulting instance so subsequent gets/sets are synchronous-ish from callers.
@@ -65,4 +66,74 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
  */
 export function globalSpeakersDBPath(): string {
   return join(app.getPath('userData'), 'global-speakers.json')
+}
+
+// ─── Tags ────────────────────────────────────────────────────────────────
+
+/**
+ * Tags shipped on first launch. Users can add / remove / edit any of these
+ * via Settings; deletion is permitted (we don't pin any of them).
+ */
+function defaultTagSeed(): TagDef[] {
+  return [
+    { id: 'general', name: 'General', color: '#9aa0a6' },
+    { id: 'standup', name: 'Standup', color: '#8ab4f8' },
+    { id: 'eod-sync', name: 'EOD Sync', color: '#a1e3a1' },
+    { id: 'internal', name: 'Internal', color: '#fdd663' },
+    { id: 'lanco', name: 'Lanco', color: '#c58af9' }
+  ]
+}
+
+/**
+ * Read the user's tag list, seeding defaults on first ever access. After
+ * the first call the key is present in the store (even if the user clears
+ * every tag) so we won't re-seed.
+ */
+export async function readTags(): Promise<TagDef[]> {
+  const store = await getStore()
+  const raw = store.get<TagDef[] | undefined>('tags')
+  if (raw === undefined) {
+    const seeded = defaultTagSeed()
+    store.set('tags', seeded)
+    return seeded
+  }
+  return Array.isArray(raw) ? raw : []
+}
+
+export async function addTag(name: string, color: string): Promise<TagDef> {
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('Tag name must not be empty')
+  const store = await getStore()
+  const tags = await readTags()
+  if (tags.some((t) => t.name.toLowerCase() === trimmed.toLowerCase())) {
+    throw new Error(`Tag "${trimmed}" already exists`)
+  }
+  const tag: TagDef = { id: randomUUID(), name: trimmed, color }
+  store.set('tags', [...tags, tag])
+  return tag
+}
+
+export async function updateTag(id: string, patch: Partial<Omit<TagDef, 'id'>>): Promise<TagDef> {
+  const store = await getStore()
+  const tags = await readTags()
+  const idx = tags.findIndex((t) => t.id === id)
+  if (idx < 0) throw new Error(`Tag ${id} not found`)
+  const merged: TagDef = {
+    ...tags[idx],
+    ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
+    ...(patch.color !== undefined ? { color: patch.color } : {})
+  }
+  const next = [...tags]
+  next[idx] = merged
+  store.set('tags', next)
+  return merged
+}
+
+export async function deleteTag(id: string): Promise<void> {
+  const store = await getStore()
+  const tags = await readTags()
+  store.set(
+    'tags',
+    tags.filter((t) => t.id !== id)
+  )
 }

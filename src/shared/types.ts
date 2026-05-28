@@ -36,6 +36,18 @@ export interface MeetingSummary {
   speakerCount: number
   /** True if this meeting has audio playback available (mt-batch outputs only — engine flat files don't). */
   hasAudio: boolean
+  /** Tag IDs applied to this meeting (resolved against the global tag list). */
+  tagIds: string[]
+}
+
+/** A category label that can be applied to one or more meetings. */
+export interface TagDef {
+  /** Stable id — never shown. */
+  id: string
+  /** User-facing label. */
+  name: string
+  /** CSS color (hex). */
+  color: string
 }
 
 export interface TranscriptSegment {
@@ -128,7 +140,12 @@ export const IPC = {
   speakersList: 'speakers:list',
   speakersDelete: 'speakers:delete',
   meetingsRenameTitle: 'meetings:renameTitle',
-  meetingsExport: 'meetings:export'
+  meetingsExport: 'meetings:export',
+  meetingsSetTags: 'meetings:setTags',
+  tagsList: 'tags:list',
+  tagsAdd: 'tags:add',
+  tagsUpdate: 'tags:update',
+  tagsDelete: 'tags:delete'
 } as const
 
 /** Export format kinds for `meetings:export`. */

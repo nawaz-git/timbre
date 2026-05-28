@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDate, formatDuration } from '../state/format'
+import { useTags } from '../state/tags'
+import { SpeakerPicker } from '../components/SpeakerPicker'
 import type {
+  EnrolledSpeaker,
   ExportFormat,
   MeetingSummary,
   MeetingTranscript,
@@ -9,22 +12,15 @@ import type {
 } from '../../../shared/types'
 
 const NUM_SPEAKERS_OPTIONS: NumSpeakersHint[] = ['auto', 2, 3, 4, 5, 6]
-const EXPORT_FORMATS: { value: ExportFormat; label: string }[] = [
-  { value: 'txt', label: 'Plain text (.txt)' },
-  { value: 'md', label: 'Markdown (.md)' },
-  { value: 'json', label: 'JSON (.json)' },
-  { value: 'srt', label: 'Subtitles (.srt)' },
-  { value: 'audio', label: 'Audio (.wav)' }
+const EXPORT_FORMATS: { value: ExportFormat; label: string; hint: string }[] = [
+  { value: 'txt', label: 'Plain text', hint: 'Speaker-tagged lines (.txt)' },
+  { value: 'md', label: 'Markdown', hint: 'Speakers bolded with timestamps (.md)' },
+  { value: 'json', label: 'JSON', hint: 'Structured timeline (.json)' },
+  { value: 'srt', label: 'Subtitles', hint: 'SubRip format (.srt)' },
+  { value: 'audio', label: 'Audio', hint: 'Original WAV recording (.wav)' }
 ]
 
-const SPEAKER_PALETTE = [
-  '#8ab4f8', // soft blue
-  '#fdd663', // amber
-  '#a1e3a1', // green
-  '#f28b82', // coral
-  '#c58af9', // lavender
-  '#79d5ff'  // cyan
-]
+const SPEAKER_PALETTE = ['#8ab4f8', '#fdd663', '#a1e3a1', '#f28b82', '#c58af9', '#79d5ff']
 
 function colorForSpeaker(name: string): string {
   let h = 0
@@ -35,7 +31,8 @@ function colorForSpeaker(name: string): string {
 }
 
 function formatHHMMSS(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds))
+  if (!isFinite(seconds) || seconds < 0) return '0:00'
+  const total = Math.floor(seconds)
   const h = Math.floor(total / 3600)
   const m = Math.floor((total % 3600) / 60)
   const s = total % 60
@@ -47,8 +44,6 @@ function labelForNumSpeakers(v: NumSpeakersHint): string {
   return v === 'auto' ? 'Auto' : `${v} speakers`
 }
 
-/** Pull a fallback structured-segment list from the raw transcript.txt when
- *  transcript.json is missing (legacy meetings). */
 function parseLegacyTranscript(raw: string): TranscriptSegment[] {
   const segments: TranscriptSegment[] = []
   const re = /^\[(\d\d):(\d\d):(\d\d)\]\s+([^:]+):\s*(.*)$/gm
@@ -58,13 +53,9 @@ function parseLegacyTranscript(raw: string): TranscriptSegment[] {
     const start = Number(h) * 3600 + Number(mi) * 60 + Number(s)
     segments.push({ speaker: speaker.trim(), start, end: start, text: text.trim() })
   }
-  // Patch end times so each segment ends at the next one's start.
-  for (let i = 0; i < segments.length - 1; i++) {
-    segments[i].end = segments[i + 1].start
-  }
-  if (segments.length > 0) {
-    segments[segments.length - 1].end = segments[segments.length - 1].start + 30
-  }
+  for (let i = 0; i < segments.length - 1; i++) segments[i].end = segments[i + 1].start
+  if (segments.length > 0) segments[segments.length - 1].end =
+    segments[segments.length - 1].start + 30
   return segments
 }
 
@@ -74,29 +65,39 @@ function uniqueSpeakers(segments: TranscriptSegment[]): string[] {
   return Array.from(seen)
 }
 
-export function MeetingsView(): JSX.Element {
+type TabKey = 'transcript' | 'speakers' | 'export' | 'tags'
+
+interface MeetingsViewProps {
+  initialMeetingId: string | null
+  onInitialMeetingConsumed: () => void
+}
+
+export function MeetingsView(props: MeetingsViewProps): JSX.Element {
+  const { initialMeetingId, onInitialMeetingConsumed } = props
+  const { tags: allTags, byId: tagById } = useTags()
+
   const [meetings, setMeetings] = useState<MeetingSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [transcript, setTranscript] = useState<MeetingTranscript | null>(null)
   const [transcriptLoading, setTranscriptLoading] = useState(false)
+  const [tab, setTab] = useState<TabKey>('transcript')
+  const [tagFilter, setTagFilter] = useState<string | null>(null)
 
   // Title editing
   const [titleEditing, setTitleEditing] = useState(false)
   const [titleValue, setTitleValue] = useState('')
 
-  // Speaker rename
-  const [renameTarget, setRenameTarget] = useState<string | null>(null)
-  const [renameValue, setRenameValue] = useState('')
-  const [renameBusy, setRenameBusy] = useState(false)
+  // Speaker picker — which cluster name is open?
+  const [pickerForCluster, setPickerForCluster] = useState<string | null>(null)
+  const [enrolledSpeakers, setEnrolledSpeakers] = useState<EnrolledSpeaker[]>([])
 
   // Re-analyse
   const [reanalyzePending, setReanalyzePending] = useState(false)
-  const [reanalyzeSpeakers, setReanalyzeSpeakers] = useState<NumSpeakersHint>(2)
+  const [reanalyzeSpeakers, setReanalyzeSpeakers] = useState<NumSpeakersHint>('auto')
   const [reanalyzeJobId, setReanalyzeJobId] = useState<string | null>(null)
 
-  // Export menu
-  const [exportOpen, setExportOpen] = useState(false)
+  // Export
   const [exportBusy, setExportBusy] = useState(false)
 
   // Audio playback
@@ -137,22 +138,42 @@ export function MeetingsView(): JSX.Element {
     }
   }, [])
 
+  const loadEnrolled = useCallback(async () => {
+    try {
+      const list = await window.api.speakers.list()
+      setEnrolledSpeakers(list)
+    } catch (err) {
+      console.error('Failed to load enrolled speakers', err)
+      setEnrolledSpeakers([])
+    }
+  }, [])
+
   const onSelect = useCallback(
     async (m: MeetingSummary) => {
       setSelectedId(m.id)
-      setRenameTarget(null)
-      setRenameValue('')
       setStatusBanner(null)
       setTitleEditing(false)
-      setExportOpen(false)
+      setPickerForCluster(null)
       setCurrentTime(0)
       setIsPlaying(false)
+      setTab('transcript')
       await loadTranscript(m.id)
+      await loadEnrolled()
     },
-    [loadTranscript]
+    [loadTranscript, loadEnrolled]
   )
 
-  // Auto-refresh on backend job 'done' + re-analyse progress + completion.
+  // If App nav handed us a pre-selected meeting id, open it once.
+  useEffect(() => {
+    if (!initialMeetingId) return
+    const m = meetings.find((x) => x.id === initialMeetingId)
+    if (m) {
+      void onSelect(m)
+      onInitialMeetingConsumed()
+    }
+  }, [initialMeetingId, meetings, onSelect, onInitialMeetingConsumed])
+
+  // Auto-refresh on backend events
   useEffect(() => {
     const unsub = window.api.backend.onEvent((ev) => {
       if (ev.event === 'done') {
@@ -181,7 +202,6 @@ export function MeetingsView(): JSX.Element {
     [meetings, selectedId]
   )
 
-  // Structured segments — prefer transcript.json, fall back to parsed plain text.
   const segments: TranscriptSegment[] = useMemo(() => {
     if (!transcript) return []
     if (transcript.segments && transcript.segments.length > 0) return transcript.segments
@@ -190,10 +210,6 @@ export function MeetingsView(): JSX.Element {
 
   const speakersInTranscript = useMemo(() => uniqueSpeakers(segments), [segments])
 
-  // ─── Audio src ─────────────────────────────────────────────────────────
-  // Pull the folder id out of the meeting id and use it as the source for
-  // the registered `mt-audio://` protocol. Audio only available for
-  // imported meetings (engine meetings have a different audio layout).
   const audioSrc = useMemo(() => {
     if (!selectedMeeting?.hasAudio) return null
     const id = selectedMeeting.id.startsWith('imported:')
@@ -202,14 +218,13 @@ export function MeetingsView(): JSX.Element {
     return `mt-audio://meeting/${encodeURIComponent(id)}/audio.wav`
   }, [selectedMeeting])
 
-  // Keyboard shortcuts (Space play/pause, ←/→ ±5s) — only when transcript
-  // panel is focused and not editing.
+  // Keyboard shortcuts
   useEffect(() => {
     if (!selectedMeeting) return
     const handler = (e: KeyboardEvent): void => {
       const target = e.target as HTMLElement | null
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return
-      if (titleEditing || renameTarget) return
+      if (titleEditing || pickerForCluster) return
       if (e.code === 'Space') {
         e.preventDefault()
         if (audioRef.current) {
@@ -231,12 +246,10 @@ export function MeetingsView(): JSX.Element {
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [selectedMeeting, titleEditing, renameTarget])
+  }, [selectedMeeting, titleEditing, pickerForCluster])
 
   const activeSegmentIndex = useMemo(() => {
     if (segments.length === 0) return -1
-    // Linear scan is fine for ~hundreds of segments; switch to binary search
-    // if we ever see meetings with thousands.
     for (let i = 0; i < segments.length; i++) {
       const s = segments[i]
       if (currentTime >= s.start && currentTime < s.end) return i
@@ -245,7 +258,6 @@ export function MeetingsView(): JSX.Element {
     return -1
   }, [segments, currentTime])
 
-  // Scroll the active segment into view as audio plays.
   const transcriptListRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (!isPlaying || activeSegmentIndex < 0) return
@@ -255,9 +267,9 @@ export function MeetingsView(): JSX.Element {
       `[data-segment-index="${activeSegmentIndex}"]`
     )
     if (row) {
-      const containerRect = container.getBoundingClientRect()
-      const rowRect = row.getBoundingClientRect()
-      if (rowRect.top < containerRect.top || rowRect.bottom > containerRect.bottom) {
+      const cRect = container.getBoundingClientRect()
+      const rRect = row.getBoundingClientRect()
+      if (rRect.top < cRect.top || rRect.bottom > cRect.bottom) {
         row.scrollIntoView({ block: 'center', behavior: 'smooth' })
       }
     }
@@ -296,42 +308,31 @@ export function MeetingsView(): JSX.Element {
     }
   }, [selectedMeeting, titleValue, refresh])
 
-  const beginRename = useCallback((name: string) => {
-    setRenameTarget(name)
-    setRenameValue(name)
-    setStatusBanner(null)
-  }, [])
-
-  const cancelRename = useCallback(() => {
-    setRenameTarget(null)
-    setRenameValue('')
-  }, [])
-
-  const commitRename = useCallback(async () => {
-    if (!selectedId || !renameTarget) return
-    const next = renameValue.trim()
-    if (!next || next === renameTarget) {
-      cancelRename()
-      return
-    }
-    setRenameBusy(true)
-    try {
-      const result = await window.api.meetings.renameSpeaker(selectedId, renameTarget, next)
-      setStatusBanner(
-        result.enrolled
-          ? `Renamed "${renameTarget}" → "${next}" and enrolled their voice for future meetings.`
-          : `Renamed "${renameTarget}" → "${next}" in this meeting.`
-      )
-      cancelRename()
-      await loadTranscript(selectedId)
-      await refresh()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setStatusBanner(`Rename failed: ${msg}`)
-    } finally {
-      setRenameBusy(false)
-    }
-  }, [selectedId, renameTarget, renameValue, cancelRename, loadTranscript, refresh])
+  const onPickSpeaker = useCallback(
+    async (clusterName: string, newName: string) => {
+      if (!selectedId) return
+      try {
+        const result = await window.api.meetings.renameSpeaker(
+          selectedId,
+          clusterName,
+          newName
+        )
+        setStatusBanner(
+          result.enrolled
+            ? `Assigned "${newName}" — enrolled their voice for next time.`
+            : `Renamed to "${newName}".`
+        )
+        setPickerForCluster(null)
+        await loadTranscript(selectedId)
+        await loadEnrolled()
+        await refresh()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setStatusBanner(`Rename failed: ${msg}`)
+      }
+    },
+    [selectedId, loadTranscript, loadEnrolled, refresh]
+  )
 
   const onReanalyze = useCallback(async () => {
     if (!selectedId) return
@@ -352,16 +353,13 @@ export function MeetingsView(): JSX.Element {
     async (format: ExportFormat) => {
       if (!selectedId || !selectedMeeting) return
       setExportBusy(true)
-      setExportOpen(false)
       try {
         const result = await window.api.meetings.export(
           selectedId,
           format,
           selectedMeeting.title
         )
-        if (result.savedTo) {
-          setStatusBanner(`Saved to ${result.savedTo}`)
-        }
+        if (result.savedTo) setStatusBanner(`Saved to ${result.savedTo}`)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         setStatusBanner(`Export failed: ${msg}`)
@@ -372,47 +370,109 @@ export function MeetingsView(): JSX.Element {
     [selectedId, selectedMeeting]
   )
 
+  const onToggleTag = useCallback(
+    async (tagId: string) => {
+      if (!selectedMeeting) return
+      const current = new Set(selectedMeeting.tagIds)
+      if (current.has(tagId)) current.delete(tagId)
+      else current.add(tagId)
+      try {
+        await window.api.meetings.setTags(selectedMeeting.id, Array.from(current))
+        await refresh()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setStatusBanner(`Tag update failed: ${msg}`)
+      }
+    },
+    [selectedMeeting, refresh]
+  )
+
+  // ─── Render ───────────────────────────────────────────────────────────
+
+  const filteredMeetings = useMemo(() => {
+    if (!tagFilter) return meetings
+    return meetings.filter((m) => m.tagIds.includes(tagFilter))
+  }, [meetings, tagFilter])
+
   return (
     <div className="meetings">
-      <div className="meetings__list">
-        {loading && <div className="empty">Loading…</div>}
-        {!loading && meetings.length === 0 && (
-          <div className="empty">
-            No meetings yet.
-            <br />
-            Start watching or import audio to create one.
-          </div>
-        )}
-        {!loading &&
-          meetings.map((m) => (
+      <div className="meetings__list-wrap">
+        {/* Tag filter chips */}
+        <div className="tag-filter-row">
+          <button
+            className={'tag-chip' + (tagFilter === null ? ' tag-chip--active' : '')}
+            onClick={() => setTagFilter(null)}
+          >
+            All
+          </button>
+          {allTags.map((tag) => (
             <button
-              key={m.id}
-              className={
-                'meetings__row' + (m.id === selectedId ? ' meetings__row--active' : '')
-              }
-              onClick={() => {
-                void onSelect(m)
-              }}
+              key={tag.id}
+              className={'tag-chip' + (tagFilter === tag.id ? ' tag-chip--active' : '')}
+              style={{ borderColor: tag.color }}
+              onClick={() => setTagFilter(tag.id)}
             >
-              <div className="meetings__row-title">{m.title}</div>
-              <div className="meetings__row-meta">
-                <span>{formatDate(m.date)}</span>
-                <span>·</span>
-                <span>{formatDuration(m.durationSeconds)}</span>
-                <span>·</span>
-                <span>
-                  {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
-                </span>
-              </div>
+              <span className="tag-chip__dot" style={{ background: tag.color }} />
+              {tag.name}
             </button>
           ))}
+        </div>
+
+        <div className="meetings__list">
+          {loading && <div className="empty">Loading…</div>}
+          {!loading && filteredMeetings.length === 0 && (
+            <div className="empty">
+              {tagFilter ? 'No meetings with this tag.' : 'No meetings yet. Import audio to create one.'}
+            </div>
+          )}
+          {!loading &&
+            filteredMeetings.map((m) => (
+              <button
+                key={m.id}
+                className={
+                  'meetings__row' + (m.id === selectedId ? ' meetings__row--active' : '')
+                }
+                onClick={() => {
+                  void onSelect(m)
+                }}
+              >
+                <div className="meetings__row-title">{m.title}</div>
+                <div className="meetings__row-meta">
+                  <span>{formatDate(m.date)}</span>
+                  <span>·</span>
+                  <span>{formatDuration(m.durationSeconds)}</span>
+                  <span>·</span>
+                  <span>
+                    {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
+                  </span>
+                </div>
+                {m.tagIds.length > 0 && (
+                  <div className="meetings__row-tags">
+                    {m.tagIds.map((id) => {
+                      const t = tagById(id)
+                      if (!t) return null
+                      return (
+                        <span
+                          key={id}
+                          className="meetings__row-tag-pill"
+                          style={{ background: t.color }}
+                        >
+                          {t.name}
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
+              </button>
+            ))}
+        </div>
       </div>
 
       <div className="meetings__detail">
         {!selectedMeeting && <div className="empty">Select a meeting to view its transcript.</div>}
         {selectedMeeting && (
           <>
-            {/* ── Title bar ────────────────────────────────────────────── */}
+            {/* ── Title row ────────────────────────────────────────────── */}
             <div className="detail-header">
               <div className="detail-title-wrap">
                 {titleEditing ? (
@@ -428,11 +488,7 @@ export function MeetingsView(): JSX.Element {
                     }}
                   />
                 ) : (
-                  <h2
-                    className="detail-title"
-                    onClick={beginTitleEdit}
-                    title="Click to rename"
-                  >
+                  <h2 className="detail-title" onClick={beginTitleEdit} title="Click to rename">
                     {selectedMeeting.title}
                   </h2>
                 )}
@@ -447,44 +503,10 @@ export function MeetingsView(): JSX.Element {
               <div className="detail-actions">
                 <button
                   className="btn"
-                  onClick={() => {
-                    setReanalyzePending((v) => !v)
-                    setExportOpen(false)
-                  }}
+                  onClick={() => setReanalyzePending((v) => !v)}
                 >
                   Re-analyse…
                 </button>
-                <div className="export-menu-wrap">
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      setExportOpen((v) => !v)
-                      setReanalyzePending(false)
-                    }}
-                    disabled={exportBusy}
-                  >
-                    Export ▾
-                  </button>
-                  {exportOpen && (
-                    <div className="export-menu">
-                      {EXPORT_FORMATS.map((f) => (
-                        <button
-                          key={f.value}
-                          className="export-menu__item"
-                          onClick={() => {
-                            void onExport(f.value)
-                          }}
-                          disabled={
-                            (f.value === 'audio' && !selectedMeeting.hasAudio) ||
-                            selectedMeeting.id.startsWith('engine:')
-                          }
-                        >
-                          {f.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
                 <button
                   className="btn"
                   onClick={() => {
@@ -496,7 +518,6 @@ export function MeetingsView(): JSX.Element {
               </div>
             </div>
 
-            {/* ── Re-analyse picker ────────────────────────────────────── */}
             {reanalyzePending && (
               <div className="reanalyze-bar">
                 <span style={{ color: 'var(--fg-dim)', fontSize: 13 }}>Speakers:</span>
@@ -518,9 +539,7 @@ export function MeetingsView(): JSX.Element {
                 </select>
                 <button
                   className="btn btn--primary"
-                  onClick={() => {
-                    void onReanalyze()
-                  }}
+                  onClick={() => void onReanalyze()}
                   disabled={reanalyzeJobId !== null}
                 >
                   Run
@@ -531,70 +550,54 @@ export function MeetingsView(): JSX.Element {
               </div>
             )}
 
-            {/* ── Speaker pills ────────────────────────────────────────── */}
+            {/* ── Speaker pills with picker ────────────────────────────── */}
             {speakersInTranscript.length > 0 && (
               <div className="speaker-row">
                 <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>Speakers:</span>
-                {speakersInTranscript.map((name) =>
-                  renameTarget === name ? (
-                    <span key={name} className="speaker-rename-group">
-                      <input
-                        autoFocus
-                        value={renameValue}
-                        onChange={(e) => setRenameValue(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') void commitRename()
-                          if (e.key === 'Escape') cancelRename()
-                        }}
-                        disabled={renameBusy}
-                        placeholder="Real name…"
-                        className="speaker-rename-input"
-                      />
-                      <button
-                        className="btn btn--primary btn--small"
-                        disabled={renameBusy || !renameValue.trim()}
-                        onClick={() => {
-                          void commitRename()
-                        }}
-                      >
-                        Save
-                      </button>
-                      <button
-                        className="btn btn--small"
-                        onClick={cancelRename}
-                        disabled={renameBusy}
-                      >
-                        Cancel
-                      </button>
-                    </span>
-                  ) : (
+                {speakersInTranscript.map((name) => (
+                  <div key={name} className="speaker-pill-wrap">
                     <button
-                      key={name}
                       className="speaker-pill"
                       style={{ borderColor: colorForSpeaker(name) }}
-                      onClick={() => beginRename(name)}
-                      title={`Rename "${name}" and enrol their voice for future meetings`}
+                      onClick={() => setPickerForCluster(name)}
+                      title="Click to rename or assign an enrolled voice"
                     >
                       <span
                         className="speaker-pill__dot"
                         style={{ background: colorForSpeaker(name) }}
                       />
                       {name}
-                      <span className="speaker-pill__edit">✎</span>
+                      <span className="speaker-pill__edit">▾</span>
                     </button>
-                  )
-                )}
+                    {pickerForCluster === name && (
+                      <SpeakerPicker
+                        current={name}
+                        inThisMeeting={speakersInTranscript}
+                        enrolled={enrolledSpeakers}
+                        onPick={(newName) => onPickSpeaker(name, newName)}
+                        onClose={() => setPickerForCluster(null)}
+                      />
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 
-            {/* ── Audio player ────────────────────────────────────────── */}
+            {/* ── Audio player ─────────────────────────────────────────── */}
             {audioSrc && (
               <div className="player-bar">
                 <audio
                   ref={audioRef}
                   src={audioSrc}
                   preload="metadata"
-                  onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+                  onLoadedMetadata={(e) => {
+                    const d = e.currentTarget.duration
+                    setDuration(isFinite(d) ? d : 0)
+                  }}
+                  onDurationChange={(e) => {
+                    const d = e.currentTarget.duration
+                    if (isFinite(d) && d > 0) setDuration(d)
+                  }}
                   onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
@@ -621,7 +624,6 @@ export function MeetingsView(): JSX.Element {
                       )
                     }
                   }}
-                  aria-label="Back 5 seconds"
                 >
                   −5s
                 </button>
@@ -635,7 +637,6 @@ export function MeetingsView(): JSX.Element {
                       )
                     }
                   }}
-                  aria-label="Forward 5 seconds"
                 >
                   +5s
                 </button>
@@ -653,11 +654,32 @@ export function MeetingsView(): JSX.Element {
                     setCurrentTime(t)
                   }}
                 />
-                <span className="player-bar__time">{formatHHMMSS(duration)}</span>
+                <span className="player-bar__time">
+                  {duration > 0 ? formatHHMMSS(duration) : '—'}
+                </span>
               </div>
             )}
 
-            {/* ── Status banner ───────────────────────────────────────── */}
+            {/* ── Tab strip ────────────────────────────────────────────── */}
+            <div className="tab-strip">
+              {(
+                [
+                  ['transcript', 'Transcript'],
+                  ['speakers', 'Speakers'],
+                  ['export', 'Export'],
+                  ['tags', 'Tags']
+                ] as [TabKey, string][]
+              ).map(([k, label]) => (
+                <button
+                  key={k}
+                  className={'tab-strip__btn' + (tab === k ? ' tab-strip__btn--active' : '')}
+                  onClick={() => setTab(k)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
             {statusBanner && (
               <div
                 className="status-detail"
@@ -665,7 +687,8 @@ export function MeetingsView(): JSX.Element {
                   color:
                     statusBanner.startsWith('Re-analyse failed') ||
                     statusBanner.startsWith('Rename failed') ||
-                    statusBanner.startsWith('Export failed')
+                    statusBanner.startsWith('Export failed') ||
+                    statusBanner.startsWith('Tag update failed')
                       ? 'var(--danger, #ef4444)'
                       : undefined
                 }}
@@ -674,33 +697,165 @@ export function MeetingsView(): JSX.Element {
               </div>
             )}
 
-            {/* ── Structured transcript ───────────────────────────────── */}
-            {transcriptLoading && <div className="empty">Loading transcript…</div>}
-            {!transcriptLoading && segments.length === 0 && (
-              <div className="empty">(No transcript text yet.)</div>
+            {/* ── Tab content ───────────────────────────────────────────── */}
+            {tab === 'transcript' && (
+              <>
+                {transcriptLoading && <div className="empty">Loading transcript…</div>}
+                {!transcriptLoading && segments.length === 0 && (
+                  <div className="empty">(No transcript text yet.)</div>
+                )}
+                {!transcriptLoading && segments.length > 0 && (
+                  <div className="transcript-list" ref={transcriptListRef}>
+                    {segments.map((seg, i) => (
+                      <button
+                        key={i}
+                        data-segment-index={i}
+                        className={
+                          'segment-row' + (i === activeSegmentIndex ? ' segment-row--active' : '')
+                        }
+                        onClick={() => seekTo(seg.start, true)}
+                        title="Click to jump to this point"
+                      >
+                        <span className="segment-row__time">{formatHHMMSS(seg.start)}</span>
+                        <span
+                          className="segment-row__speaker"
+                          style={{ color: colorForSpeaker(seg.speaker) }}
+                        >
+                          {seg.speaker}
+                        </span>
+                        <span className="segment-row__text">{seg.text}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
-            {!transcriptLoading && segments.length > 0 && (
-              <div className="transcript-list" ref={transcriptListRef}>
-                {segments.map((seg, i) => (
-                  <button
-                    key={i}
-                    data-segment-index={i}
-                    className={
-                      'segment-row' + (i === activeSegmentIndex ? ' segment-row--active' : '')
-                    }
-                    onClick={() => seekTo(seg.start, true)}
-                    title="Click to jump to this point"
-                  >
-                    <span className="segment-row__time">{formatHHMMSS(seg.start)}</span>
-                    <span
-                      className="segment-row__speaker"
-                      style={{ color: colorForSpeaker(seg.speaker) }}
+
+            {tab === 'speakers' && (
+              <div className="tab-pane">
+                <p style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 0 }}>
+                  Speakers detected in this meeting. Click a name to rename it or assign an
+                  already-enrolled voice. Enrolled voices are matched automatically in future
+                  imports.
+                </p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {speakersInTranscript.length === 0 && (
+                    <div className="empty">No speakers detected yet.</div>
+                  )}
+                  {speakersInTranscript.map((name) => (
+                    <div key={name} className="speaker-pill-wrap">
+                      <button
+                        className="speaker-pill"
+                        style={{ borderColor: colorForSpeaker(name) }}
+                        onClick={() => setPickerForCluster(name)}
+                      >
+                        <span
+                          className="speaker-pill__dot"
+                          style={{ background: colorForSpeaker(name) }}
+                        />
+                        {name}
+                        <span className="speaker-pill__edit">▾</span>
+                      </button>
+                      {pickerForCluster === name && (
+                        <SpeakerPicker
+                          current={name}
+                          inThisMeeting={speakersInTranscript}
+                          enrolled={enrolledSpeakers}
+                          onPick={(newName) => onPickSpeaker(name, newName)}
+                          onClose={() => setPickerForCluster(null)}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {enrolledSpeakers.length > 0 && (
+                  <>
+                    <h4 style={{ marginTop: 24, marginBottom: 8 }}>All enrolled voices</h4>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {enrolledSpeakers
+                        .slice()
+                        .sort((a, b) => b.useCount - a.useCount)
+                        .map((s) => (
+                          <div
+                            key={s.name}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 12,
+                              padding: '6px 0',
+                              fontSize: 13
+                            }}
+                          >
+                            <span
+                              className="speaker-pill__dot"
+                              style={{ background: colorForSpeaker(s.name) }}
+                            />
+                            <span style={{ flex: 1 }}>{s.name}</span>
+                            <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>
+                              {s.useCount} meeting{s.useCount === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {tab === 'export' && (
+              <div className="tab-pane">
+                <p style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 0 }}>
+                  Export this meeting in different formats. Audio export is the original WAV.
+                </p>
+                <div className="export-grid">
+                  {EXPORT_FORMATS.map((f) => (
+                    <button
+                      key={f.value}
+                      className="export-card"
+                      onClick={() => void onExport(f.value)}
+                      disabled={
+                        exportBusy ||
+                        (f.value === 'audio' && !selectedMeeting.hasAudio) ||
+                        selectedMeeting.id.startsWith('engine:')
+                      }
                     >
-                      {seg.speaker}
-                    </span>
-                    <span className="segment-row__text">{seg.text}</span>
-                  </button>
-                ))}
+                      <div className="export-card__label">{f.label}</div>
+                      <div className="export-card__hint">{f.hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {tab === 'tags' && (
+              <div className="tab-pane">
+                <p style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 0 }}>
+                  Apply tags so you can filter meetings by project or type. Manage the tag list in
+                  Settings.
+                </p>
+                {allTags.length === 0 ? (
+                  <div className="empty">
+                    No tags defined yet. Open Settings → Tags to create some.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {allTags.map((tag) => {
+                      const active = selectedMeeting.tagIds.includes(tag.id)
+                      return (
+                        <button
+                          key={tag.id}
+                          className={'tag-chip' + (active ? ' tag-chip--active' : '')}
+                          style={{ borderColor: tag.color }}
+                          onClick={() => void onToggleTag(tag.id)}
+                        >
+                          <span className="tag-chip__dot" style={{ background: tag.color }} />
+                          {tag.name}
+                          {active && <span style={{ marginLeft: 6 }}>✓</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </>

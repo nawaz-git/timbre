@@ -1,7 +1,7 @@
-import { app, BrowserWindow, net, protocol, shell } from 'electron'
-import { promises as fs, existsSync } from 'fs'
+import { app, BrowserWindow, protocol, shell } from 'electron'
+import { promises as fs, existsSync, createReadStream } from 'fs'
 import { join, resolve, sep } from 'path'
-import { pathToFileURL } from 'url'
+import { Readable } from 'stream'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { registerIpcHandlers } from './ipc'
@@ -43,8 +43,36 @@ async function isUnderAllowedRoot(absPath: string): Promise<boolean> {
 }
 
 /**
+ * Convert a Node ReadStream into a web ReadableStream so we can hand it to
+ * a Response. Electron 33's net.fetch from `file://` doesn't set
+ * Content-Length, which makes HTML5 `<audio>` report duration as Infinity.
+ * Serving the stream ourselves with explicit headers fixes that AND adds
+ * proper byte-range support so seeking works without buffering the whole
+ * file first.
+ */
+function nodeStreamToWeb(node: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
+  return Readable.toWeb(node as Readable) as ReadableStream<Uint8Array>
+}
+
+function parseRangeHeader(
+  header: string | null,
+  fileSize: number
+): { start: number; end: number } | null {
+  if (!header) return null
+  const m = /bytes=(\d+)-(\d*)/.exec(header)
+  if (!m) return null
+  const start = parseInt(m[1], 10)
+  const end = m[2] ? parseInt(m[2], 10) : fileSize - 1
+  if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= fileSize) {
+    return null
+  }
+  return { start, end: Math.min(end, fileSize - 1) }
+}
+
+/**
  * Register the `mt-audio://meeting/<folder-id>/audio.wav` protocol handler.
- * Must be called inside `app.whenReady()`.
+ * Must be called inside `app.whenReady()`. Implements Range / Accept-Ranges
+ * so the renderer's `<audio>` can determine duration + seek properly.
  */
 function registerAudioProtocol(): void {
   protocol.handle('mt-audio', async (req) => {
@@ -66,12 +94,48 @@ function registerAudioProtocol(): void {
         join(settings.outputFolder, folderId, 'audio.wav'),
         join(liveRecordingsRoot, folderId, 'audio.wav')
       ]
+      let path: string | null = null
       for (const candidate of candidates) {
         if (existsSync(candidate) && (await isUnderAllowedRoot(candidate))) {
-          return net.fetch(pathToFileURL(candidate).toString())
+          path = candidate
+          break
         }
       }
-      return new Response('Not found', { status: 404 })
+      if (!path) return new Response('Not found', { status: 404 })
+
+      const stat = await fs.stat(path)
+      const fileSize = stat.size
+      const range = parseRangeHeader(req.headers.get('Range'), fileSize)
+
+      if (!range) {
+        // Whole-file response — must include Content-Length for `<audio>`
+        // to compute duration from the WAV header without buffering.
+        return new Response(nodeStreamToWeb(createReadStream(path)), {
+          status: 200,
+          headers: {
+            'Content-Type': 'audio/wav',
+            'Content-Length': String(fileSize),
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-store'
+          }
+        })
+      }
+
+      const { start, end } = range
+      const chunkSize = end - start + 1
+      return new Response(
+        nodeStreamToWeb(createReadStream(path, { start, end })),
+        {
+          status: 206,
+          headers: {
+            'Content-Type': 'audio/wav',
+            'Content-Length': String(chunkSize),
+            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-store'
+          }
+        }
+      )
     } catch (err) {
       console.error('[mt-audio] handler error', err)
       return new Response('Internal error', { status: 500 })
