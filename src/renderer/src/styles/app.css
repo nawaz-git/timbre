@@ -923,13 +923,16 @@
 /*
  * Anchor for the SpeakerPicker dropdown that pops out of a segment row.
  * Positioned absolutely under the speaker label so it doesn't push the
- * surrounding text around when it opens.
+ * surrounding text around when it opens. The wrapper itself uses a high
+ * z-index so the trapped stacking context doesn't cap the dropdown's
+ * own z-index (1000) — without this the dropdown would still stack at
+ * 50 relative to siblings outside this row.
  */
 .segment-row__picker-anchor {
   position: absolute;
   top: calc(100% + 2px);
   left: 0;
-  z-index: 50;
+  z-index: 1000;
 }
 .segment-row__text {
   font-size: 14px;
@@ -1063,89 +1066,231 @@
   padding: 4px 0 16px;
 }
 
-/* ── Speaker picker dropdown ───────────────────────────────── */
+/* ── Speaker picker dropdown (v0.6.0 redesign) ─────────────── */
 
+/*
+ * Trigger wrappers must establish a positioned context so the dropdown
+ * can absolute-position relative to them. The pill row uses this; the
+ * per-segment anchor (.segment-row__picker-anchor above) uses its own
+ * absolute positioning to peg under the speaker label.
+ */
 .speaker-pill-wrap {
   position: relative;
   display: inline-block;
 }
 
+/*
+ * The dropdown itself. Fully OPAQUE — never transparent, no
+ * backdrop-filter, no container opacity. Background uses --bg-elevated
+ * so the transcript / pill row beneath cannot bleed through.
+ */
 .speaker-picker {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  min-width: 240px;
+  min-width: 280px;
+  max-width: 360px;
+  max-height: 400px;
+  overflow-y: auto;
   background: var(--bg-elevated);
   border: 1px solid var(--divider);
   border-radius: 8px;
-  padding: 6px 4px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.24);
-  z-index: 50;
-  max-height: 320px;
-  overflow-y: auto;
+  padding: 4px;
+  z-index: 1000;
+  /* Dark theme shadow — strong, neutral black for legibility on dark bg. */
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.45),
+    0 2px 8px rgba(0, 0, 0, 0.3);
+  font-family: inherit;
+}
+[data-theme='light'] .speaker-picker {
+  /* Light theme shadow — softer, cool-slate tinted so the popup
+     lifts off the page without screaming. */
+  box-shadow:
+    0 12px 36px rgba(15, 23, 42, 0.18),
+    0 2px 8px rgba(15, 23, 42, 0.08);
 }
 
-.speaker-picker__current {
+/* ── Header (title row OR inline-add row, depending on state) ── */
+.speaker-picker__header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
-  color: var(--fg-dim);
+  gap: 6px;
+  padding: 8px 8px 8px 12px;
+  min-height: 36px;
 }
-.speaker-picker__current-dot {
+.speaker-picker__title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--fg);
-  font-weight: bold;
+  letter-spacing: -0.005em;
+}
+.speaker-picker__add-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid var(--divider-strong);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.speaker-picker__add-btn:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--fg);
+  border-color: var(--fg);
+}
+.speaker-picker__add-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
+/* ── Inline-add input (replaces title + add-btn while editing) ── */
+.speaker-picker__input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--divider-strong);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 80ms ease;
+}
+.speaker-picker__input:focus {
+  border-color: var(--fg);
+}
+.speaker-picker__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid var(--divider-strong);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.speaker-picker__icon-btn:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--fg);
+  border-color: var(--fg);
+}
+.speaker-picker__icon-btn--primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+.speaker-picker__icon-btn--primary:hover:not(:disabled) {
+  background: var(--accent);
+  opacity: 0.88;
+}
+.speaker-picker__icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Section dividers (between header / current / groups) ──── */
+.speaker-picker__divider {
+  height: 1px;
+  background: var(--divider);
+  margin: 4px 0;
+}
+
+/* ── Group labels ("ALSO IN THIS MEETING", "ENROLLED VOICES") ── */
 .speaker-picker__group-label {
   font-size: 10px;
   color: var(--fg-dim);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 10px 12px 4px;
+  letter-spacing: 0.08em;
+  font-weight: 500;
+  padding: 8px 12px 4px;
 }
 
+/* ── List rows ─────────────────────────────────────────────── */
 .speaker-picker__item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   width: 100%;
-  padding: 6px 12px;
+  height: 32px;
+  padding: 0 12px 0 8px;
   background: none;
   border: none;
   color: var(--fg);
   font: inherit;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
   border-radius: 4px;
+  transition: background 80ms ease;
 }
 .speaker-picker__item:hover:not(:disabled) {
   background: var(--bg);
 }
-.speaker-picker__item-meta {
+.speaker-picker__item:disabled {
+  cursor: default;
+}
+/* Current cluster row — not interactive, shown with a check + (current) hint. */
+.speaker-picker__item--current {
+  cursor: default;
+  color: var(--fg);
+}
+.speaker-picker__item--current:hover {
+  background: transparent;
+}
+.speaker-picker__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  margin: 0 3px;
+  font-size: 12px;
+  color: var(--fg);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.speaker-picker__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+.speaker-picker__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.speaker-picker__meta {
   font-size: 11px;
   color: var(--fg-dim);
+  flex-shrink: 0;
 }
 
-.speaker-picker__new {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  padding: 6px 8px;
-  border-top: 1px solid var(--divider);
-  margin-top: 6px;
-}
-.speaker-picker__input {
-  flex: 1;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--divider);
-  border-radius: 6px;
-  padding: 4px 8px;
+/* ── Empty state (no other speakers anywhere) ──────────────── */
+.speaker-picker__empty {
+  padding: 12px;
   font-size: 12px;
-  font-family: inherit;
-  outline: none;
+  color: var(--fg-dim);
+  text-align: center;
+  font-style: italic;
 }
 
 /*
