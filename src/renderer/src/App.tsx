@@ -4,8 +4,7 @@ import {
   Mic,
   PanelLeftClose,
   PanelLeftOpen,
-  Settings as SettingsIcon,
-  Sparkles
+  Settings as SettingsIcon
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { SettingsProvider, useSettings } from './state/settings'
@@ -13,6 +12,7 @@ import { TagsProvider } from './state/tags'
 import { HomeView } from './views/Home'
 import { MeetingsView } from './views/Meetings'
 import { SettingsView } from './views/Settings'
+import mintrMark from './assets/mintr-mark.png'
 
 type ViewKey = 'home' | 'meetings' | 'settings'
 
@@ -89,7 +89,7 @@ function AppShell(): JSX.Element {
       <aside className={'sidebar' + (collapsed ? ' sidebar--collapsed' : '')}>
         <div className="sidebar__brand">
           <span className="sidebar__brand-mark" aria-hidden="true">
-            <Sparkles size={14} strokeWidth={2} />
+            <img src={mintrMark} alt="" width={20} height={20} draggable={false} />
           </span>
           <span className="sidebar__brand-label">Mintr</span>
           <button

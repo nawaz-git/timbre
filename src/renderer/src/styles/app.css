@@ -64,20 +64,25 @@
 }
 
 .sidebar__brand-mark {
-  /* Small mint-leaf-coloured square housing the Sparkles glyph. We use
-     --accent-mark (the higher-saturation brand green) rather than
-     --accent (which we biased darker for button contrast). Both are in
-     the mint-green family — visually consistent — but this one reads
-     more "brand" than "interactive". */
+  /* Holds the actual Mintr mint-leaf app icon (rounded-square PNG with
+     its own mint-green gradient). The container clips to a 5px radius
+     so the icon's squircle silhouette matches the macOS Dock style at
+     this scale. No background colour — the PNG provides its own. */
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 22px;
   height: 22px;
-  border-radius: var(--radius-sm);
-  background: var(--accent-mark);
-  color: var(--accent-fg);
+  border-radius: 5px;
+  overflow: hidden;
   flex-shrink: 0;
+}
+
+.sidebar__brand-mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .sidebar__brand-label {
@@ -1039,16 +1044,25 @@
 }
 
 .about-brand__mark {
+  /* Houses the real Mintr mint-leaf app icon. The PNG already carries
+     its own mint-green squircle silhouette, so we just clip the
+     container to a 10px radius (~macOS dock corner ratio at 44px) and
+     drop the background tint that the lucide placeholder used. */
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 44px;
   height: 44px;
-  border-radius: var(--radius-lg, 10px);
-  background: var(--surface-raised, var(--bg-elev));
-  color: var(--fg);
-  border: 1px solid var(--divider);
+  border-radius: 10px;
+  overflow: hidden;
   flex-shrink: 0;
+}
+
+.about-brand__mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .about-brand__copy {

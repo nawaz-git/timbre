@@ -5,10 +5,10 @@ import {
   Info,
   Palette,
   Plus,
-  Sparkles,
   Tag as TagIcon,
   Trash2
 } from 'lucide-react'
+import mintrMark from '../assets/mintr-mark.png'
 import { useSettings } from '../state/settings'
 import { useTags } from '../state/tags'
 import type { TagDef, ThemeMode } from '../../../shared/types'
@@ -318,7 +318,7 @@ export function SettingsView(): JSX.Element {
       <Section icon={<Info size={16} />} title="About">
         <div className="about-brand">
           <span className="about-brand__mark" aria-hidden="true">
-            <Sparkles size={20} />
+            <img src={mintrMark} alt="" width={36} height={36} draggable={false} />
           </span>
           <div className="about-brand__copy">
             <div className="about-brand__name">Mintr</div>
