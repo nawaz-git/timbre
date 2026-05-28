@@ -287,36 +287,37 @@ export function killLiveRecorderSync(): { killed: number } {
 }
 
 /**
- * Spawn the bundled MeetingTranscriber helper.
+ * Spawn the bundled MintrEngine helper.
  *
- * Critical implementation detail: we `spawn` the helper's binary
- * DIRECTLY at its exact bundled path, rather than going through
- * `/usr/bin/open` (which dispatches via LaunchServices). LaunchServices
- * dedups apps by bundle id — and if the user happens to have a
- * separate `MeetingTranscriber.app` installed in `/Applications` (e.g.
- * a leftover from before Mintr was created), both copies register the
- * same `com.meetingtranscriber.app` bundle id and LaunchServices can
- * silently launch the wrong binary. Confirmed bug in v0.12-v0.14:
+ * **v0.21 critical change — back to `/usr/bin/open`.** TCC log diff
+ * proved that Mintr-spawned helpers (v0.15-v0.20 direct `spawn` with
+ * `detached: true`) ran with `responsible=Electron` in tccd's view —
+ * which means the user's per-helper TCC grants (Screen Recording,
+ * Accessibility, Microphone for `ai.nawaz.mintr-engine`) were
+ * IGNORED because tccd resolved against the responsible-process bundle
+ * id (Electron / Mintr), not the requesting one. PermissionHealthCheck
+ * failed → WatchLoop never started → no capture.
  *
- *   `ps -ef` showed
- *     /Applications/MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber
- *   running when we asked it to launch
- *     /Applications/Mintr.app/Contents/Resources/MeetingTranscriber.app/...
+ * Launching via `/usr/bin/open` makes launchd (PID 1) the parent and
+ * tccd records `Resp:{ai.nawaz.mintr-engine}` — i.e. the helper is
+ * responsible for itself. User grants are honoured.
  *
- * Spawning the inner binary directly via `spawn(execPath, [])` bypasses
- * LaunchServices entirely. macOS launches THAT exact Mach-O at THAT
- * exact path with no dedup. TCC still applies (entries keyed by bundle
- * id), and the kernel records the running binary's path against the
- * TCC bookmark — so the user's "MeetingTranscriber" Screen Recording
- * entry only matches when its stored path bookmark equals the bundled
- * helper path.
+ * The historical reason v0.15 switched AWAY from `open` was
+ * LaunchServices bundle-id dedup: when both
+ *   /Applications/MeetingTranscriber.app (legacy standalone install)
+ *   /Applications/Mintr.app/Contents/Resources/MeetingTranscriber.app
+ * existed with bundle id `com.meetingtranscriber.app`, `open` could
+ * launch either binary. The v0.19 rebrand to `ai.nawaz.mintr-engine`
+ * (afterPack hook) eliminated that ambiguity — nothing else on the
+ * system has the new bundle id, so `open` is unambiguous again.
  *
- * Side benefit: we get a real PID we can `kill` directly. The old
- * `open`-then-detach pattern left us no handle on the actual helper.
+ * `-n` forces a new instance even if launchd thinks one is already
+ * running (we still pkill any stale helper first via killLiveRecorderSync,
+ * but `-n` is defence-in-depth against fast-Mintr-restart races).
  *
- * v0.14+: always force-kills any existing helper first so the new
- * launch picks up freshly-granted TCC. The `isLiveActive()` short-circuit
- * was removed — it papered over the stale-PID bug.
+ * Trade-off: `open` exits immediately after dispatching to launchd, so
+ * we no longer hold a PID handle to the helper. That's why we keep
+ * pkill-by-binary-path for kill/restart paths.
  */
 export function startLiveRecorder(env: Record<string, string> = {}): {
   ok: boolean
@@ -328,7 +329,7 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
     return {
       ok: false,
       message:
-        'Live recording engine not bundled. Install MeetingTranscriber.app or rebuild the DMG with the bundled engine.'
+        'Live recording engine not bundled. Install MintrEngine.app or rebuild the DMG with the bundled engine.'
     }
   }
 
@@ -338,45 +339,16 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
   // window titles for as long as it lives.
   killLiveRecorderSync()
 
-  // Step 2: resolve the inner Mach-O binary inside the .app bundle.
-  // For `Foo.app` the executable lives at `Foo.app/Contents/MacOS/<exec>`
-  // where `<exec>` is whatever the bundle's Info.plist sets
-  // CFBundleExecutable to (defaulting to the bundle's basename).
-  const execName = appPath.split('/').pop()?.replace(/\.app$/, '') ?? 'MeetingTranscriber'
-  const execPath = join(appPath, 'Contents', 'MacOS', execName)
-  if (!existsSync(execPath)) {
-    return {
-      ok: false,
-      message: `Helper binary not found at ${execPath}`
-    }
-  }
-
-  // Step 3: launch the binary directly — NO `open`, NO LaunchServices.
+  // Step 2: launch via `/usr/bin/open -n <bundled-app>`. The `-n`
+  // forces a fresh instance. We pass `--args` not needed — the helper
+  // doesn't take CLI args. We deliberately do NOT pass `-W` (would
+  // make `open` block until the app quits, blocking Mintr forever).
   //
-  // v0.18+: critical tweaks vs v0.15-v0.17.
-  //
-  // `detached: true`: makes the helper its own session-group leader,
-  // severing the macOS process-responsibility chain to Mintr. Otherwise
-  // TCC requests from the helper get attributed to Mintr's bundle id
-  // (which lacks Accessibility / certain entitlements), the helper's
-  // internal PermissionHealthCheck fails, and WatchLoop never starts —
-  // confirmed via unified-log diff between Mintr-spawned (PID 31443:
-  // PermissionHealthCheck failed, no WatchLoop) vs shell-spawned
-  // (PID 32837: WatchLoop started cleanly).
-  //
-  // `env`: a deliberately *small* environment instead of inheriting
-  // process.env wholesale. Electron sets ELECTRON_RUN_AS_NODE,
-  // ELECTRON_NO_ATTACH_CONSOLE, NODE_OPTIONS, dyld interposer paths,
-  // Vite dev-server vars, etc. Any of these can change the helper's
-  // behaviour (AppKit assertion modes, dyld load behaviour). The helper
-  // only needs PATH, HOME, USER, TMPDIR to do its job — keep it minimal.
-  //
-  // `child.unref()`: lets Mintr exit cleanly even if the helper is still
-  // alive. We then cull stale helpers on the next Mintr launch via
-  // `killLiveRecorderSync()` (which already runs at startup), so we
-  // don't leak zombies across sessions.
-  const child = spawn(execPath, [], {
-    cwd: appPath,
+  // `open` itself is a child process of Mintr, but it tears down within
+  // ~50ms after dispatching to launchd. The helper itself becomes a
+  // child of launchd (PID 1), which is the key to severing the TCC
+  // responsibility chain that v0.15-v0.20 had.
+  const child = spawn('/usr/bin/open', ['-n', appPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
       PATH: '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
@@ -417,8 +389,12 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
     liveProcess = null
   })
 
+  // We track the `open` child here, not the helper itself — `open`
+  // exits within ~50ms after dispatching to launchd. The actual helper
+  // lives under launchd; we manage it via pkill in killLiveRecorderSync.
   liveProcess = child
-  return { ok: true, appPath: execPath }
+  child.unref()
+  return { ok: true, appPath }
 }
 
 /**
