@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
+  Clock,
   ExternalLink,
   Inbox,
   Loader2,
   Mic,
   MicOff,
   Radio,
+  RefreshCcw,
   Tag as TagIcon,
   Upload,
   UserCheck,
@@ -15,7 +17,12 @@ import {
 import { useRecordingStatus } from '../state/recording'
 import { useSettings } from '../state/settings'
 import { useTags } from '../state/tags'
-import { usePermissions, useChromeMeet, useCaptureWatchdog } from '../state/permissions'
+import {
+  usePermissions,
+  useChromeMeet,
+  useCaptureWatchdog,
+  useLiveCapture
+} from '../state/permissions'
 import { formatDate, formatDuration } from '../state/format'
 import type {
   BackendEvent,
@@ -53,6 +60,24 @@ function StatusIcon({ state }: { state: RecordingState }): JSX.Element {
   return <MicOff size={16} aria-hidden="true" />
 }
 
+/** mm:ss since the live-capture card became active. Used by the timer chip. */
+function formatLiveDuration(startedAt: number | null): string {
+  if (!startedAt) return '0:00'
+  const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+/** "Started 7:13 PM" type label — uses the user's locale via toLocaleTimeString. */
+function formatStartTime(startedAt: number | null): string {
+  if (!startedAt) return 'just now'
+  return new Date(startedAt).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit'
+  })
+}
+
 interface JobBanner {
   jobId: string
   filePath: string
@@ -73,6 +98,37 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
   const { status: perms, openPane } = usePermissions()
   const chromeMeet = useChromeMeet()
   const watchdog = useCaptureWatchdog()
+  const liveCapture = useLiveCapture(chromeMeet.tab?.meetingId ?? null)
+  const [restartingHelper, setRestartingHelper] = useState(false)
+  const [restartResult, setRestartResult] = useState<string | null>(null)
+
+  // mm:ss timer for the live capture card. We derive it from
+  // liveCapture.startedAt and re-render once per second to keep it
+  // ticking. The 1s interval also lets the card animate the pulsing
+  // dot in sync with the timer text.
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    if (!liveCapture.active) return
+    const id = setInterval(() => forceTick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [liveCapture.active])
+
+  const handleRestartHelper = useCallback(async () => {
+    setRestartingHelper(true)
+    setRestartResult(null)
+    try {
+      const result = await window.api.system.restartHelper()
+      setRestartResult(
+        result.ok
+          ? 'Helper restarted — it should now pick up the granted permission.'
+          : `Helper restart failed: ${result.message ?? 'unknown error'}`
+      )
+    } catch (err) {
+      setRestartResult(`Helper restart failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setRestartingHelper(false)
+    }
+  }, [])
   const [banner, setBanner] = useState<JobBanner | null>(null)
   const [recent, setRecent] = useState<MeetingSummary[]>([])
   const [recentLoading, setRecentLoading] = useState(true)
@@ -249,22 +305,44 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
               Mintr detected your Meet, but the bundled capture engine
               (<code className="inline-code">MeetingTranscriber</code>) hasn&apos;t
               recorded any audio yet. The helper has its own Screen Recording
-              entry in System Settings, separate from Mintr&apos;s. Look for
+              entry in System Settings, separate from Mintr&apos;s.
+              <br />
+              <strong>Two-step fix:</strong> (1) Look for{' '}
               <code className="inline-code">MeetingTranscriber</code> in the
-              Screen Recording list and toggle it on, then quit + reopen Mintr.
+              Screen Recording list and toggle it on. (2) Click{' '}
+              <em>Restart helper</em> below — macOS doesn&apos;t refresh
+              permission for a running process, so a granted permission only
+              takes effect after the helper restarts.
             </div>
+            {restartResult && (
+              <div className="permission-banner__result">{restartResult}</div>
+            )}
           </div>
-          <button
-            className="btn btn--primary btn--small"
-            onClick={() => void openPane('screen-recording')}
-          >
-            <ExternalLink size={14} aria-hidden="true" />
-            <span>Open Screen Recording</span>
-          </button>
+          <div className="permission-banner__actions">
+            <button
+              className="btn btn--primary btn--small"
+              onClick={() => void openPane('screen-recording')}
+            >
+              <ExternalLink size={14} aria-hidden="true" />
+              <span>Open Screen Recording</span>
+            </button>
+            <button
+              className="btn btn--small"
+              onClick={() => void handleRestartHelper()}
+              disabled={restartingHelper}
+            >
+              <RefreshCcw
+                size={14}
+                aria-hidden="true"
+                className={restartingHelper ? 'home-status-icon--spin' : undefined}
+              />
+              <span>{restartingHelper ? 'Restarting…' : 'Restart helper'}</span>
+            </button>
+          </div>
         </div>
       )}
 
-      {chromeMeet.tab && (
+      {chromeMeet.tab && !liveCapture.active && (
         <div className="meet-live-card" role="status">
           <span className="meet-live-card__dot" aria-hidden="true" />
           <div className="meet-live-card__body">
@@ -282,6 +360,51 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
                 begins playing audio.
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/*
+        Live-capture card (v0.14+). Distinct from the "Meet detected"
+        card above: this one appears once the bundled engine has
+        actually started writing files (confirmed via fs.watch on
+        liveRecordingsRoot). It shows the meeting title (sourced from
+        the Chrome probe when available), a 0:00 mm:ss elapsed counter
+        that ticks every second, and an honest hint that the full
+        transcript appears here when the meeting ends. Closes the loop
+        on "the right side of the Home screen is empty during a meeting".
+      */}
+      {liveCapture.active && (
+        <div className="capture-live-card" role="status">
+          <div className="capture-live-card__header">
+            <span className="capture-live-card__dot" aria-hidden="true" />
+            <span className="capture-live-card__label">Recording</span>
+            <span className="capture-live-card__timer">
+              <Clock size={12} aria-hidden="true" />
+              {formatLiveDuration(liveCapture.startedAt)}
+            </span>
+          </div>
+          <div className="capture-live-card__title">
+            {liveCapture.meetingId
+              ? `Google Meet · ${liveCapture.meetingId}`
+              : 'Live meeting'}
+          </div>
+          <div className="capture-live-card__started">
+            Started {formatStartTime(liveCapture.startedAt)} ·{' '}
+            <span className="capture-live-card__path-hint">
+              audio + transcript saving locally
+            </span>
+          </div>
+          <div className="capture-live-card__transcript-placeholder">
+            <Loader2
+              size={14}
+              aria-hidden="true"
+              className="home-status-icon--spin"
+            />
+            <span>
+              The engine writes the full transcript when the meeting ends — it
+              will appear in the Meetings tab and update here automatically.
+            </span>
           </div>
         </div>
       )}

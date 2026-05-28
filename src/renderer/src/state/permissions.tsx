@@ -75,6 +75,68 @@ export function useCaptureWatchdog(): CaptureWatchdogSignal {
 }
 
 /**
+ * Tracks whether the engine helper is ACTIVELY capturing (i.e. it has
+ * written at least one file in the last ~6 seconds). This is the
+ * derived signal that gates the live-capture card on Home — Mintr says
+ * "Watching" the whole time the user has watch-mode on, but capture
+ * only happens during a meeting, and we want to surface the difference.
+ *
+ * Implementation: subscribe to the `meetings:changed` push channel.
+ * Every change bumps `lastWriteAt`. A 1Hz tick checks whether the most
+ * recent write is fresh (within `LIVE_WINDOW_MS`) — if yes we're live,
+ * if no we're back to dormant. `meetingId` is sourced from the Chrome
+ * probe so the card has context.
+ */
+const LIVE_WINDOW_MS = 6500
+
+export interface LiveCaptureSignal {
+  /** True iff the engine has written within LIVE_WINDOW_MS. */
+  active: boolean
+  /** Wall-clock ms when this capture session started. */
+  startedAt: number | null
+  /** Chrome-detected meeting id (when available) used as the card title. */
+  meetingId: string | null
+}
+
+export function useLiveCapture(meetingIdHint: string | null): LiveCaptureSignal {
+  const [active, setActive] = useState(false)
+  const [startedAt, setStartedAt] = useState<number | null>(null)
+
+  useEffect(() => {
+    let lastWriteAt = 0
+    let sessionStart: number | null = null
+
+    const unsub = window.api.system.onMeetingsChanged(() => {
+      const now = Date.now()
+      lastWriteAt = now
+      if (!sessionStart) {
+        sessionStart = now
+        setStartedAt(now)
+      }
+      setActive(true)
+    })
+
+    const tick = setInterval(() => {
+      const now = Date.now()
+      if (now - lastWriteAt > LIVE_WINDOW_MS) {
+        if (sessionStart) {
+          sessionStart = null
+          setStartedAt(null)
+        }
+        setActive(false)
+      }
+    }, 1000)
+
+    return () => {
+      unsub()
+      clearInterval(tick)
+    }
+  }, [])
+
+  return { active, startedAt, meetingId: meetingIdHint }
+}
+
+/**
  * Live snapshot of the Chrome AppleScript probe. Subscribes to the push
  * channel for instant updates AND pulls the initial state on mount so
  * the card renders without waiting for the first poll cycle.

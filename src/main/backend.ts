@@ -219,18 +219,53 @@ export function isLiveActive(): boolean {
 }
 
 /**
+ * Hard-kill any existing MeetingTranscriber.app helper process.
+ *
+ * Critical for fresh TCC state. macOS caches Screen Recording / Mic
+ * permission at process launch — granting the permission *afterwards*
+ * doesn't refresh a running process. v0.12 → v0.13 shipped without this
+ * step and we saw a 4-hour-old helper sitting on stale "denied" TCC even
+ * after the user granted permission in System Settings, writing zero
+ * audio for the whole window. Synchronous so callers can sequence
+ * "killHelper → spawn fresh helper" without a race.
+ */
+export function killLiveRecorderSync(): { killed: number } {
+  let killed = 0
+  try {
+    // Match the actual binary path inside our bundle so we don't
+    // accidentally kill a user's standalone MeetingTranscriber install
+    // (which would live in /Applications/MeetingTranscriber.app, not
+    // inside Mintr's resources).
+    const result = spawnSync(
+      '/usr/bin/pkill',
+      ['-f', 'Mintr.app/Contents/Resources/MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber'],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    )
+    // pkill returns 0 if at least one process was matched and signaled,
+    // 1 if no process matched. Either is fine; we just want NO helper
+    // running after this call.
+    if (result.status === 0) killed = 1
+  } catch (err) {
+    console.warn('[live-recorder] killLiveRecorderSync failed', err)
+  }
+  liveProcess = null
+  return { killed }
+}
+
+/**
  * Spawn the bundled MeetingTranscriber.app via macOS `open` so it inherits
  * its own TCC identity (mic/screen recording). The user grants these once on
  * first launch.
+ *
+ * v0.14+: always force-kills any existing helper first so the new
+ * launch picks up freshly-granted TCC. The `isLiveActive()` short-circuit
+ * was removed — it papered over the stale-PID bug.
  */
 export function startLiveRecorder(env: Record<string, string> = {}): {
   ok: boolean
   appPath?: string
   message?: string
 } {
-  if (isLiveActive()) {
-    return { ok: true, message: 'Live recorder already running' }
-  }
   const appPath = resolveLiveRecorderApp()
   if (!appPath) {
     return {
@@ -240,8 +275,14 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
     }
   }
 
-  // `open -n <app>` launches a new instance even if one is already running.
-  // We use plain `open <app>` so subsequent clicks reactivate the existing process.
+  // Step 1: kill any stale instance. macOS won't refresh a running
+  // process's TCC entries, so a 4-hour-old helper that booted before
+  // permission was granted is dead weight — silently failing to read
+  // window titles for as long as it lives.
+  killLiveRecorderSync()
+
+  // Step 2: launch fresh. `open -n` would force a new instance even when
+  // one is running, but we just guaranteed none is. Use plain `open`.
   const args = [appPath]
   const child = spawn('/usr/bin/open', args, {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -264,19 +305,27 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
 }
 
 /**
- * Ask the bundled MeetingTranscriber.app to quit. Best-effort — uses AppleScript
- * since we no longer own its PID after `open` returns.
+ * Stop the bundled MeetingTranscriber.app helper. Best-effort AppleScript
+ * quit first (so it can finalise any in-flight recording cleanly), then
+ * a hard `pkill` as belt-and-suspenders. Both are non-blocking from the
+ * caller's perspective — the helper has 250ms to exit gracefully before
+ * we force-kill it.
  */
 export function stopLiveRecorder(): { ok: boolean; message?: string } {
-  // Best-effort AppleScript quit. Doesn't error if the app isn't running.
-  const child = spawn(
-    '/usr/bin/osascript',
-    ['-e', 'tell application "MeetingTranscriber" to quit'],
-    { stdio: ['ignore', 'pipe', 'pipe'] }
-  )
-  child.on('close', () => {
-    liveProcess = null
+  // 1) Polite AppleScript quit. Lets the helper close any open files
+  //    and write its trailing transcript/metadata.
+  spawn('/usr/bin/osascript', ['-e', 'tell application "MeetingTranscriber" to quit'], {
+    stdio: ['ignore', 'pipe', 'pipe']
   })
+  // 2) Hard-kill the bundled binary 250ms later. If the AppleScript
+  //    quit landed, this finds no process and is a no-op. If it didn't
+  //    (helper was hung, frozen on TCC-denied syscall, etc.), this
+  //    guarantees the slot is free so the next startLiveRecorder can
+  //    launch a fresh process with current permissions.
+  setTimeout(() => {
+    killLiveRecorderSync()
+  }, 250)
+  liveProcess = null
   return { ok: true }
 }
 

@@ -173,7 +173,14 @@ export const IPC = {
   /** Brings the main app window forward (called from tray menu). */
   systemShowWindow: 'system:showWindow',
   /** Quits the app (called from tray menu). */
-  systemQuit: 'system:quit'
+  systemQuit: 'system:quit',
+  /**
+   * Kill the bundled MeetingTranscriber helper and restart it. Required
+   * after the user grants Screen Recording (or any other TCC) to the
+   * helper, because macOS does not refresh permission state for a
+   * running process.
+   */
+  systemRestartHelper: 'system:restartHelper'
 } as const
 
 /** Export format kinds for `meetings:export`. */

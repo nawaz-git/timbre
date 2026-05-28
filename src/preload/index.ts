@@ -145,6 +145,16 @@ const api = {
     showWindow: (): Promise<void> => ipcRenderer.invoke(IPC.systemShowWindow),
     quit: (): Promise<void> => ipcRenderer.invoke(IPC.systemQuit),
     /**
+     * Force the bundled helper (MeetingTranscriber.app) to relaunch.
+     * macOS doesn't refresh TCC permission state for a running process —
+     * so when the user grants Screen Recording AFTER the helper has
+     * started, the new permission doesn't kick in until the helper is
+     * killed and respawned. This is the explicit user-driven way to
+     * trigger that, surfaced as a button in the permission banner.
+     */
+    restartHelper: (): Promise<{ ok: boolean; message?: string }> =>
+      ipcRenderer.invoke(IPC.systemRestartHelper),
+    /**
      * Subscribe to capture-watchdog signals (v0.13+). Fires when the
      * Chrome probe reports a live Meet for >25s but the bundled engine
      * helper hasn't written anything — i.e. the helper is silently

@@ -356,6 +356,24 @@ export function registerIpcHandlers(): void {
     // disconnected-pipe error in the console).
     setImmediate(() => app.quit())
   })
+
+  ipcMain.handle(
+    IPC.systemRestartHelper,
+    async (): Promise<{ ok: boolean; message?: string }> => {
+      // Stop (which also kills) then start. The stopWatching path also
+      // flips recording state to 'idle' which would cancel the Chrome
+      // probe — so we call backend directly here, bypassing the
+      // higher-level state machine.
+      const { killLiveRecorderSync, startLiveRecorder } = await import('../backend')
+      killLiveRecorderSync()
+      // Tiny pause so the OS reaps the killed PID before macOS `open`
+      // tries to "reactivate" it (which would no-op against the same
+      // bundle id).
+      await new Promise((r) => setTimeout(r, 300))
+      const result = startLiveRecorder()
+      return { ok: result.ok, message: result.message }
+    }
+  )
 }
 
 function filtersForFormat(format: ExportFormat): Array<{ name: string; extensions: string[] }> {

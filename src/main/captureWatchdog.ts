@@ -35,9 +35,10 @@
  * push `meetings:changed` to all renderer windows, which triggers a
  * re-fetch in `useMeetings` / Home's `loadRecent`.
  */
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, Notification } from 'electron'
 import { watch, type FSWatcher } from 'fs'
 import { promises as fsp } from 'fs'
+import { basename } from 'path'
 import { getChromeMeetSnapshot } from './chromeProbe'
 import { liveRecordingsRoot } from './meetings'
 import { readSettings } from './settings'
@@ -126,15 +127,103 @@ async function ensureFolder(path: string): Promise<void> {
 
 function makeWatcher(path: string, kind: 'live' | 'imported'): FSWatcher {
   const w = watch(path, { persistent: false, recursive: false }, (eventType, filename) => {
+    const wasIdle = state.lastEngineWriteAt === 0
+    const previousAge = Date.now() - state.lastEngineWriteAt
     // Any change at all bumps the engine-write timestamp — this is the
     // signal that the helper IS doing work (which clears the watchdog).
     state.lastEngineWriteAt = Date.now()
     queueMeetingsChange(kind, filename ?? null, eventType)
+
+    // v0.14+: emit macOS notifications on capture lifecycle events so
+    // the user gets out-of-app feedback. Heuristic:
+    //   - FIRST write in a long quiet window (or ever) = capture STARTED
+    //   - Settle-down (no writes for >3s) after activity = capture ENDED
+    // We don't have explicit start/end events from the engine (its
+    // JSONL stream is for mt-batch imports, not live), so we synthesize
+    // these from the file-change pattern.
+    if (kind === 'live') {
+      const recentlyQuiet = previousAge > 8000
+      if (wasIdle || recentlyQuiet) {
+        scheduleCaptureStartedNotification(filename ?? undefined)
+      }
+      scheduleCaptureEndedNotification(filename ?? undefined)
+    }
   })
   w.on('error', (err) => {
     console.warn(`[watchdog] watcher on ${path} errored`, err)
   })
   return w
+}
+
+// ─── Notifications ────────────────────────────────────────────────────
+//
+// macOS Notifications API via Electron's Notification class. We only
+// fire one of each per logical capture session to avoid spamming the
+// user, and we coalesce rapid filesystem-event bursts (engine writes
+// audio.wav + transcript.json + metadata.json in quick succession when
+// finalising a meeting).
+
+let lastStartNotificationAt = 0
+let endedNotificationTimer: NodeJS.Timeout | null = null
+
+function scheduleCaptureStartedNotification(filename?: string): void {
+  // Debounce — multiple file-change events when a new meeting folder
+  // appears should produce ONE notification, not five.
+  const now = Date.now()
+  if (now - lastStartNotificationAt < 5000) return
+  lastStartNotificationAt = now
+  try {
+    const n = new Notification({
+      title: 'Mintr — capture started',
+      body: filename
+        ? `Recording ${prettyMeetingName(filename)}`
+        : 'Recording your meeting…',
+      silent: false
+    })
+    n.show()
+  } catch (err) {
+    console.warn('[watchdog] capture-started notification failed', err)
+  }
+}
+
+function scheduleCaptureEndedNotification(filename?: string): void {
+  // Notification fires only after writes settle (no new event for 3.5s).
+  // The "ended" notification therefore lands ~3s after the user clicks
+  // Leave on the Meet.
+  if (endedNotificationTimer) clearTimeout(endedNotificationTimer)
+  endedNotificationTimer = setTimeout(() => {
+    endedNotificationTimer = null
+    try {
+      const n = new Notification({
+        title: 'Mintr — meeting captured',
+        body: filename
+          ? `Saved ${prettyMeetingName(filename)}. Open Mintr to view the transcript.`
+          : 'Meeting saved. Open Mintr to view the transcript.',
+        silent: false
+      })
+      n.show()
+      n.on('click', () => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) {
+            win.show()
+            win.focus()
+            break
+          }
+        }
+      })
+    } catch (err) {
+      console.warn('[watchdog] capture-ended notification failed', err)
+    }
+  }, 3500)
+}
+
+function prettyMeetingName(filename: string): string {
+  // The engine writes `<timestamp>_<slug>.txt` style names. Strip the
+  // extension and the leading timestamp so the notification reads
+  // "<slug>" rather than "20260528_1913_meet-ntu-vwcf-onr.txt".
+  const base = basename(filename).replace(/\.[^.]+$/, '')
+  const m = /^\d{8}_\d{4}_(.+)$/.exec(base)
+  return (m ? m[1] : base).replace(/-/g, ' ')
 }
 
 /**

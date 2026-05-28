@@ -1,7 +1,7 @@
 {
   "name": "mintr",
   "productName": "Mintr",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Mintr — Mac desktop app for on-device meeting transcription.",
   "main": "./out/main/index.js",
   "author": "contact@nawaz.ai",
