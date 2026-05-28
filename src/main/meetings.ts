@@ -276,6 +276,114 @@ function fallbackTitleForId(meetingId: string): string {
   return titleFromFolderName(folderId)
 }
 
+/**
+ * Rewrite an engine meeting's protocol `.txt`, renaming every `oldName:`
+ * speaker label. Handles the engine's `[MM:SS]` / `[H:MM:SS]` timestamps as
+ * well as the `[HH:MM:SS]` form. Non-fatal if the file is absent.
+ */
+async function patchEngineTxtRename(
+  prefix: string,
+  oldName: string,
+  newName: string
+): Promise<void> {
+  const txtPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.txt`)
+  try {
+    const raw = await fs.readFile(txtPath, 'utf-8')
+    const re = new RegExp(
+      '(\\[(?:\\d{1,2}:)?\\d{1,2}:\\d{1,2}\\]\\s+)' + escapeRegex(oldName) + '(:)',
+      'g'
+    )
+    const next = raw.replace(re, `$1${newName}$2`)
+    if (next !== raw) await fs.writeFile(txtPath, next, 'utf-8')
+  } catch {
+    // .txt may be absent on partial output — non-fatal.
+  }
+}
+
+/**
+ * Rewrite ONLY the Nth timestamped line of an engine meeting's `.txt`, matching
+ * the segment ordering used by the structured `segments.json`. Lines without a
+ * timestamped speaker prefix are passed through unchanged.
+ */
+async function patchEngineTxtByIndex(
+  prefix: string,
+  segmentIndex: number,
+  newSpeaker: string
+): Promise<void> {
+  const txtPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.txt`)
+  try {
+    const raw = await fs.readFile(txtPath, 'utf-8')
+    const lines = raw.split('\n')
+    const lineRe = /^(\[(?:\d{1,2}:)?\d{1,2}:\d{1,2}\])(\s+)([^:\n]+?)(:.*)$/
+    let matched = -1
+    for (let i = 0; i < lines.length; i++) {
+      if (lineRe.test(lines[i])) {
+        matched++
+        if (matched === segmentIndex) {
+          lines[i] = lines[i].replace(lineRe, `$1$2${newSpeaker}$4`)
+          break
+        }
+      }
+    }
+    if (matched >= segmentIndex) await fs.writeFile(txtPath, lines.join('\n'), 'utf-8')
+  } catch {
+    // non-fatal
+  }
+}
+
+/**
+ * Cluster rename inside an engine (live-recording) meeting: relabel every
+ * matching segment in the structured `segments.json` and the protocol `.txt`.
+ * Engine recordings carry no centroids, so there is nothing to enrol — the
+ * rename is applied directly to the transcript and is therefore fully
+ * propagated in one shot (no re-analysis needed).
+ */
+async function renameEngineSpeaker(
+  prefix: string,
+  oldName: string,
+  newName: string
+): Promise<void> {
+  const { segmentsPath } = await findEngineSidecars(ENGINE_DEFAULT_ROOT, prefix)
+  if (segmentsPath) {
+    const segs = await safeReadJson<EngineSegmentJSON[]>(segmentsPath)
+    if (Array.isArray(segs)) {
+      let changed = false
+      for (const s of segs) {
+        if (s.speaker === oldName) {
+          s.speaker = newName
+          changed = true
+        }
+      }
+      if (changed) await fs.writeFile(segmentsPath, JSON.stringify(segs, null, 2), 'utf-8')
+    }
+  }
+  await patchEngineTxtRename(prefix, oldName, newName)
+}
+
+/**
+ * Per-segment reassignment inside an engine meeting. Patches the structured
+ * `segments.json` at `segmentIndex` and the matching `.txt` line. Returns the
+ * new distinct speaker count.
+ */
+async function reassignEngineSegment(
+  prefix: string,
+  segmentIndex: number,
+  newSpeaker: string
+): Promise<number> {
+  const { segmentsPath } = await findEngineSidecars(ENGINE_DEFAULT_ROOT, prefix)
+  if (!segmentsPath) {
+    throw new Error('This live recording has no structured segments to reassign.')
+  }
+  const segs = await safeReadJson<EngineSegmentJSON[]>(segmentsPath)
+  if (!Array.isArray(segs) || segmentIndex >= segs.length) {
+    throw new Error(`Segment index ${segmentIndex} out of range`)
+  }
+  segs[segmentIndex].speaker = newSpeaker
+  await fs.writeFile(segmentsPath, JSON.stringify(segs, null, 2), 'utf-8')
+  await patchEngineTxtByIndex(prefix, segmentIndex, newSpeaker)
+  return new Set(segs.map((s) => s.speaker).filter((v) => v && v.length > 0)).size
+}
+
 async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]> {
   const protocolsDir = join(root, 'protocols')
   let entries: string[]
@@ -328,7 +436,9 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       speakerCount,
       hasAudio: audioPath !== null,
       tagIds: Array.isArray(meta?.tags) ? meta.tags : [],
-      additionalSpeakers: []
+      additionalSpeakers: Array.isArray(meta?.additionalSpeakers)
+        ? meta.additionalSpeakers
+        : []
     })
   }
   return results
@@ -506,9 +616,13 @@ export async function renameSpeakerInMeeting(
   if (oldName === newName) return { enrolled: false }
   if (!newName.trim()) throw new Error('New name must not be empty')
   if (meetingId.startsWith('engine:')) {
-    throw new Error(
-      'Live-recording meetings (from the menu-bar engine) cannot be renamed yet — only file imports carry the speaker embeddings needed for cross-meeting matching.'
-    )
+    // Live recordings have no speakers.json centroids to enrol, but we CAN
+    // relabel the transcript directly — patch segments.json + the protocol
+    // .txt so every segment of `oldName` becomes `newName`.
+    const prefix = meetingId.slice('engine:'.length)
+    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) throw new Error(`Invalid engine prefix: ${prefix}`)
+    await renameEngineSpeaker(prefix, oldName, newName)
+    return { enrolled: false }
   }
   const folderId = meetingId.startsWith('imported:')
     ? meetingId.slice('imported:'.length)
@@ -733,9 +847,10 @@ export async function reassignSegmentSpeaker(
     throw new Error(`Invalid segment index: ${segmentIndex}`)
   }
   if (meetingId.startsWith('engine:')) {
-    throw new Error(
-      'Live-recording meetings cannot be reassigned from the Electron UI yet — only file-imported meetings carry the per-segment structure.'
-    )
+    const prefix = meetingId.slice('engine:'.length)
+    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) throw new Error(`Invalid engine prefix: ${prefix}`)
+    const speakerCount = await reassignEngineSegment(prefix, segmentIndex, trimmed)
+    return { speakerCount, newSpeaker: trimmed }
   }
   const folderId = meetingId.startsWith('imported:')
     ? meetingId.slice('imported:'.length)
@@ -818,19 +933,9 @@ export async function addSpeakerToMeeting(
 ): Promise<{ additionalSpeakers: string[] }> {
   const trimmed = speakerName.trim()
   if (!trimmed) throw new Error('Speaker name must not be empty')
-  if (meetingId.startsWith('engine:')) {
-    throw new Error(
-      'Live-recording meetings cannot have additional speakers added from the Electron UI yet.'
-    )
-  }
-  const folderId = meetingId.startsWith('imported:')
-    ? meetingId.slice('imported:'.length)
-    : meetingId
-  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
-    throw new Error(`Invalid meeting id: ${meetingId}`)
-  }
-  const folder = join(outputFolder, folderId)
-  const metaPath = join(folder, 'metadata.json')
+  // Engine meetings store additionalSpeakers in the protocols sidecar; imported
+  // meetings in the folder's metadata.json. Resolve the right path either way.
+  const metaPath = engineOrFolderMetaPath(outputFolder, meetingId)
   const existing = (await safeReadJson<MetadataFile>(metaPath)) ?? {}
   const current = Array.isArray(existing.additionalSpeakers) ? existing.additionalSpeakers : []
   // De-dupe while preserving original order; trim each entry.
@@ -843,6 +948,7 @@ export async function addSpeakerToMeeting(
     merged.push(v)
   }
   existing.additionalSpeakers = merged
+  await fs.mkdir(dirname(metaPath), { recursive: true })
   await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
   return { additionalSpeakers: merged }
 }

@@ -717,7 +717,13 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         )
         // Append to the cascade queue for this meeting-session. Insertion
         // order preserved; existing names are not duplicated.
-        setReassignQueue((q) => (q.includes(newName) ? q : [...q, newName]))
+        // The cross-meeting re-analyse cascade only applies to imported
+        // meetings — engine (live) recordings carry no centroids and can't be
+        // re-analysed, and the rename above already relabelled every segment,
+        // so there's nothing to propagate. Skip the cascade banner for them.
+        if (!selectedId?.startsWith('engine:')) {
+          setReassignQueue((q) => (q.includes(newName) ? q : [...q, newName]))
+        }
         setPickerForCluster(null)
         // Transcript files were rewritten by the rename — drop any cached
         // export previews so the next preview fetch reads fresh contents.
@@ -747,7 +753,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         // Per-segment reassign also benefits from a re-analyse: the user's
         // mental model is "I just told the app this voice is Bob, propagate it".
         // Append to the queue so all touched voices show in the cascade banner.
-        setReassignQueue((q) => (q.includes(newName) ? q : [...q, newName]))
+        if (!selectedId?.startsWith('engine:')) {
+          setReassignQueue((q) => (q.includes(newName) ? q : [...q, newName]))
+        }
         // Transcript files were rewritten — drop cached export previews.
         setPreviewCache({})
         await loadTranscript(selectedId)
@@ -1292,6 +1300,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                           enrolled={enrolledSpeakers}
                           anchorEl={pickerAnchor}
                           onPick={(newName) => onPickSpeaker(name, newName)}
+                          onRename={(newName) => onPickSpeaker(name, newName)}
                           onClose={() => {
                             setPickerForCluster(null)
                             setPickerAnchor(null)
@@ -1660,6 +1669,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                               enrolled={enrolledSpeakers}
                               anchorEl={pickerAnchor}
                               onPick={(newName) => onReassignSegment(i, newName)}
+                              onRename={(newName) => onPickSpeaker(seg.speaker, newName)}
                               onClose={() => {
                                 setPickerForSegment(null)
                                 setPickerAnchor(null)
@@ -1726,6 +1736,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                             enrolled={enrolledSpeakers}
                             anchorEl={pickerAnchor}
                             onPick={(newName) => onPickSpeaker(name, newName)}
+                            onRename={(newName) => onPickSpeaker(name, newName)}
                             onClose={() => {
                               setPickerForCluster(null)
                               setPickerAnchor(null)

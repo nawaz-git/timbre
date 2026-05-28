@@ -34,6 +34,14 @@ interface SpeakerPickerProps {
   anchorEl: HTMLElement | null
   /** Called when user picks an existing name. */
   onPick: (name: string) => Promise<void> | void
+  /**
+   * Called when the user renames the CURRENT speaker cluster-wide (every
+   * segment of `current` becomes `newName`). When provided, the current-speaker
+   * row gains an explicit "Rename" affordance. Distinct from `onPick`, which in
+   * the per-segment transcript dropdown reassigns only the clicked segment —
+   * `onRename` always means "rename this speaker everywhere in the meeting".
+   */
+  onRename?: (newName: string) => Promise<void> | void
   /** Called on dismiss. */
   onClose: () => void
   /**
@@ -101,6 +109,7 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
     addedSpeakers,
     anchorEl,
     onPick,
+    onRename,
     onClose,
     hideInMeetingGroup,
     newNamePlaceholder
@@ -109,8 +118,12 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
   const [adding, setAdding] = useState<boolean>(!!hideInMeetingGroup)
   const [newValue, setNewValue] = useState('')
   const [busy, setBusy] = useState(false)
+  // Inline rename of the CURRENT speaker (cluster-wide). Independent of `adding`.
+  const [renaming, setRenaming] = useState(false)
+  const [renameValue, setRenameValue] = useState('')
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const renameInputRef = useRef<HTMLInputElement | null>(null)
 
   // Viewport-coord position. We anchor the popover to bottom-left of the
   // trigger and clamp against the right edge of the window so it never
@@ -171,11 +184,33 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
     if (adding) inputRef.current?.focus()
   }, [adding])
 
+  // Autofocus the rename input when the user starts a cluster rename.
+  useEffect(() => {
+    if (renaming) renameInputRef.current?.focus()
+  }, [renaming])
+
   const handlePick = async (name: string): Promise<void> => {
     if (busy || !name.trim()) return
     setBusy(true)
     try {
       await onPick(name.trim())
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleRename = async (): Promise<void> => {
+    if (!onRename) return
+    const next = renameValue.trim()
+    if (busy || !next) return
+    if (next === current) {
+      setRenaming(false)
+      return
+    }
+    setBusy(true)
+    try {
+      await onRename(next)
+      onClose()
     } finally {
       setBusy(false)
     }
@@ -272,20 +307,75 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
         )}
       </div>
 
-      {/* ── Current cluster row (✓ Nawaz   (current)) ─────────── */}
+      {/* ── Current cluster row (✓ Nawaz   [Rename]) ──────────── */}
       {!hideInMeetingGroup && current && (
         <>
           <div className="speaker-picker__divider" />
-          <div
-            className="speaker-picker__item speaker-picker__item--current"
-            aria-current="true"
-          >
-            <span className="speaker-picker__check" aria-hidden="true">
-              <Check size={14} strokeWidth={2.5} />
-            </span>
-            <span className="speaker-picker__name">{current}</span>
-            <span className="speaker-picker__meta">(current)</span>
-          </div>
+          {renaming && onRename ? (
+            <div className="speaker-picker__item speaker-picker__item--current">
+              <input
+                ref={renameInputRef}
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void handleRename()
+                  } else if (e.key === 'Escape') {
+                    // Revert to the static row — don't close the whole picker.
+                    e.preventDefault()
+                    e.stopPropagation()
+                    setRenaming(false)
+                  }
+                }}
+                className="speaker-picker__input"
+                aria-label="Rename speaker"
+                disabled={busy}
+              />
+              <button
+                className="speaker-picker__icon-btn speaker-picker__icon-btn--primary"
+                onClick={() => void handleRename()}
+                disabled={busy || !renameValue.trim()}
+                title="Save"
+              >
+                Save
+              </button>
+              <button
+                className="speaker-picker__icon-btn"
+                onClick={() => setRenaming(false)}
+                disabled={busy}
+                title="Cancel"
+                aria-label="Cancel"
+              >
+                <X size={14} strokeWidth={2} aria-hidden="true" />
+              </button>
+            </div>
+          ) : (
+            <div
+              className="speaker-picker__item speaker-picker__item--current"
+              aria-current="true"
+            >
+              <span className="speaker-picker__check" aria-hidden="true">
+                <Check size={14} strokeWidth={2.5} />
+              </span>
+              <span className="speaker-picker__name">{current}</span>
+              {onRename ? (
+                <button
+                  className="speaker-picker__add-btn"
+                  onClick={() => {
+                    setRenameValue(current)
+                    setRenaming(true)
+                  }}
+                  disabled={busy}
+                  title="Rename this speaker everywhere in this meeting"
+                >
+                  Rename
+                </button>
+              ) : (
+                <span className="speaker-picker__meta">(current)</span>
+              )}
+            </div>
+          )}
         </>
       )}
 
