@@ -1,6 +1,13 @@
 import { app, BrowserWindow, protocol, shell } from 'electron'
-import { promises as fs, existsSync, createReadStream } from 'fs'
-import { join, resolve, sep } from 'path'
+import {
+  promises as fs,
+  existsSync,
+  createReadStream,
+  copyFileSync,
+  mkdirSync,
+  writeFileSync
+} from 'fs'
+import { join, resolve, sep, dirname } from 'path'
 import { Readable } from 'stream'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -220,8 +227,43 @@ async function ensureOutputFolder(): Promise<void> {
   }
 }
 
+/**
+ * One-time migration of the user's settings when the product was renamed
+ * Mintr → Timbre. Electron derives `userData` from the product name, so the
+ * rename moves the store from `…/Application Support/Mintr` to `…/Timbre`,
+ * which would otherwise orphan the user's tags, theme, output folder, enrolled
+ * speakers, and onboarding-complete flag (re-showing the wizard). We copy the
+ * files we own from the old dir into the new one before electron-store first
+ * reads, guarded by a marker so it runs exactly once and never clobbers data
+ * the user creates under the new name. Bundle ids are unchanged, so this is the
+ * only state that moves. Must run BEFORE the first readSettings/getStore call.
+ */
+function migrateLegacyUserData(): void {
+  try {
+    const newDir = app.getPath('userData') // …/Timbre
+    const oldDir = join(dirname(newDir), 'Mintr') // …/Mintr
+    if (newDir === oldDir) return
+    const marker = join(newDir, '.migrated-from-mintr')
+    if (existsSync(marker)) return
+    mkdirSync(newDir, { recursive: true })
+    if (existsSync(join(oldDir, 'settings.json'))) {
+      for (const f of ['settings.json', 'global-speakers.json']) {
+        const src = join(oldDir, f)
+        if (existsSync(src)) copyFileSync(src, join(newDir, f))
+      }
+      console.log('[main] migrated user settings from legacy Mintr userData → Timbre')
+    }
+    writeFileSync(marker, new Date().toISOString())
+  } catch (e) {
+    console.warn('[main] legacy userData migration failed (non-fatal)', e)
+  }
+}
+
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('ai.nawaz.meeting-transcriber')
+  // Restore Mintr-era settings into the renamed (Timbre) userData before
+  // anything reads the store. One-time, marker-guarded.
+  migrateLegacyUserData()
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
