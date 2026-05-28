@@ -39,62 +39,24 @@
 }
 
 /*
- * Sidebar toggle button.
+ * Brand + toggle row.
  *
- * Positioning is identical in both expanded and collapsed states — the
- * button always sits below the macOS traffic-light strip (which occupies
- * the top-left corner from ~12px to ~40px). We anchor at `top: 56px` so
- * there's an 8-16px gap below the lights even on the densest layouts.
+ * Single row, top-anchored below the macOS traffic-light strip
+ * (lights occupy ~12-40px from the top-left). 56px top padding
+ * guarantees an 8-16px gap below the lights even on the densest
+ * layouts. The brand mark + wordmark sit on the left; the chevron
+ * toggle is pushed to the right via `justify-content: space-between`.
  *
- * Horizontal anchor uses `left: 50%` + translate(-50%) so the same rule
- * works for both expanded and collapsed sidebars. Solid surface-base
- * background means the button never appears to "merge" with the title
- * bar drag region behind it.
- *
- * 28×28 box on a 14px lucide chevron — generous hit target without
- * dominating the sidebar. Lucide icons render as currentColor SVG so
- * the colour token controls them via `color: ...`.
+ * In the collapsed state the wordmark is hidden, the chevron drops
+ * onto its own row directly below the mark, and both are centered —
+ * this keeps the brand mark from drifting around or shrinking when
+ * the sidebar narrows to 60px.
  */
-.sidebar__toggle {
-  -webkit-app-region: no-drag;
-  position: absolute;
-  top: 56px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--surface-base);
-  color: var(--fg-muted);
-  border: 1px solid var(--divider);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  z-index: 5;
-  transition:
-    background 80ms ease,
-    color 80ms ease,
-    border-color 80ms ease,
-    box-shadow 80ms ease;
-}
-.sidebar__toggle:hover {
-  background: var(--surface-hover);
-  color: var(--fg);
-  border-color: var(--divider-strong);
-}
-.sidebar__toggle:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
 .sidebar__brand {
-  /* Reserve room for the toggle button (top: 56px, height: 28px ⇒ ends
-     at 84px) plus a comfortable gap. Without this padding the brand
-     label would collide with the toggle on first paint. */
-  padding: 96px var(--space-4) var(--space-5);
+  padding: 56px var(--space-4) var(--space-5);
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
   white-space: nowrap;
   overflow: hidden;
@@ -121,12 +83,61 @@
 .sidebar__brand-label {
   font: 600 var(--text-h1-size) / 1 var(--font-sans);
   letter-spacing: -0.005em;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: opacity 120ms ease;
 }
 
-.sidebar--collapsed .sidebar__brand {
-  padding: 96px 0 var(--space-5);
+/*
+ * Inline collapse toggle. 28x28 hit target with a 16px lucide chevron
+ * inside (4px implicit padding on each side). Lives inside the brand
+ * row, anchored to the right edge by the parent's space-between.
+ * Lucide icons render as currentColor SVG so the colour token controls
+ * them via `color: ...`. `no-drag` lets it accept clicks despite the
+ * sidebar being a window-drag region.
+ */
+.sidebar__toggle {
+  -webkit-app-region: no-drag;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  padding: 0;
+  transition:
+    background 80ms ease,
+    color 80ms ease,
+    box-shadow 80ms ease;
+}
+.sidebar__toggle:hover {
+  background: var(--surface-hover);
+  color: var(--fg);
+}
+.sidebar__toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/*
+ * Collapsed sidebar — wordmark hides, brand row stacks the mark on
+ * top and the toggle directly underneath. Both centered horizontally
+ * within the 60px column. We drop the row gap so the two glyphs read
+ * as a tight column rather than two unrelated items.
+ */
+.sidebar--collapsed .sidebar__brand {
+  padding: 56px 0 var(--space-5);
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
 }
 .sidebar--collapsed .sidebar__brand-label {
   display: none;
@@ -1784,14 +1795,21 @@
   overflow-y: auto;
   padding: var(--space-1, 4px);
   border-radius: var(--radius-lg, 12px);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(255, 255, 255, 0.72);
+  /* Strong hairline border so the popup's edge is clearly defined
+     against any transcript background. */
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  /* Bumped from 0.72 ⇒ 0.94 — backdrop-filter alone can't carry an
+     "obviously a popover" feel in light mode; the popup needs to read
+     as effectively opaque with just a hint of frost showing through. */
+  background: rgba(255, 255, 255, 0.94);
   -webkit-backdrop-filter: saturate(180%) blur(24px);
   backdrop-filter: saturate(180%) blur(24px);
+  /* Three-stop shadow lifts the popup convincingly off the transcript;
+     stronger than v0.7 to pair with the heavier surface alpha. */
   box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.04),
-    0 8px 24px rgba(15, 23, 42, 0.10),
-    0 16px 48px rgba(15, 23, 42, 0.16);
+    0 2px 4px rgba(15, 23, 42, 0.06),
+    0 12px 28px rgba(15, 23, 42, 0.14),
+    0 24px 56px rgba(15, 23, 42, 0.20);
   font-family: inherit;
   animation: picker-in 140ms cubic-bezier(0.32, 0.72, 0, 1);
   transform-origin: top left;
@@ -1805,12 +1823,12 @@
 }
 
 [data-theme='dark'] .speaker-picker {
-  background: rgba(28, 28, 30, 0.72);
-  border-color: rgba(255, 255, 255, 0.10);
+  background: rgba(28, 28, 30, 0.94);
+  border-color: rgba(255, 255, 255, 0.14);
   box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.18),
-    0 8px 24px rgba(0, 0, 0, 0.35),
-    0 16px 48px rgba(0, 0, 0, 0.50);
+    0 2px 4px rgba(0, 0, 0, 0.30),
+    0 12px 28px rgba(0, 0, 0, 0.45),
+    0 24px 56px rgba(0, 0, 0, 0.60);
 }
 @supports not ((backdrop-filter: blur(24px)) or (-webkit-backdrop-filter: blur(24px))) {
   [data-theme='dark'] .speaker-picker {

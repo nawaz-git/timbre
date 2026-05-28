@@ -87,24 +87,24 @@ function AppShell(): JSX.Element {
   return (
     <div className={'app' + (collapsed ? ' app--sidebar-collapsed' : '')}>
       <aside className={'sidebar' + (collapsed ? ' sidebar--collapsed' : '')}>
-        <button
-          type="button"
-          className="sidebar__toggle"
-          onClick={toggleSidebar}
-          aria-label={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
-          title={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
-        >
-          {collapsed ? (
-            <PanelLeftOpen size={14} strokeWidth={1.75} aria-hidden="true" />
-          ) : (
-            <PanelLeftClose size={14} strokeWidth={1.75} aria-hidden="true" />
-          )}
-        </button>
         <div className="sidebar__brand">
           <span className="sidebar__brand-mark" aria-hidden="true">
             <Sparkles size={14} strokeWidth={2} />
           </span>
           <span className="sidebar__brand-label">Mintr</span>
+          <button
+            type="button"
+            className="sidebar__toggle"
+            onClick={toggleSidebar}
+            aria-label={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
+            title={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
+          >
+            {collapsed ? (
+              <PanelLeftOpen size={16} strokeWidth={1.75} aria-hidden="true" />
+            ) : (
+              <PanelLeftClose size={16} strokeWidth={1.75} aria-hidden="true" />
+            )}
+          </button>
         </div>
         <nav className="sidebar__nav" aria-label="Primary">
           {NAV.map((item) => {
