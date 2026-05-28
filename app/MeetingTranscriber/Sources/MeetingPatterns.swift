@@ -79,21 +79,35 @@ extension AppMeetingPattern {
     )
 
     /// Google Meet runs in a browser tab (Chrome on macOS); the window title
-    /// reflects the active tab's `document.title`. Meet sets it to
-    /// "Meet - <code>" (or "Meet - <meeting name>" once joined). Unlike Teams/
-    /// Zoom/Webex, Chrome does not create a stable `PreventUserIdleDisplaySleep`
-    /// assertion per-tab during a Meet call, so detection has to fall back to
-    /// the window-title path (`MeetingDetector`) rather than the power-
-    /// assertion path (`PowerAssertionDetector`).
+    /// (`kCGWindowName`) is the active tab's raw `document.title` — Chrome does
+    /// NOT append its " - Google Chrome – <profile>" suffix to `kCGWindowName`
+    /// (verified live: a Slack tab reports exactly "Where work happens | Slack").
+    ///
+    /// Real in-call Meet `document.title` values vary by Meet version and how the
+    /// call was created, e.g. "fza-ukvk-tyg - Google Meet", "Meet - <name>", or a
+    /// bare meeting code "fza-ukvk-tyg" (codes are lowercase `xxx-xxxx-xxx`). The
+    /// old single anchored pattern `^Meet -` only matched the legacy "Meet - X"
+    /// form, so a call titled "<code> - Google Meet" was NEVER detected and the
+    /// engine recorded nothing. We now match any of: a leading "Meet -", the
+    /// phrase "Google Meet" anywhere, or a bare Meet meeting-code — while still
+    /// excluding the idle landing page ("Google Meet" with no code/name).
+    ///
+    /// Unlike Teams/Zoom/Webex, Chrome does not create a stable
+    /// `PreventUserIdleDisplaySleep` assertion per-tab during a Meet call, so
+    /// detection relies on this window-title path (`MeetingDetector`) rather than
+    /// the power-assertion path (`PowerAssertionDetector`).
     static let googleMeet = AppMeetingPattern(
         appName: "Google Meet",
         ownerNames: ["Google Chrome"],
         meetingPatterns: [
             #"^Meet\s*[-—–]\s*\S"#,
+            #"\bGoogle Meet\b"#,
+            #"\b[a-z]{3}-[a-z]{4}-[a-z]{3}\b"#,
         ],
         idlePatterns: [
             #"^New Tab$"#,
             #"^Google Chrome$"#,
+            #"^Google Meet$"#,
         ],
     )
 

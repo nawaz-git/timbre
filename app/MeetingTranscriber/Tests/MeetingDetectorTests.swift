@@ -226,6 +226,44 @@ final class MeetingDetectorTests: XCTestCase {
         XCTAssertNotNil(detector.checkOnce())
     }
 
+    // Real in-call titles: Chrome's kCGWindowName is the raw document.title
+    // (no " - Google Chrome" suffix). Modern Meet titles the tab "<code> - Google
+    // Meet", not "Meet - <code>", which the old `^Meet -` anchor never matched.
+    func testDetectsGoogleMeetCodeThenGoogleMeet() {
+        let detector = makeDetector(patterns: [.googleMeet])
+        detector.windowListProvider = {
+            [makeWindow(owner: "Google Chrome", name: "fza-ukvk-tyg - Google Meet")]
+        }
+        let result = detector.checkOnce()
+        XCTAssertNotNil(result)
+        XCTAssertEqual(result?.pattern.appName, "Google Meet")
+    }
+
+    func testDetectsGoogleMeetNamedMeeting() {
+        let detector = makeDetector(patterns: [.googleMeet])
+        detector.windowListProvider = {
+            [makeWindow(owner: "Google Chrome", name: "Engineering Standup - Google Meet")]
+        }
+        XCTAssertNotNil(detector.checkOnce())
+    }
+
+    func testDetectsGoogleMeetBareCode() {
+        let detector = makeDetector(patterns: [.googleMeet])
+        detector.windowListProvider = {
+            [makeWindow(owner: "Google Chrome", name: "fza-ukvk-tyg")]
+        }
+        XCTAssertNotNil(detector.checkOnce())
+    }
+
+    func testIgnoresGoogleMeetLandingPage() {
+        // Bare "Google Meet" (the landing page before joining) is idle, not a call.
+        let detector = makeDetector(patterns: [.googleMeet])
+        detector.windowListProvider = {
+            [makeWindow(owner: "Google Chrome", name: "Google Meet")]
+        }
+        XCTAssertNil(detector.checkOnce())
+    }
+
     func testIgnoresGoogleMeetIdleChrome() {
         let detector = makeDetector(patterns: [.googleMeet])
         detector.windowListProvider = {
