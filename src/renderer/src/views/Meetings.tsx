@@ -234,12 +234,13 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   })
 
   // Cascade banner — non-blocking nudge shown after a successful rename or
-  // per-segment reassign. Tracks the LAST speaker the user just touched so
-  // a second reassign within the same visit updates (not stacks) the banner.
-  // Cleared on meeting switch, after a re-analyse completes, or when the
-  // user clicks "Later". Holding only a string keeps this state cheap and
-  // tied to the meeting-session lifecycle.
-  const [lastReassignedSpeaker, setLastReassignedSpeaker] = useState<string | null>(null)
+  // per-segment reassign. Aggregates ALL renamed/reassigned speakers since
+  // the last successful re-analyse (or meeting switch), in insertion order,
+  // de-duped. The banner renders each name as a colored inline pill so the
+  // user can see at a glance every voice that will benefit from a single
+  // re-analyse. Cleared on meeting switch, after a re-analyse completes,
+  // or when the user clicks "Later" (next rename re-populates).
+  const [reassignQueue, setReassignQueue] = useState<string[]>([])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -284,7 +285,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     async (m: MeetingSummary) => {
       setSelectedId(m.id)
       setStatusBanner(null)
-      setLastReassignedSpeaker(null)
+      setReassignQueue([])
       setTitleEditing(false)
       setPickerForCluster(null)
       setPickerForSegment(null)
@@ -320,10 +321,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         if (reanalyzeJobId && ev.jobId === reanalyzeJobId) {
           setReanalyzeJobId(null)
           setStatusBanner('Re-analysis complete.')
-          // The cascade just ran — any other clusters that were really the
-          // renamed speaker will have been picked up by the global-DB match.
-          // The banner has done its job; clear it.
-          setLastReassignedSpeaker(null)
+          // The cascade just ran — every renamed centroid in the queue has
+          // been re-matched across the meeting via the global DB. The banner
+          // has done its job; clear the entire queue.
+          setReassignQueue([])
           // Transcript files on disk changed — drop the export-preview
           // cache so the Export tab refetches against the new contents.
           setPreviewCache({})
@@ -645,8 +646,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             ? `Assigned "${newName}" — enrolled their voice for next time.`
             : `Renamed to "${newName}".`
         )
-        // Show (or update) the cascade banner for this meeting-session.
-        setLastReassignedSpeaker(newName)
+        // Append to the cascade queue for this meeting-session. Insertion
+        // order preserved; existing names are not duplicated.
+        setReassignQueue((q) => (q.includes(newName) ? q : [...q, newName]))
         setPickerForCluster(null)
         // Transcript files were rewritten by the rename — drop any cached
         // export previews so the next preview fetch reads fresh contents.
@@ -675,9 +677,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         setStatusBanner(`Segment ${segmentIndex + 1} → "${newName}".`)
         // Per-segment reassign also benefits from a re-analyse: the user's
         // mental model is "I just told the app this voice is Bob, propagate it".
-        // Setting the banner to the new name (replacing, not stacking) keeps
-        // one banner per meeting-session even after multiple reassigns.
-        setLastReassignedSpeaker(newName)
+        // Append to the queue so all touched voices show in the cascade banner.
+        setReassignQueue((q) => (q.includes(newName) ? q : [...q, newName]))
         // Transcript files were rewritten — drop cached export previews.
         setPreviewCache({})
         await loadTranscript(selectedId)
@@ -1330,28 +1331,70 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
             {/* ── Cascade banner ──────────────────────────────────────────
                 Shown after a successful cluster rename or per-segment reassign
-                on the currently-selected meeting. One banner per meeting visit:
-                a second reassign updates the speaker name in place rather than
-                stacking. Auto-dismisses on the next successful re-analyse. */}
-            {lastReassignedSpeaker && (
+                on the currently-selected meeting. Aggregates EVERY touched
+                speaker since the last re-analyse / meeting switch as colored
+                inline pills, so the user sees at a glance every voice that a
+                single re-analyse will propagate. Auto-dismisses on a successful
+                re-analyse; "Later" clears the queue (next rename re-populates). */}
+            {reassignQueue.length > 0 && (
               <div
                 className="cascade-banner"
-                style={{ borderLeftColor: colorForSpeaker(lastReassignedSpeaker) }}
+                style={{
+                  // Single-speaker case: tint the accent stripe with that
+                  // speaker's color (familiar v0.7 behaviour). With multiple
+                  // speakers, fall back to the neutral brand accent — picking
+                  // one speaker's color over another would be arbitrary.
+                  borderLeftColor:
+                    reassignQueue.length === 1
+                      ? colorForSpeaker(reassignQueue[0]!)
+                      : 'var(--accent)'
+                }}
                 role="status"
               >
                 <span className="cascade-banner__icon" aria-hidden="true">
                   <RefreshCw size={14} strokeWidth={2} />
                 </span>
                 <div className="cascade-banner__body">
-                  <div className="cascade-banner__line">
-                    Updated <strong>&ldquo;{lastReassignedSpeaker}&rdquo;</strong>&apos;s voice
-                    in your enrolled list.
-                  </div>
-                  <div className="cascade-banner__line cascade-banner__line--dim">
-                    Re-analyse this meeting to apply{' '}
-                    <strong>&ldquo;{lastReassignedSpeaker}&rdquo;</strong> everywhere their
-                    voice appears.
-                  </div>
+                  {reassignQueue.length === 1 ? (
+                    <>
+                      <div className="cascade-banner__line">
+                        Updated <strong>&ldquo;{reassignQueue[0]}&rdquo;</strong>&apos;s
+                        voice in your enrolled list.
+                      </div>
+                      <div className="cascade-banner__line cascade-banner__line--dim">
+                        Re-analyse this meeting to apply{' '}
+                        <strong>&ldquo;{reassignQueue[0]}&rdquo;</strong> everywhere
+                        their voice appears.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="cascade-banner__line cascade-banner__pills-line">
+                        <span>Updated voices:</span>
+                        {reassignQueue.map((name) => {
+                          const color = colorForSpeaker(name)
+                          return (
+                            <span
+                              key={name}
+                              className="speaker-pill speaker-pill--inline"
+                              style={
+                                {
+                                  ['--pill-color' as string]: color
+                                } as React.CSSProperties
+                              }
+                            >
+                              <span className="speaker-pill__dot" />
+                              <span className="speaker-pill__name">{name}</span>
+                            </span>
+                          )
+                        })}
+                      </div>
+                      <div className="cascade-banner__line cascade-banner__line--dim">
+                        Re-analyse this meeting to apply these voices everywhere
+                        they appear.
+                      </div>
+                    </>
+                  )}
                 </div>
                 <div className="cascade-banner__actions">
                   <button
@@ -1365,7 +1408,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   <button
                     type="button"
                     className="btn btn--small"
-                    onClick={() => setLastReassignedSpeaker(null)}
+                    onClick={() => setReassignQueue([])}
                     disabled={reanalyzeJobId !== null}
                   >
                     Later
