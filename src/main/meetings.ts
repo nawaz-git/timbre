@@ -71,6 +71,14 @@ interface MetadataFile {
   durationSeconds?: number
   speakers?: SpeakerRecord[]
   speakerCount?: number
+  /** User-set display title — overrides the folder-derived default. */
+  title?: string
+}
+
+interface TranscriptJSON {
+  segments: Array<{ speaker: string; start: number; end: number; text: string }>
+  duration?: number
+  speakerCount?: number
 }
 
 /**
@@ -97,13 +105,17 @@ async function listPerFolderMeetings(root: string): Promise<MeetingSummary[]> {
     }
     const metadata = await safeReadJson<MetadataFile>(join(folderPath, 'metadata.json'))
     const speakers = await safeReadJson<SpeakerRecord[]>(join(folderPath, 'speakers.json'))
+    const transcriptJson = await safeReadJson<TranscriptJSON>(join(folderPath, 'transcript.json'))
+    const hasAudio = await pathExists(join(folderPath, 'audio.wav'))
     results.push({
       id: `imported:${entry.name}`,
-      title: titleFromFolderName(entry.name),
+      title: metadata?.title?.trim() ? metadata.title : titleFromFolderName(entry.name),
       folderPath,
       date: stat.mtime.toISOString(),
-      durationSeconds: metadata?.durationSeconds ?? 0,
-      speakerCount: speakers?.length ?? metadata?.speakerCount ?? 0
+      durationSeconds: transcriptJson?.duration ?? metadata?.durationSeconds ?? 0,
+      speakerCount:
+        transcriptJson?.speakerCount ?? speakers?.length ?? metadata?.speakerCount ?? 0,
+      hasAudio
     })
   }
   return results
@@ -146,7 +158,8 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       folderPath: protocolsDir,
       date: stat.mtime.toISOString(),
       durationSeconds: 0, // engine doesn't write duration sidecar; left as 0
-      speakerCount: 0 // engine doesn't write speakers sidecar; left as 0
+      speakerCount: 0, // engine doesn't write speakers sidecar; left as 0
+      hasAudio: false // engine recordings live in ../recordings/ with different naming
     })
   }
   return results
@@ -221,7 +234,14 @@ export async function readTranscript(
     transcript = ''
   }
   const speakers = (await safeReadJson<SpeakerRecord[]>(join(folder, 'speakers.json'))) ?? []
-  return { meetingId, transcript, speakers }
+  const tj = await safeReadJson<TranscriptJSON>(join(folder, 'transcript.json'))
+  return {
+    meetingId,
+    transcript,
+    speakers,
+    segments: tj?.segments,
+    durationSeconds: tj?.duration
+  }
 }
 
 /**
@@ -369,4 +389,156 @@ export async function reanalyzeMeeting(opts: {
 export function numSpeakersHintToInt(hint: NumSpeakersHint | undefined): number | undefined {
   if (typeof hint === 'number') return hint
   return undefined
+}
+
+/**
+ * Set or clear the user-set title for an imported meeting. Stored inside the
+ * meeting folder as `metadata.json` so the title survives re-analysis and
+ * re-installation of the Electron app.
+ */
+export async function renameMeetingTitle(
+  outputFolder: string,
+  meetingId: string,
+  newTitle: string
+): Promise<{ title: string }> {
+  if (meetingId.startsWith('engine:')) {
+    throw new Error('Live-recording meetings cannot be renamed from the Electron UI yet.')
+  }
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${meetingId}`)
+  }
+  const trimmed = newTitle.trim()
+  const folder = join(outputFolder, folderId)
+  const metaPath = join(folder, 'metadata.json')
+  const existing = (await safeReadJson<MetadataFile>(metaPath)) ?? {}
+  if (trimmed) {
+    existing.title = trimmed
+  } else {
+    delete existing.title
+  }
+  await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+  return {
+    title: existing.title?.trim() ? existing.title : titleFromFolderName(folderId)
+  }
+}
+
+// ─── Export helpers ─────────────────────────────────────────────────────
+
+function formatTimestampHHMMSS(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  return [h, m, s].map((v) => String(v).padStart(2, '0')).join(':')
+}
+
+function formatTimestampSRT(seconds: number): string {
+  const total = Math.max(0, seconds)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = Math.floor(total % 60)
+  const ms = Math.floor((total - Math.floor(total)) * 1000)
+  return (
+    String(h).padStart(2, '0') +
+    ':' +
+    String(m).padStart(2, '0') +
+    ':' +
+    String(s).padStart(2, '0') +
+    ',' +
+    String(ms).padStart(3, '0')
+  )
+}
+
+interface ExportPayload {
+  /** Suggested filename (with extension). */
+  filename: string
+  /** Body bytes (UTF-8 string for text formats, raw bytes for audio). */
+  body: string | Buffer
+  /** MIME type — purely advisory; the renderer uses this to set the dialog filter. */
+  contentType: string
+}
+
+/**
+ * Build an export payload for a meeting in the requested format. Returns
+ * the bytes ready to write to the user's chosen path; the renderer triggers
+ * the Save dialog separately.
+ */
+export async function exportMeeting(
+  outputFolder: string,
+  meetingId: string,
+  format: 'txt' | 'md' | 'json' | 'srt' | 'audio',
+  title: string
+): Promise<ExportPayload> {
+  if (meetingId.startsWith('engine:')) {
+    if (format !== 'txt' && format !== 'md') {
+      throw new Error(`Live-recording meetings only support txt/md export, not ${format}.`)
+    }
+    const prefix = meetingId.slice('engine:'.length)
+    const srcExt = format === 'md' ? 'md' : 'txt'
+    const srcPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.${srcExt}`)
+    const body = await fs.readFile(srcPath, 'utf-8')
+    return {
+      filename: `${prefix}.${srcExt}`,
+      body,
+      contentType: format === 'md' ? 'text/markdown' : 'text/plain'
+    }
+  }
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${meetingId}`)
+  }
+  const folder = join(outputFolder, folderId)
+  const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || folderId
+
+  if (format === 'audio') {
+    const body = await fs.readFile(join(folder, 'audio.wav'))
+    return { filename: `${safeTitle}.wav`, body, contentType: 'audio/wav' }
+  }
+  if (format === 'txt') {
+    const body = await fs.readFile(join(folder, 'transcript.txt'), 'utf-8')
+    return { filename: `${safeTitle}.txt`, body, contentType: 'text/plain' }
+  }
+  if (format === 'json') {
+    const body = await fs.readFile(join(folder, 'transcript.json'), 'utf-8')
+    return { filename: `${safeTitle}.json`, body, contentType: 'application/json' }
+  }
+
+  // For md and srt we synthesise from transcript.json.
+  const tjRaw = await fs.readFile(join(folder, 'transcript.json'), 'utf-8')
+  const tj = JSON.parse(tjRaw) as TranscriptJSON
+  const segments = tj.segments ?? []
+
+  if (format === 'md') {
+    const lines: string[] = [`# ${title}`, '']
+    for (const seg of segments) {
+      lines.push(
+        `**${seg.speaker}** _(${formatTimestampHHMMSS(seg.start)})_`,
+        '',
+        seg.text.trim(),
+        ''
+      )
+    }
+    return { filename: `${safeTitle}.md`, body: lines.join('\n'), contentType: 'text/markdown' }
+  }
+
+  // SRT
+  const srtLines: string[] = []
+  segments.forEach((seg, i) => {
+    srtLines.push(
+      String(i + 1),
+      `${formatTimestampSRT(seg.start)} --> ${formatTimestampSRT(seg.end)}`,
+      `${seg.speaker}: ${seg.text.trim()}`,
+      ''
+    )
+  })
+  return {
+    filename: `${safeTitle}.srt`,
+    body: srtLines.join('\n'),
+    contentType: 'application/x-subrip'
+  }
 }

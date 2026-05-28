@@ -1,10 +1,83 @@
-import { app, BrowserWindow, shell } from 'electron'
-import { promises as fs } from 'fs'
-import { join } from 'path'
+import { app, BrowserWindow, net, protocol, shell } from 'electron'
+import { promises as fs, existsSync } from 'fs'
+import { join, resolve, sep } from 'path'
+import { pathToFileURL } from 'url'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { registerIpcHandlers } from './ipc'
+import { liveRecordingsRoot } from './meetings'
 import { readSettings } from './settings'
+
+// `mt-audio://` MUST be registered as privileged before app.whenReady().
+// Without this, the renderer's <audio src="mt-audio://..."> gets blocked by
+// CORS/security checks. `stream: true` lets net.fetch deliver ranged responses
+// so HTML5 audio seeking works without buffering the whole file first.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'mt-audio',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      bypassCSP: true
+    }
+  }
+])
+
+/**
+ * Validates that an absolute path lives under one of the allowed roots —
+ * the user's configured Output Folder, or the engine's default folder.
+ * Prevents the renderer from coaxing the protocol into serving arbitrary
+ * files via `..`-style traversal.
+ */
+async function isUnderAllowedRoot(absPath: string): Promise<boolean> {
+  const settings = await readSettings()
+  const roots = [settings.outputFolder, liveRecordingsRoot]
+  const target = resolve(absPath)
+  for (const root of roots) {
+    const r = resolve(root) + sep
+    if (target.startsWith(r)) return true
+  }
+  return false
+}
+
+/**
+ * Register the `mt-audio://meeting/<folder-id>/audio.wav` protocol handler.
+ * Must be called inside `app.whenReady()`.
+ */
+function registerAudioProtocol(): void {
+  protocol.handle('mt-audio', async (req) => {
+    try {
+      const url = new URL(req.url)
+      if (url.hostname !== 'meeting') {
+        return new Response('Bad request', { status: 400 })
+      }
+      const segments = url.pathname.split('/').filter(Boolean)
+      if (segments.length !== 2 || segments[1] !== 'audio.wav') {
+        return new Response('Not found', { status: 404 })
+      }
+      const folderId = decodeURIComponent(segments[0])
+      if (folderId.includes('..') || folderId.includes('/') || folderId.includes('\\')) {
+        return new Response('Bad id', { status: 400 })
+      }
+      const settings = await readSettings()
+      const candidates = [
+        join(settings.outputFolder, folderId, 'audio.wav'),
+        join(liveRecordingsRoot, folderId, 'audio.wav')
+      ]
+      for (const candidate of candidates) {
+        if (existsSync(candidate) && (await isUnderAllowedRoot(candidate))) {
+          return net.fetch(pathToFileURL(candidate).toString())
+        }
+      }
+      return new Response('Not found', { status: 404 })
+    } catch (err) {
+      console.error('[mt-audio] handler error', err)
+      return new Response('Internal error', { status: 500 })
+    }
+  })
+}
 
 function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
@@ -70,6 +143,7 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  registerAudioProtocol()
   registerIpcHandlers()
   await ensureOutputFolder()
   createWindow()

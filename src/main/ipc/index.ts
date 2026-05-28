@@ -1,9 +1,11 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { randomUUID } from 'crypto'
+import { promises as fs } from 'fs'
 import { IPC } from '../../shared/types'
 import type {
   BackendJob,
   EnrolledSpeaker,
+  ExportFormat,
   ImportResult,
   MeetingSummary,
   MeetingTranscript,
@@ -16,9 +18,11 @@ import {
   numSpeakersToArg
 } from '../backend'
 import {
+  exportMeeting,
   listMeetings,
   liveRecordingsRoot,
   readTranscript,
+  renameMeetingTitle,
   renameSpeakerInMeeting
 } from '../meetings'
 import {
@@ -184,4 +188,61 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.speakersDelete, async (_event, name: string): Promise<void> => {
     return deleteSpeakerFromGlobalDB(name)
   })
+
+  ipcMain.handle(
+    IPC.meetingsRenameTitle,
+    async (_event, meetingId: string, newTitle: string): Promise<{ title: string }> => {
+      const settings = await readSettings()
+      return renameMeetingTitle(settings.outputFolder, meetingId, newTitle)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.meetingsExport,
+    async (
+      event,
+      meetingId: string,
+      format: ExportFormat,
+      title: string
+    ): Promise<{ savedTo?: string; canceled?: boolean }> => {
+      const settings = await readSettings()
+      const payload = await exportMeeting(
+        settings.outputFolder,
+        meetingId,
+        format,
+        title || 'Meeting'
+      )
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const dialogOpts = {
+        title: `Export ${format.toUpperCase()}`,
+        defaultPath: payload.filename,
+        filters: filtersForFormat(format)
+      }
+      const result = win
+        ? await dialog.showSaveDialog(win, dialogOpts)
+        : await dialog.showSaveDialog(dialogOpts)
+      if (result.canceled || !result.filePath) return { canceled: true }
+      if (typeof payload.body === 'string') {
+        await fs.writeFile(result.filePath, payload.body, 'utf-8')
+      } else {
+        await fs.writeFile(result.filePath, payload.body)
+      }
+      return { savedTo: result.filePath }
+    }
+  )
+}
+
+function filtersForFormat(format: ExportFormat): Array<{ name: string; extensions: string[] }> {
+  switch (format) {
+    case 'txt':
+      return [{ name: 'Plain text', extensions: ['txt'] }]
+    case 'md':
+      return [{ name: 'Markdown', extensions: ['md'] }]
+    case 'json':
+      return [{ name: 'JSON', extensions: ['json'] }]
+    case 'srt':
+      return [{ name: 'SubRip subtitles', extensions: ['srt'] }]
+    case 'audio':
+      return [{ name: 'WAV audio', extensions: ['wav'] }]
+  }
 }

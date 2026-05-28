@@ -5,6 +5,7 @@ import type {
   BackendEvent,
   BackendJob,
   EnrolledSpeaker,
+  ExportFormat,
   ImportResult,
   MeetingSummary,
   MeetingTranscript,
@@ -42,7 +43,15 @@ const api = {
     ): Promise<{ enrolled: boolean }> =>
       ipcRenderer.invoke(IPC.meetingsRenameSpeaker, meetingId, oldName, newName),
     reanalyze: (meetingId: string, numSpeakers?: number): Promise<BackendJob> =>
-      ipcRenderer.invoke(IPC.meetingsReanalyze, meetingId, numSpeakers)
+      ipcRenderer.invoke(IPC.meetingsReanalyze, meetingId, numSpeakers),
+    renameTitle: (meetingId: string, newTitle: string): Promise<{ title: string }> =>
+      ipcRenderer.invoke(IPC.meetingsRenameTitle, meetingId, newTitle),
+    export: (
+      meetingId: string,
+      format: ExportFormat,
+      title: string
+    ): Promise<{ savedTo?: string; canceled?: boolean }> =>
+      ipcRenderer.invoke(IPC.meetingsExport, meetingId, format, title)
   },
   speakers: {
     list: (): Promise<EnrolledSpeaker[]> => ipcRenderer.invoke(IPC.speakersList),

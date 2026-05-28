@@ -24,7 +24,7 @@ export interface RecordingStatus {
 export interface MeetingSummary {
   /** Folder name — used as a stable id. */
   id: string
-  /** Display title (folder name pretty-printed). */
+  /** Display title (folder name pretty-printed; overridden by metadata.json if present). */
   title: string
   /** Absolute path to the meeting folder. */
   folderPath: string
@@ -33,6 +33,21 @@ export interface MeetingSummary {
   /** Duration in seconds (best-effort; may be 0 if unknown). */
   durationSeconds: number
   /** Distinct speaker count (best-effort; may be 0 if unknown). */
+  speakerCount: number
+  /** True if this meeting has audio playback available (mt-batch outputs only — engine flat files don't). */
+  hasAudio: boolean
+}
+
+export interface TranscriptSegment {
+  speaker: string
+  start: number
+  end: number
+  text: string
+}
+
+export interface StructuredTranscript {
+  segments: TranscriptSegment[]
+  duration: number
   speakerCount: number
 }
 
@@ -43,7 +58,12 @@ export interface SpeakerRecord {
 
 export interface MeetingTranscript {
   meetingId: string
+  /** Raw transcript text — backward-compat for older renderer code. */
   transcript: string
+  /** Structured segments (preferred) — present when transcript.json exists. */
+  segments?: TranscriptSegment[]
+  /** Total duration in seconds (from transcript.json). */
+  durationSeconds?: number
   speakers: SpeakerRecord[]
 }
 
@@ -106,5 +126,10 @@ export const IPC = {
   pickFolder: 'settings:pickFolder',
   openLiveFolder: 'settings:openLiveFolder',
   speakersList: 'speakers:list',
-  speakersDelete: 'speakers:delete'
+  speakersDelete: 'speakers:delete',
+  meetingsRenameTitle: 'meetings:renameTitle',
+  meetingsExport: 'meetings:export'
 } as const
+
+/** Export format kinds for `meetings:export`. */
+export type ExportFormat = 'txt' | 'md' | 'json' | 'srt' | 'audio'
