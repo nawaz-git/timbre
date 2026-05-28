@@ -26,11 +26,14 @@
  *        CFBundleExecutable   = MintrEngine
  *   4. Rename the .app bundle directory:
  *      MeetingTranscriber.app → MintrEngine.app
- *   5. Re-sign with ad-hoc identity so codesign verification still
- *      passes after the rewrite. The original ad-hoc signature is
- *      invalidated by any byte-level change inside the bundle, and the
- *      hardened runtime refuses to load an app whose code signature
- *      doesn't match its current contents.
+ *   5. Re-sign so codesign verification still passes after the rewrite.
+ *      The original signature is invalidated by any byte-level change
+ *      inside the bundle, and the hardened runtime refuses to load an app
+ *      whose code signature doesn't match its current contents.
+ *      When MINTR_SIGN_IDENTITY is set (see dev/scripts/setup-signing.sh)
+ *      we re-sign with that STABLE identity so the cdhash-independent
+ *      Designated Requirement stays constant across rebuilds and TCC grants
+ *      persist; otherwise we fall back to ad-hoc (`--sign -`).
  *
  * If any step throws we DO NOT swallow the error — let electron-builder
  * fail the whole build so we don't ship a half-rebranded DMG.
@@ -59,12 +62,31 @@ function plistSet(plistPath, key, value) {
 }
 
 /**
- * Re-sign a bundle ad-hoc. The `--force --deep --sign -` triple is the
- * canonical macOS recipe for re-signing an ad-hoc app whose contents
- * have changed post-build. `--deep` recurses into any nested code
- * (frameworks, embedded helper binaries) and re-signs them too.
+ * Re-sign the renamed engine bundle. When MINTR_SIGN_IDENTITY is set we use
+ * that stable identity (the TCC re-grant-loop fix); otherwise we fall back to
+ * ad-hoc (`--sign -`), preserving the previous build behaviour for CI / other
+ * devs who haven't run dev/scripts/setup-signing.sh.
+ *
+ * For the stable self-signed identity we drop `--deep` (the engine bundle has
+ * no nested code today, and `--deep` can fight electron-builder's own signing
+ * of the outer Mintr.app) and drop `--options runtime` (hardened runtime is
+ * off for the self-signed dev tier — see electron-builder.config.js). The
+ * ad-hoc path keeps the original `--force --deep --sign -` recipe verbatim.
+ * Both keep `--preserve-metadata=entitlements` so the engine's audio
+ * entitlements survive the re-sign.
  */
-function adhocResign(bundlePath) {
+function resignEngine(bundlePath) {
+  const identity = process.env.MINTR_SIGN_IDENTITY
+  if (identity) {
+    console.log(`[afterPack] re-signing renamed helper with identity "${identity}"`)
+    execFileSync(
+      '/usr/bin/codesign',
+      ['--force', '--sign', identity, '--preserve-metadata=entitlements', bundlePath],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    )
+    return
+  }
+  console.log('[afterPack] re-signing renamed helper ad-hoc')
   execFileSync(
     '/usr/bin/codesign',
     ['--force', '--deep', '--sign', '-', '--preserve-metadata=entitlements', bundlePath],
@@ -137,12 +159,12 @@ exports.default = async function afterPack(context) {
   // name in Finder and the path that Mintr's backend.ts spawns.
   fs.renameSync(oldAppPath, newAppPath)
 
-  // Step 4: re-sign ad-hoc. The original signature is invalidated by
-  // both the binary rename and the plist edits. Without re-signing,
-  // macOS would refuse to launch the helper (-67062 / errSecCSInfoPlistFailed
-  // or similar). We preserve any existing entitlements via the flag.
-  console.log('[afterPack] re-signing renamed helper ad-hoc')
-  adhocResign(newAppPath)
+  // Step 4: re-sign. The original signature is invalidated by both the
+  // binary rename and the plist edits. Without re-signing, macOS would
+  // refuse to launch the helper (-67062 / errSecCSInfoPlistFailed or
+  // similar). Uses MINTR_SIGN_IDENTITY when set, else ad-hoc; preserves
+  // existing entitlements either way.
+  resignEngine(newAppPath)
 
   console.log(`[afterPack] rebrand complete: ${newAppPath}`)
   console.log(`            bundle id: ${NEW_BUNDLE_ID}`)
