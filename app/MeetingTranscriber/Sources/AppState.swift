@@ -436,7 +436,11 @@ final class AppState { // swiftlint:disable:this type_body_length
                 syncLanguageSettings()
                 pipelineQueue = makePipelineQueue()
 
-                let detector: any MeetingDetecting = PowerAssertionDetector()
+                var subDetectors: [any MeetingDetecting] = [PowerAssertionDetector()]
+                if settings.watchGoogleMeet {
+                    subDetectors.append(MeetingDetector(patterns: [.googleMeet]))
+                }
+                let detector: any MeetingDetecting = CompositeMeetingDetector(subDetectors)
 
                 let loop = WatchLoop(
                     detector: detector,
@@ -919,7 +923,6 @@ final class AppState { // swiftlint:disable:this type_body_length
         case .openAICompatible:
             OpenAIProtocolGenerator(
                 endpoint: URL(string: settings.openAIEndpoint)
-                    // swiftlint:disable:next force_unwrapping
                     ?? URL(string: "http://localhost:11434/v1/chat/completions")!,
                 model: settings.openAIModel,
                 language: settings.protocolLanguage,

@@ -4,9 +4,14 @@ recordings/
 speakers.json
 .DS_Store
 
+# Local audio fixtures (personal recordings, not for the repo).
+sample.mp3
+sample-*.mp3
+
 # Swift build artifacts
 app/MeetingTranscriber/.build/
 tools/audiotap/.build/
+tools/mt-batch/.build/
 
 # Release build artifacts
 .build/

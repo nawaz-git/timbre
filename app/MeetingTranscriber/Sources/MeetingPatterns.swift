@@ -78,6 +78,25 @@ extension AppMeetingPattern {
         ],
     )
 
+    /// Google Meet runs in a browser tab (Chrome on macOS); the window title
+    /// reflects the active tab's `document.title`. Meet sets it to
+    /// "Meet - <code>" (or "Meet - <meeting name>" once joined). Unlike Teams/
+    /// Zoom/Webex, Chrome does not create a stable `PreventUserIdleDisplaySleep`
+    /// assertion per-tab during a Meet call, so detection has to fall back to
+    /// the window-title path (`MeetingDetector`) rather than the power-
+    /// assertion path (`PowerAssertionDetector`).
+    static let googleMeet = AppMeetingPattern(
+        appName: "Google Meet",
+        ownerNames: ["Google Chrome"],
+        meetingPatterns: [
+            #"^Meet\s*[-—–]\s*\S"#,
+        ],
+        idlePatterns: [
+            #"^New Tab$"#,
+            #"^Google Chrome$"#,
+        ],
+    )
+
     /// Debug simulator for testing the full pipeline without a real meeting app.
     /// Run: cd tools/meeting-simulator && swift run
     static let simulator = AppMeetingPattern(
@@ -90,7 +109,7 @@ extension AppMeetingPattern {
         minWindowHeight: 100,
     )
 
-    static let all: [AppMeetingPattern] = [teams, zoom, webex, simulator]
+    static let all: [AppMeetingPattern] = [teams, zoom, webex, googleMeet, simulator]
 
     static let byName: [String: AppMeetingPattern] = {
         var dict: [String: AppMeetingPattern] = [:]

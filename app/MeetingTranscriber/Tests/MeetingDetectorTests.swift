@@ -45,14 +45,15 @@ final class MeetingPatternsTests: XCTestCase {
         XCTAssertFalse(AppMeetingPattern.webex.ownerNames.isEmpty)
     }
 
-    func testAllPatternsContainsFour() {
-        XCTAssertEqual(AppMeetingPattern.all.count, 4)
+    func testAllPatternsContainsFive() {
+        XCTAssertEqual(AppMeetingPattern.all.count, 5)
     }
 
     func testByNameLookup() {
         XCTAssertNotNil(AppMeetingPattern.byName["microsoft teams"])
         XCTAssertNotNil(AppMeetingPattern.byName["zoom"])
         XCTAssertNotNil(AppMeetingPattern.byName["webex"])
+        XCTAssertNotNil(AppMeetingPattern.byName["google meet"])
         XCTAssertNil(AppMeetingPattern.byName["slack"])
     }
 }
@@ -205,6 +206,48 @@ final class MeetingDetectorTests: XCTestCase {
         let result = detector.checkOnce()
         XCTAssertNotNil(result)
         XCTAssertEqual(result?.pattern.appName, "Webex")
+    }
+
+    func testDetectsGoogleMeetWithCode() {
+        let detector = makeDetector(patterns: [.googleMeet])
+        detector.windowListProvider = {
+            [makeWindow(owner: "Google Chrome", name: "Meet - abc-defg-hij")]
+        }
+        let result = detector.checkOnce()
+        XCTAssertNotNil(result)
+        XCTAssertEqual(result?.pattern.appName, "Google Meet")
+    }
+
+    func testDetectsGoogleMeetWithEmDash() {
+        let detector = makeDetector(patterns: [.googleMeet])
+        detector.windowListProvider = {
+            [makeWindow(owner: "Google Chrome", name: "Meet — abc-defg-hij")]
+        }
+        XCTAssertNotNil(detector.checkOnce())
+    }
+
+    func testIgnoresGoogleMeetIdleChrome() {
+        let detector = makeDetector(patterns: [.googleMeet])
+        detector.windowListProvider = {
+            [makeWindow(owner: "Google Chrome", name: "Google Chrome")]
+        }
+        XCTAssertNil(detector.checkOnce())
+    }
+
+    func testIgnoresGoogleMeetUnrelatedChromeTab() {
+        let detector = makeDetector(patterns: [.googleMeet])
+        detector.windowListProvider = {
+            [makeWindow(owner: "Google Chrome", name: "Inbox (5) - Gmail")]
+        }
+        XCTAssertNil(detector.checkOnce())
+    }
+
+    func testIgnoresGoogleMeetInNonChromeBrowser() {
+        let detector = makeDetector(patterns: [.googleMeet])
+        detector.windowListProvider = {
+            [makeWindow(owner: "Firefox", name: "Meet - abc-defg-hij")]
+        }
+        XCTAssertNil(detector.checkOnce())
     }
 
     func testMultiplePatterns() {

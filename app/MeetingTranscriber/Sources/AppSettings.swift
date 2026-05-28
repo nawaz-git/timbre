@@ -116,6 +116,10 @@ final class AppSettings {
         didSet { defaults.set(watchWebex, forKey: "watchWebex") }
     }
 
+    var watchGoogleMeet: Bool {
+        didSet { defaults.set(watchGoogleMeet, forKey: "watchGoogleMeet") }
+    }
+
     /// Auto-start watching on app launch.
     var autoWatch: Bool {
         didSet { defaults.set(autoWatch, forKey: "autoWatch") }
@@ -451,6 +455,7 @@ final class AppSettings {
         if watchTeams { apps.append("Microsoft Teams") }
         if watchZoom { apps.append("Zoom") }
         if watchWebex { apps.append("Webex") }
+        if watchGoogleMeet { apps.append("Google Meet") }
         return apps
     }
 
@@ -462,6 +467,7 @@ final class AppSettings {
         watchTeams = defaults.object(forKey: "watchTeams") as? Bool ?? true
         watchZoom = defaults.object(forKey: "watchZoom") as? Bool ?? true
         watchWebex = defaults.object(forKey: "watchWebex") as? Bool ?? true
+        watchGoogleMeet = defaults.object(forKey: "watchGoogleMeet") as? Bool ?? true
         autoWatch = defaults.object(forKey: "autoWatch") as? Bool ?? false
 
         pollInterval = defaults.object(forKey: "pollInterval") as? Double ?? 3.0
@@ -507,27 +513,33 @@ final class AppSettings {
             ?? "http://localhost:11434/v1/chat/completions"
         openAIModel = defaults.object(forKey: "openAIModel") as? String ?? "llama3.1"
 
-        // Migrate legacy "audioDebugLogging" key (renamed to "verboseDiagnostics" 2026-05-04).
-        // New key wins if both are set; legacy value seeds the new key on first launch.
-        if let new = defaults.object(forKey: "verboseDiagnostics") as? Bool {
-            verboseDiagnostics = new
-        } else if let legacy = defaults.object(forKey: "audioDebugLogging") as? Bool {
-            verboseDiagnostics = legacy
-            defaults.set(legacy, forKey: "verboseDiagnostics")
-        } else {
-            verboseDiagnostics = false
-        }
-        // Drop legacy key once the new key is populated, so a future second
-        // migration pass can't resurrect a stale value.
-        if defaults.object(forKey: "audioDebugLogging") != nil,
-           defaults.object(forKey: "verboseDiagnostics") != nil {
-            defaults.removeObject(forKey: "audioDebugLogging")
-        }
+        verboseDiagnostics = Self.loadVerboseDiagnostics(from: defaults)
         #if !APPSTORE
             debugRPCEnabled = defaults.object(forKey: "debugRPCEnabled") as? Bool ?? false
         #endif
         checkForUpdates = defaults.object(forKey: "checkForUpdates") as? Bool ?? true
         includePreReleases = defaults.object(forKey: "includePreReleases") as? Bool ?? false
+    }
+
+    /// Reads the verbose-diagnostics flag, migrating the legacy
+    /// "audioDebugLogging" key (renamed 2026-05-04) on first launch. The new
+    /// key wins if both are set; the legacy key is dropped once the new key
+    /// is populated so a future migration pass can't resurrect a stale value.
+    private static func loadVerboseDiagnostics(from defaults: UserDefaults) -> Bool {
+        let resolved: Bool
+        if let new = defaults.object(forKey: "verboseDiagnostics") as? Bool {
+            resolved = new
+        } else if let legacy = defaults.object(forKey: "audioDebugLogging") as? Bool {
+            resolved = legacy
+            defaults.set(legacy, forKey: "verboseDiagnostics")
+        } else {
+            resolved = false
+        }
+        if defaults.object(forKey: "audioDebugLogging") != nil,
+           defaults.object(forKey: "verboseDiagnostics") != nil {
+            defaults.removeObject(forKey: "audioDebugLogging")
+        }
+        return resolved
     }
 
     /// Bag of values used during init to read all 5 tuning knobs in one go.

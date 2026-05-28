@@ -20,6 +20,7 @@ struct GeneralSettingsView: View {
                 Toggle("Microsoft Teams", isOn: $settings.watchTeams)
                 Toggle("Zoom", isOn: $settings.watchZoom)
                 Toggle("Webex", isOn: $settings.watchWebex)
+                Toggle("Google Meet (Chrome)", isOn: $settings.watchGoogleMeet)
             }
 
             Section("Detection") {

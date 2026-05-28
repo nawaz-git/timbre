@@ -21,7 +21,21 @@ final class AppMeetingPatternTests: XCTestCase {
     // MARK: - All Patterns
 
     func testAllPatternsCount() {
-        XCTAssertEqual(AppMeetingPattern.all.count, 4)
+        XCTAssertEqual(AppMeetingPattern.all.count, 5)
+    }
+
+    // MARK: - Google Meet Pattern
+
+    func testGoogleMeetPattern() {
+        let meet = AppMeetingPattern.googleMeet
+        XCTAssertEqual(meet.appName, "Google Meet")
+        XCTAssertTrue(meet.ownerNames.contains("Google Chrome"))
+        XCTAssertFalse(meet.meetingPatterns.isEmpty)
+    }
+
+    func testForAppNameReturnsGoogleMeet() {
+        let pattern = AppMeetingPattern.forAppName("Google Meet")
+        XCTAssertEqual(pattern?.appName, "Google Meet")
     }
 
     // MARK: - Simulator Pattern
