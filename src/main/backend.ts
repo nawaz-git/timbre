@@ -339,16 +339,26 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
   // window titles for as long as it lives.
   killLiveRecorderSync()
 
-  // Step 2: launch via `/usr/bin/open -n <bundled-app>`. The `-n`
-  // forces a fresh instance. We pass `--args` not needed — the helper
-  // doesn't take CLI args. We deliberately do NOT pass `-W` (would
-  // make `open` block until the app quits, blocking Mintr forever).
+  // Step 2: launch via `/usr/bin/open -n <bundled-app> --args --auto-watch`.
+  //
+  // `-n` forces a fresh instance. `--args --auto-watch` is passed THROUGH
+  // `open` into the engine's argv — without it the engine launches but
+  // never starts its WatchLoop, because auto-watch only fires when the
+  // `--auto-watch` flag (or an `autoWatch` UserDefaults key) is present
+  // (MeetingTranscriberApp.swift:63). The v0.19 rebrand gave the engine a
+  // fresh bundle id → fresh UserDefaults domain where `autoWatch` defaults
+  // to false, so the flag is now the only reliable trigger. This is why
+  // the engine sat silent after launch in v0.19-v0.21 — it was never told
+  // to watch.
+  //
+  // We deliberately do NOT pass `-W` (would make `open` block until the
+  // app quits, blocking Mintr forever).
   //
   // `open` itself is a child process of Mintr, but it tears down within
   // ~50ms after dispatching to launchd. The helper itself becomes a
   // child of launchd (PID 1), which is the key to severing the TCC
   // responsibility chain that v0.15-v0.20 had.
-  const child = spawn('/usr/bin/open', ['-n', appPath], {
+  const child = spawn('/usr/bin/open', ['-n', appPath, '--args', '--auto-watch'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
       PATH: '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
