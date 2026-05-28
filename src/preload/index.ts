@@ -4,6 +4,7 @@ import { IPC } from '../shared/types'
 import type {
   BackendEvent,
   BackendJob,
+  CaptureWatchdogSignal,
   ChromeMeetSnapshot,
   EnrolledSpeaker,
   ExportFormat,
@@ -170,11 +171,11 @@ const api = {
      * (`com.meetingtranscriber.app`) hasn't been granted Screen Recording.
      */
     onWatchdogUpdate: (
-      handler: (signal: { helperPermissionLikely: boolean; meetingId?: string; firedAt?: number }) => void
+      handler: (signal: CaptureWatchdogSignal) => void
     ): (() => void) => {
       const listener = (
         _: Electron.IpcRendererEvent,
-        signal: { helperPermissionLikely: boolean; meetingId?: string; firedAt?: number }
+        signal: CaptureWatchdogSignal
       ): void => handler(signal)
       ipcRenderer.on('capture-watchdog:update', listener)
       return () => {

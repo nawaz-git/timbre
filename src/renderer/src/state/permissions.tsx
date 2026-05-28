@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ChromeMeetSnapshot, PermissionStatus } from '../../../shared/types'
+import type {
+  CaptureWatchdogSignal,
+  ChromeMeetSnapshot,
+  PermissionStatus
+} from '../../../shared/types'
+
+export type { CaptureWatchdogSignal } from '../../../shared/types'
 
 /**
  * Subscribes to the macOS TCC permission state surfaced by the main
@@ -51,16 +57,16 @@ export function usePermissions(): {
 /**
  * Capture-watchdog signal from the main process. Flips to
  * `helperPermissionLikely: true` after 25s of Chrome-detected Meet with
- * no engine file writes — almost certainly the bundled MeetingTranscriber
- * helper missing Screen Recording permission (it has a separate TCC
- * bundle id from Mintr's, `com.meetingtranscriber.app`).
+ * no engine file writes — almost certainly the bundled MintrEngine
+ * helper missing one of Accessibility / Microphone / Screen Recording
+ * (it has a separate TCC bundle id from Mintr's, `ai.nawaz.mintr-engine`).
+ * The optional `hint` names the specific TCC service when we can
+ * classify it via the helper's unified-log output — see
+ * `classifyHelperFailure` in `src/main/captureWatchdog.ts`.
+ *
+ * Type lives in `src/shared/types.ts` and is re-exported here for
+ * backward compatibility with consumers that imported it from this file.
  */
-export interface CaptureWatchdogSignal {
-  helperPermissionLikely: boolean
-  meetingId?: string
-  firedAt?: number
-}
-
 export function useCaptureWatchdog(): CaptureWatchdogSignal {
   const [signal, setSignal] = useState<CaptureWatchdogSignal>({
     helperPermissionLikely: false
