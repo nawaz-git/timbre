@@ -24,6 +24,7 @@ import {
   useCaptureWatchdog,
   useLiveCapture
 } from '../state/permissions'
+import { useHelperPermissions, allGranted } from '../state/onboarding'
 import { formatDate, formatDuration } from '../state/format'
 import type {
   BackendEvent,
@@ -96,7 +97,13 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
   const { settings } = useSettings()
   const { byId: tagById } = useTags()
   const { status, start, stop } = useRecordingStatus()
-  const { status: perms, openPane } = usePermissions()
+  const { openPane } = usePermissions()
+  // Screen Recording is held by the bundled ENGINE (ai.nawaz.mintr-engine),
+  // not by Mintr itself — so the banner must read the engine's live verdict
+  // (same source as Settings → Setup & Permissions), NOT Electron's
+  // getMediaAccessStatus, which reports Mintr's own (wrong) principal and is
+  // permanently "denied" even when the engine is fully granted.
+  const { snapshot: helperPerms } = useHelperPermissions()
   const chromeMeet = useChromeMeet()
   const watchdog = useCaptureWatchdog()
   const liveCapture = useLiveCapture(chromeMeet.tab?.meetingId ?? null)
@@ -293,10 +300,21 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
   // Screen Recording is the one permission whose absence silently breaks
   // window-title-based Meet detection. Microphone failure is loud (the
   // engine surfaces it) so it doesn't need the same prominent banner.
-  // 'not-determined' is treated as denied for surface purposes — until the
-  // user has explicitly allowed, we should warn them.
+  // We read the ENGINE's live verdict (helperPerms): only treat as missing
+  // when it explicitly reports 'denied'/'not-determined'. 'unknown' (engine
+  // verdict not yet read) is NOT treated as missing, so the banner doesn't
+  // flash on startup before the first probe resolves.
   const screenPermissionMissing =
-    perms.screenRecording === 'denied' || perms.screenRecording === 'not-determined'
+    helperPerms.screenRecording === 'denied' ||
+    helperPerms.screenRecording === 'not-determined'
+
+  // The red "Engine helper isn't capturing" banner is a PERMISSION-diagnosis
+  // banner (its copy tells the user to toggle a TCC entry on). When the engine
+  // self-reports every permission as granted, that advice is wrong and
+  // misleading — the watchdog only fired on file-write TIMING, not an actual
+  // permission gap. Suppress it in that case so we never send the user to
+  // re-grant permissions that are already fine.
+  const engineAllGranted = allGranted(helperPerms)
 
   return (
     <div className="home">
@@ -346,7 +364,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
         fall back to the original Screen Recording copy since that was
         the original watchdog assumption.
       */}
-      {watchdog.helperPermissionLikely && (() => {
+      {watchdog.helperPermissionLikely && !engineAllGranted && (() => {
         const hint = watchdog.hint
         // Per-hint banner content. `accessibility` is the canonical
         // case TICKET-002 was built for (the engine's PermissionHealthCheck
