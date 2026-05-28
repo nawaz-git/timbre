@@ -80,6 +80,28 @@ export function getWatchdogSignal(): WatchdogSignal {
 }
 
 /**
+ * Force a fresh evaluation window for the watchdog. Called when the user
+ * restarts the helper from the red banner (TICKET-003): we want to clear
+ * the stale `helperPermissionLikely` flag so the renderer's red banner
+ * goes away, AND we want to give the freshly-respawned helper a full
+ * grace window before the watchdog can fire again. Bumping both
+ * `meetSeenAt` and `lastEngineWriteAt` to "now" achieves that — the next
+ * 2s tick of `checkWatchdog` sees a brand-new clock.
+ *
+ * We deliberately do NOT call `checkWatchdog` synchronously here — if we
+ * did, the next renderer paint would briefly clear the banner then
+ * re-instate it (the helper hasn't had a chance to write yet). Letting
+ * the organic 2s tick re-evaluate avoids that flash.
+ */
+export function resetCaptureWatchdog(): void {
+  state.meetSeenAt = Date.now()
+  state.lastEngineWriteAt = Date.now()
+  if (state.signal.helperPermissionLikely) {
+    setSignal({ helperPermissionLikely: false })
+  }
+}
+
+/**
  * Begin watching the live + import folders and start the watchdog tick.
  * Safe to call repeatedly — second+ calls are no-ops.
  */
