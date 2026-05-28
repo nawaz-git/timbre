@@ -1,0 +1,51 @@
+appId: ai.nawaz.meeting-transcriber
+productName: Meeting Transcriber
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+
+# Bundle Swift artefacts from the sibling repo:
+#   - mt-batch CLI: file-import transcription pipeline (always required)
+#   - MeetingTranscriber.app: live recording engine with Google Meet detection
+# Both paths must exist at `dist:mac` time. Missing paths are a warning at
+# build time and a runtime "engine not bundled" message in the UI.
+extraResources:
+  - from: ../meeting-transcriber/tools/mt-batch/.build/release/mt-batch
+    to: bin/mt-batch
+    filter: ['**/*']
+  - from: ../meeting-transcriber/.build/release/MeetingTranscriber.app
+    to: MeetingTranscriber.app
+    filter: ['**/*']
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  identity: null
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  notarize: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: >-
+      Meeting Transcriber needs microphone access to record and transcribe meetings on-device.
+    NSScreenCaptureUsageDescription: >-
+      Meeting Transcriber needs screen capture access to capture system audio from meetings on-device.
+    NSDocumentsFolderUsageDescription: >-
+      Meeting Transcriber reads and writes transcripts in your Documents folder.
+
+dmg:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+npmRebuild: false

@@ -1,0 +1,41 @@
+/* Theme variables — dark default; light overridden via [data-theme="light"] on <html>.
+   The renderer resolves "auto" to one of these by reading prefers-color-scheme. */
+
+:root,
+[data-theme='dark'] {
+  --bg: #000000;
+  --bg-elev: #0a0a0a;
+  --bg-hover: #121212;
+  --bg-active: #1a1a1a;
+  --fg: #ffffff;
+  --fg-muted: rgba(255, 255, 255, 0.55);
+  --fg-subtle: rgba(255, 255, 255, 0.35);
+  --divider: #1a1a1a;
+  --divider-strong: #242424;
+  --accent: #ffffff;
+  --accent-fg: #000000;
+  --danger: #ff5555;
+  --status-recording: #ff5555;
+  --status-watching: #ffffff;
+  --status-transcribing: #ffffff;
+  --status-idle: rgba(255, 255, 255, 0.4);
+}
+
+[data-theme='light'] {
+  --bg: #ffffff;
+  --bg-elev: #fafafa;
+  --bg-hover: #f5f5f5;
+  --bg-active: #ececec;
+  --fg: #000000;
+  --fg-muted: rgba(0, 0, 0, 0.6);
+  --fg-subtle: rgba(0, 0, 0, 0.4);
+  --divider: #f0f0f0;
+  --divider-strong: #e0e0e0;
+  --accent: #000000;
+  --accent-fg: #ffffff;
+  --danger: #c93030;
+  --status-recording: #c93030;
+  --status-watching: #000000;
+  --status-transcribing: #000000;
+  --status-idle: rgba(0, 0, 0, 0.4);
+}
