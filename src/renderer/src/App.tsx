@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { SettingsProvider } from './state/settings'
+import { SettingsProvider, useSettings } from './state/settings'
 import { TagsProvider } from './state/tags'
 import { HomeView } from './views/Home'
 import { MeetingsView } from './views/Meetings'
@@ -12,30 +12,66 @@ interface NavItem {
   label: string
   subtitle: string
   title: string
+  /** Single-glyph icon shown in both collapsed and expanded modes. */
+  icon: string
 }
 
 const NAV: NavItem[] = [
-  { key: 'home', label: 'Home', title: 'Home', subtitle: 'Record and import audio' },
-  { key: 'meetings', label: 'Meetings', title: 'Meetings', subtitle: 'Past transcripts' },
-  { key: 'settings', label: 'Settings', title: 'Settings', subtitle: 'Preferences and about' }
+  {
+    key: 'home',
+    label: 'Home',
+    title: 'Home',
+    subtitle: 'Record and import audio',
+    icon: '⏺'
+  },
+  {
+    key: 'meetings',
+    label: 'Meetings',
+    title: 'Meetings',
+    subtitle: 'Past transcripts',
+    icon: '⚏'
+  },
+  {
+    key: 'settings',
+    label: 'Settings',
+    title: 'Settings',
+    subtitle: 'Preferences and about',
+    icon: '⚙'
+  }
 ]
 
 function AppShell(): JSX.Element {
   const [view, setView] = useState<ViewKey>('home')
   const [initialMeetingId, setInitialMeetingId] = useState<string | null>(null)
   const current = NAV.find((n) => n.key === view) ?? NAV[0]
+  const { settings, setSettings } = useSettings()
+
+  const collapsed = settings?.sidebarCollapsed ?? false
 
   const openMeeting = useCallback((id: string) => {
     setInitialMeetingId(id)
     setView('meetings')
   }, [])
 
+  const toggleSidebar = useCallback(() => {
+    void setSettings({ sidebarCollapsed: !collapsed })
+  }, [collapsed, setSettings])
+
   return (
-    <div className="app">
-      <aside className="sidebar">
+    <div className={'app' + (collapsed ? ' app--sidebar-collapsed' : '')}>
+      <aside className={'sidebar' + (collapsed ? ' sidebar--collapsed' : '')}>
+        <button
+          type="button"
+          className="sidebar__toggle"
+          onClick={toggleSidebar}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? '▸' : '◂'}
+        </button>
         <div className="sidebar__brand">
           <span className="sidebar__brand-mark" />
-          Transcriber
+          <span className="sidebar__brand-label">Transcriber</span>
         </div>
         <nav className="sidebar__nav">
           {NAV.map((item) => (
@@ -45,8 +81,13 @@ function AppShell(): JSX.Element {
                 'sidebar__nav-item' + (view === item.key ? ' sidebar__nav-item--active' : '')
               }
               onClick={() => setView(item.key)}
+              title={collapsed ? item.label : undefined}
+              aria-label={item.label}
             >
-              {item.label}
+              <span className="sidebar__nav-icon" aria-hidden="true">
+                {item.icon}
+              </span>
+              <span className="sidebar__nav-label">{item.label}</span>
             </button>
           ))}
         </nav>

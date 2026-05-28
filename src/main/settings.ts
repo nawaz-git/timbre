@@ -28,7 +28,8 @@ function defaultSettings(): Settings {
   return {
     outputFolder: join(app.getPath('documents'), 'MeetingTranscripts'),
     theme: 'auto',
-    numSpeakers: 'auto'
+    numSpeakers: 'auto',
+    sidebarCollapsed: false
   }
 }
 
@@ -46,7 +47,10 @@ export async function readSettings(): Promise<Settings> {
   const outputFolder = store.get<string>('outputFolder') ?? defaults.outputFolder
   const theme = (store.get<ThemeMode>('theme') ?? defaults.theme) as ThemeMode
   const numSpeakers = coerceNumSpeakers(store.get<NumSpeakersHint>('numSpeakers'))
-  return { outputFolder, theme, numSpeakers }
+  const sidebarCollapsedRaw = store.get<boolean>('sidebarCollapsed')
+  const sidebarCollapsed =
+    typeof sidebarCollapsedRaw === 'boolean' ? sidebarCollapsedRaw : defaults.sidebarCollapsed
+  return { outputFolder, theme, numSpeakers, sidebarCollapsed }
 }
 
 export async function writeSettings(patch: Partial<Settings>): Promise<Settings> {
@@ -55,6 +59,9 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   if (patch.theme !== undefined) store.set('theme', patch.theme)
   if (patch.numSpeakers !== undefined) {
     store.set('numSpeakers', coerceNumSpeakers(patch.numSpeakers))
+  }
+  if (patch.sidebarCollapsed !== undefined) {
+    store.set('sidebarCollapsed', Boolean(patch.sidebarCollapsed))
   }
   return readSettings()
 }
