@@ -9,6 +9,13 @@ export interface Settings {
   numSpeakers: NumSpeakersHint
   /** Whether the left sidebar is collapsed to icon-only mode. */
   sidebarCollapsed: boolean
+  /**
+   * Auto-start watching for meetings on app launch. Default true — Mintr
+   * is meant to feel like a passive background utility (Tailscale / 1Password
+   * style); the user shouldn't have to press a button before every meeting.
+   * Surfaced in Settings → Output and via the tray menu.
+   */
+  autoStartWatching: boolean
 }
 
 export type RecordingState = 'idle' | 'watching' | 'recording' | 'transcribing'
@@ -156,8 +163,74 @@ export const IPC = {
   tagsList: 'tags:list',
   tagsAdd: 'tags:add',
   tagsUpdate: 'tags:update',
-  tagsDelete: 'tags:delete'
+  tagsDelete: 'tags:delete',
+  /** Returns the current macOS TCC state for permissions Mintr cares about. */
+  systemPermissions: 'system:permissions',
+  /** Opens System Settings to a specific privacy pane (or to the app itself). */
+  systemOpenSettings: 'system:openSettings',
+  /** Returns the most recent Chrome meet.google.com tab snapshot. */
+  systemChromeMeet: 'system:chromeMeet',
+  /** Brings the main app window forward (called from tray menu). */
+  systemShowWindow: 'system:showWindow',
+  /** Quits the app (called from tray menu). */
+  systemQuit: 'system:quit'
 } as const
 
 /** Export format kinds for `meetings:export`. */
 export type ExportFormat = 'txt' | 'md' | 'json' | 'srt' | 'audio'
+
+/**
+ * macOS TCC permission state. `unknown` means we either haven't been able to
+ * query it yet, or the API doesn't expose the granted/denied distinction
+ * (Automation, for example, only fails when invoked — there's no
+ * pre-flight query). UI treats `unknown` and `granted` the same; only
+ * `denied` triggers the warning banner.
+ */
+export type PermissionState = 'granted' | 'denied' | 'unknown' | 'not-determined'
+
+export interface PermissionStatus {
+  /** Screen Recording — required for window-title detection (the main Meet trigger). */
+  screenRecording: PermissionState
+  /** Microphone — required for live audio capture. */
+  microphone: PermissionState
+  /**
+   * Automation (specifically, scripting Chrome via AppleScript). macOS only
+   * surfaces this when an osascript invocation has run at least once and the
+   * user has answered the consent dialog; before that it's 'not-determined'.
+   */
+  automationChrome: PermissionState
+}
+
+/** Privacy panes that `systemOpenSettings` knows how to deep-link to. */
+export type PrivacyPane =
+  | 'screen-recording'
+  | 'microphone'
+  | 'automation'
+  | 'accessibility'
+
+/**
+ * Snapshot of what the AppleScript Chrome-tab probe found on its last poll.
+ * `tab` is set when at least one open Chrome tab matches the meet.google.com
+ * URL pattern; otherwise null. The probe runs every ~3 seconds inside the
+ * Electron main process — independent of the Swift engine's own
+ * window-title polling, which gives us a second detection signal that works
+ * BEFORE the user clicks "Join" (when there's no "Meet -" window title yet).
+ */
+export interface ChromeMeetSnapshot {
+  /** True when osascript has run successfully at least once. */
+  available: boolean
+  /** Most recent error string from osascript, if any (e.g. permission denied). */
+  error?: string
+  tab: ChromeMeetTab | null
+}
+
+export interface ChromeMeetTab {
+  /** Browser bundle id we observed it in — e.g. com.google.Chrome, company.thebrowser.Browser. */
+  browser: string
+  /** Full URL — e.g. https://meet.google.com/ntu-vwcf-onr. */
+  url: string
+  /** Extracted meeting id — e.g. "ntu-vwcf-onr". */
+  meetingId: string
+  /** Window title we read off the tab, if AppleScript exposed it. */
+  title?: string
+}

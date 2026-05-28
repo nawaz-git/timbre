@@ -12,5 +12,12 @@
     <true/>
     <key>com.apple.security.device.microphone</key>
     <true/>
+
+    <!-- AppleScript / Automation. Required for the v0.12 Chrome tab probe
+         (osascript reads `URL of every tab` to detect Google Meet joins).
+         Without this entitlement the hardened runtime blocks osascript
+         from sending AppleEvents to other apps before TCC can prompt. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
   </dict>
 </plist>

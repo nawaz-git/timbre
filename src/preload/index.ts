@@ -4,11 +4,14 @@ import { IPC } from '../shared/types'
 import type {
   BackendEvent,
   BackendJob,
+  ChromeMeetSnapshot,
   EnrolledSpeaker,
   ExportFormat,
   ImportResult,
   MeetingSummary,
   MeetingTranscript,
+  PermissionStatus,
+  PrivacyPane,
   RecordingStatus,
   Settings,
   TagDef
@@ -114,6 +117,33 @@ const api = {
         ipcRenderer.removeListener('backend:event', listener)
       }
     }
+  },
+  /**
+   * System / TCC / Chrome-probe surface (v0.12+). Exposes:
+   *   - permissions(): current macOS TCC state for Screen Recording, Mic, Automation
+   *   - openSettings(): deep-link to a System Settings privacy pane
+   *   - chromeMeet(): last AppleScript probe of Chrome / Brave / Edge tabs
+   *   - onChromeMeetUpdate(): push subscription for live Meet-tab changes
+   *   - showWindow(): bring the main Mintr window to the front (used by tray)
+   *   - quit(): force-quit the app (used by tray)
+   */
+  system: {
+    permissions: (): Promise<PermissionStatus> => ipcRenderer.invoke(IPC.systemPermissions),
+    openSettings: (pane: PrivacyPane): Promise<void> =>
+      ipcRenderer.invoke(IPC.systemOpenSettings, pane),
+    chromeMeet: (): Promise<ChromeMeetSnapshot> => ipcRenderer.invoke(IPC.systemChromeMeet),
+    onChromeMeetUpdate: (handler: (snap: ChromeMeetSnapshot) => void): (() => void) => {
+      const listener = (
+        _: Electron.IpcRendererEvent,
+        snap: ChromeMeetSnapshot
+      ): void => handler(snap)
+      ipcRenderer.on('chrome-meet:update', listener)
+      return () => {
+        ipcRenderer.removeListener('chrome-meet:update', listener)
+      }
+    },
+    showWindow: (): Promise<void> => ipcRenderer.invoke(IPC.systemShowWindow),
+    quit: (): Promise<void> => ipcRenderer.invoke(IPC.systemQuit)
   }
 }
 

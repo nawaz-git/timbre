@@ -296,6 +296,143 @@
   max-width: 560px;
 }
 
+/*
+ * Permission banner (v0.12+).
+ *
+ * Surfaces missing Screen Recording permission — the silent killer in
+ * v0.6 → v0.11 where the engine watched but couldn't see Chrome's window
+ * title, so meetings sailed past undetected. Sits above the status card
+ * so it's the FIRST thing the user sees on opening the Home view, with a
+ * one-tap "Open System Settings" deep-link to the right pane.
+ *
+ * Visual language: same border/radius/elevation as the status card so it
+ * reads as part of the surface stack, with a soft yellow tint that
+ * matches macOS's own "attention" colour without being alarming.
+ */
+.permission-banner {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--space-3, 12px);
+  padding: var(--space-4, 16px);
+  border: 1px solid rgba(245, 158, 11, 0.40);
+  border-radius: var(--radius-lg, 10px);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--fg);
+}
+[data-theme='dark'] .permission-banner {
+  border-color: rgba(251, 191, 36, 0.40);
+  background: rgba(251, 191, 36, 0.07);
+}
+.permission-banner__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.18);
+  color: #b45309;
+  flex-shrink: 0;
+}
+[data-theme='dark'] .permission-banner__icon {
+  background: rgba(251, 191, 36, 0.20);
+  color: #fbbf24;
+}
+.permission-banner__body {
+  min-width: 0;
+}
+.permission-banner__title {
+  font: 600 14px/1.3 var(--font-sans);
+  color: var(--fg);
+  margin-bottom: 2px;
+}
+.permission-banner__desc {
+  font: 400 12.5px/1.5 var(--font-sans);
+  color: var(--fg-muted);
+}
+
+/*
+ * Live "Google Meet detected in Chrome" card.
+ *
+ * Driven by the AppleScript probe in `src/main/chromeProbe.ts`. When a
+ * meet.google.com tab is open in Chrome / Brave / Edge / Arc, this card
+ * appears above the status card to confirm the user that Mintr SEES the
+ * meeting — addressing the v0.11 complaint where there was no UI
+ * acknowledgement that detection had happened.
+ *
+ * The pulsing dot is the same colour as the standard macOS recording
+ * indicator; the card itself uses a subtle mint-tinted surface so it
+ * reads as "this is the live signal" without competing with the rest of
+ * the chrome.
+ */
+.meet-live-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3, 12px);
+  padding: var(--space-4, 14px) var(--space-4, 16px);
+  border: 1px solid var(--accent, #10b981);
+  border-radius: var(--radius-lg, 10px);
+  background: rgba(16, 185, 129, 0.06);
+  color: var(--fg);
+}
+[data-theme='dark'] .meet-live-card {
+  background: rgba(16, 185, 129, 0.08);
+}
+.meet-live-card__dot {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--status-recording, #ef4444);
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.16);
+  animation: meet-live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes meet-live-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.16);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.04);
+  }
+}
+.meet-live-card__body {
+  min-width: 0;
+  flex: 1;
+}
+.meet-live-card__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 14px/1.3 var(--font-sans);
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+.meet-live-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  font: 400 12.5px/1.5 var(--font-sans);
+  color: var(--fg-muted);
+}
+.meet-live-card__id {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-weight: 500;
+  color: var(--fg);
+  font-size: 12.5px;
+}
+.meet-live-card__url {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  word-break: break-all;
+}
+.meet-live-card__hint {
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--fg-subtle);
+  margin-top: 4px;
+}
+
 .status-card {
   display: flex;
   flex-direction: column;
@@ -884,6 +1021,63 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+ * iOS-style on/off switch — used for boolean Settings rows (currently
+ * Settings → Background behaviour → Auto-start watching). Hides the
+ * checkbox itself and renders a 32×18 pill with a sliding thumb. The
+ * track tints to the accent colour when checked.
+ */
+.toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3, 10px);
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+}
+.toggle-switch__track {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--surface-active, #d4d4d0);
+  border: 1px solid var(--divider-strong);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.toggle-switch__thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transition: transform 120ms ease;
+}
+.toggle-switch input:checked + .toggle-switch__track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.toggle-switch input:checked + .toggle-switch__track .toggle-switch__thumb {
+  transform: translateX(13px);
+}
+.toggle-switch input:focus-visible + .toggle-switch__track {
+  box-shadow: var(--focus-ring);
+}
+.toggle-switch__label {
+  font: 500 13px/1 var(--font-sans);
+  color: var(--fg-muted);
+  min-width: 28px;
 }
 
 .theme-toggle {

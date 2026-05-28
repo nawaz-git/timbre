@@ -22,6 +22,32 @@ interface State {
 
 const internal: State = { state: 'idle' }
 
+/**
+ * Tiny event bus so the tray (which lives in the main process, not the
+ * renderer) can react to state transitions without polling. Listeners
+ * fire on the next tick after every getStatus()-visible change. We
+ * intentionally don't import EventEmitter to keep the dep surface small —
+ * a Set of callbacks is enough.
+ */
+type StatusListener = (status: RecordingStatus) => void
+const listeners = new Set<StatusListener>()
+
+export function onStatusChange(fn: StatusListener): () => void {
+  listeners.add(fn)
+  return () => listeners.delete(fn)
+}
+
+function emitChange(): void {
+  const snap = getStatus()
+  for (const fn of listeners) {
+    try {
+      fn(snap)
+    } catch (err) {
+      console.error('[recording] status listener threw', err)
+    }
+  }
+}
+
 function getMainWindow(): BrowserWindow | null {
   // Lazy import to avoid pulling BrowserWindow into module init.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -40,6 +66,7 @@ export function startWatching(): RecordingStatus {
   internal.state = 'watching'
   internal.startedAt = Date.now()
   internal.title = 'Live meeting watch'
+  emitChange()
   return getStatus()
 }
 
@@ -49,6 +76,7 @@ export function stopWatching(): RecordingStatus {
   internal.startedAt = undefined
   internal.title = undefined
   internal.progressPercent = undefined
+  emitChange()
   return getStatus()
 }
 

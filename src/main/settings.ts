@@ -29,7 +29,12 @@ function defaultSettings(): Settings {
     outputFolder: join(app.getPath('documents'), 'MeetingTranscripts'),
     theme: 'auto',
     numSpeakers: 'auto',
-    sidebarCollapsed: false
+    sidebarCollapsed: false,
+    // Mintr is intended to behave like Tailscale / 1Password — quietly
+    // watching in the background unless the user explicitly pauses it.
+    // First launch auto-enrols into watch mode; the tray menu surfaces
+    // a Pause toggle so users who want full control still have it.
+    autoStartWatching: true
   }
 }
 
@@ -50,7 +55,10 @@ export async function readSettings(): Promise<Settings> {
   const sidebarCollapsedRaw = store.get<boolean>('sidebarCollapsed')
   const sidebarCollapsed =
     typeof sidebarCollapsedRaw === 'boolean' ? sidebarCollapsedRaw : defaults.sidebarCollapsed
-  return { outputFolder, theme, numSpeakers, sidebarCollapsed }
+  const autoStartWatchingRaw = store.get<boolean>('autoStartWatching')
+  const autoStartWatching =
+    typeof autoStartWatchingRaw === 'boolean' ? autoStartWatchingRaw : defaults.autoStartWatching
+  return { outputFolder, theme, numSpeakers, sidebarCollapsed, autoStartWatching }
 }
 
 export async function writeSettings(patch: Partial<Settings>): Promise<Settings> {
@@ -62,6 +70,9 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   }
   if (patch.sidebarCollapsed !== undefined) {
     store.set('sidebarCollapsed', Boolean(patch.sidebarCollapsed))
+  }
+  if (patch.autoStartWatching !== undefined) {
+    store.set('autoStartWatching', Boolean(patch.autoStartWatching))
   }
   return readSettings()
 }

@@ -7,6 +7,9 @@ import icon from '../../resources/icon.png?asset'
 import { registerIpcHandlers } from './ipc'
 import { liveRecordingsRoot } from './meetings'
 import { readSettings } from './settings'
+import { createTray, setMainWindowFactory } from './tray'
+import { startChromeProbe, stopChromeProbe } from './chromeProbe'
+import { onStatusChange, startWatching } from './recording'
 
 // `mt-audio://` MUST be registered as privileged before app.whenReady().
 // Without this, the renderer's <audio src="mt-audio://..."> gets blocked by
@@ -210,15 +213,62 @@ app.whenReady().then(async () => {
   registerAudioProtocol()
   registerIpcHandlers()
   await ensureOutputFolder()
+  // Register the window factory BEFORE creating the tray so the tray can
+  // call back into it if all windows have been closed.
+  setMainWindowFactory(createWindow)
   createWindow()
+  // Tray sits in the menubar for the whole app lifetime. Created after
+  // the window so the first menu rebuild has a window to point at when
+  // the user clicks "Show Mintr".
+  createTray()
+
+  // Chrome probe is only useful while we're actively watching, so start
+  // and stop it in tandem with the engine state. We do this in the main
+  // process (not the engine) because osascript needs Mintr's TCC
+  // Automation entry, not the bundled helper's.
+  onStatusChange((status) => {
+    if (status.state === 'idle') {
+      stopChromeProbe()
+    } else {
+      startChromeProbe()
+    }
+  })
+
+  // Auto-start watching on launch unless the user opted out. The tray
+  // exists at this point so the user has a way to pause if they want.
+  try {
+    const settings = await readSettings()
+    if (settings.autoStartWatching) {
+      const status = startWatching()
+      if (status.state !== 'watching') {
+        console.warn('[main] auto-start watching did not enter watching state', status)
+      } else {
+        // Kick the probe immediately so the user gets feedback fast.
+        startChromeProbe()
+      }
+    }
+  } catch (err) {
+    console.warn('[main] auto-start watching failed', err)
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
+/**
+ * macOS behaviour: closing the last window does NOT quit the app — the
+ * tray keeps Mintr alive in the background so it can keep watching for
+ * meetings. The user quits explicitly via the tray's "Quit Mintr" item
+ * or ⌘Q. Linux/Windows still quit on last-window-closed since they don't
+ * have the tray pattern as deeply ingrained.
+ */
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('before-quit', () => {
+  stopChromeProbe()
 })

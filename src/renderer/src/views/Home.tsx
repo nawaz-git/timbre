@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  AlertTriangle,
+  ExternalLink,
   Inbox,
   Loader2,
   Mic,
@@ -7,11 +9,13 @@ import {
   Radio,
   Tag as TagIcon,
   Upload,
-  UserCheck
+  UserCheck,
+  Video
 } from 'lucide-react'
 import { useRecordingStatus } from '../state/recording'
 import { useSettings } from '../state/settings'
 import { useTags } from '../state/tags'
+import { usePermissions, useChromeMeet } from '../state/permissions'
 import { formatDate, formatDuration } from '../state/format'
 import type {
   BackendEvent,
@@ -66,6 +70,8 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
   const { settings } = useSettings()
   const { byId: tagById } = useTags()
   const { status, start, stop } = useRecordingStatus()
+  const { status: perms, openPane } = usePermissions()
+  const chromeMeet = useChromeMeet()
   const [banner, setBanner] = useState<JobBanner | null>(null)
   const [recent, setRecent] = useState<MeetingSummary[]>([])
   const [recentLoading, setRecentLoading] = useState(true)
@@ -172,8 +178,64 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
 
   const isWatching = status.state !== 'idle'
 
+  // Screen Recording is the one permission whose absence silently breaks
+  // window-title-based Meet detection. Microphone failure is loud (the
+  // engine surfaces it) so it doesn't need the same prominent banner.
+  // 'not-determined' is treated as denied for surface purposes — until the
+  // user has explicitly allowed, we should warn them.
+  const screenPermissionMissing =
+    perms.screenRecording === 'denied' || perms.screenRecording === 'not-determined'
+
   return (
     <div className="home">
+      {screenPermissionMissing && (
+        <div className="permission-banner" role="alert">
+          <span className="permission-banner__icon" aria-hidden="true">
+            <AlertTriangle size={16} strokeWidth={2} />
+          </span>
+          <div className="permission-banner__body">
+            <div className="permission-banner__title">
+              Screen Recording permission needed
+            </div>
+            <div className="permission-banner__desc">
+              Mintr reads the active window title to detect when you join a Google
+              Meet or other call. Without this permission, meetings start without
+              being captured. The screen pixels are never recorded — only the
+              window title.
+            </div>
+          </div>
+          <button
+            className="btn btn--primary btn--small"
+            onClick={() => void openPane('screen-recording')}
+          >
+            <ExternalLink size={14} aria-hidden="true" />
+            <span>Open System Settings</span>
+          </button>
+        </div>
+      )}
+
+      {chromeMeet.tab && (
+        <div className="meet-live-card" role="status">
+          <span className="meet-live-card__dot" aria-hidden="true" />
+          <div className="meet-live-card__body">
+            <div className="meet-live-card__title">
+              <Video size={14} aria-hidden="true" /> Google Meet detected in Chrome
+            </div>
+            <div className="meet-live-card__meta">
+              <span className="meet-live-card__id">{chromeMeet.tab.meetingId}</span>
+              <span aria-hidden="true">·</span>
+              <span className="meet-live-card__url">{chromeMeet.tab.url}</span>
+            </div>
+            {!screenPermissionMissing && status.state === 'watching' && (
+              <div className="meet-live-card__hint">
+                Mintr is watching — capture will start automatically once Meet
+                begins playing audio.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="status-card">
         <div className="status-indicator">
           <span

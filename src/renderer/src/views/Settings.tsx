@@ -4,6 +4,7 @@ import {
   Folder,
   Info,
   Palette,
+  Play,
   Plus,
   Tag as TagIcon,
   Trash2
@@ -184,6 +185,30 @@ export function SettingsView(): JSX.Element {
           >
             Open in Finder
           </button>
+        </SettingsRow>
+      </Section>
+
+      {/* ── Background behaviour ───────────────────────────────────── */}
+      <Section icon={<Play size={16} />} title="Background behaviour">
+        <SettingsRow
+          label="Auto-start watching on launch"
+          description="Mintr lives in the menubar like Tailscale or 1Password. When this is on, Mintr begins watching for meetings the moment it starts — so a Meet you join won't slip past unrecorded. Turn it off to require an explicit Start each session."
+        >
+          <label className="toggle-switch" title="Auto-start watching">
+            <input
+              type="checkbox"
+              checked={settings.autoStartWatching}
+              onChange={(e) => {
+                void setSettings({ autoStartWatching: e.target.checked })
+              }}
+            />
+            <span className="toggle-switch__track" aria-hidden="true">
+              <span className="toggle-switch__thumb" />
+            </span>
+            <span className="toggle-switch__label">
+              {settings.autoStartWatching ? 'On' : 'Off'}
+            </span>
+          </label>
         </SettingsRow>
       </Section>
 

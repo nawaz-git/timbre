@@ -1,18 +1,24 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
 import { randomUUID } from 'crypto'
 import { promises as fs } from 'fs'
 import { IPC } from '../../shared/types'
 import type {
   BackendJob,
+  ChromeMeetSnapshot,
   EnrolledSpeaker,
   ExportFormat,
   ImportResult,
   MeetingSummary,
   MeetingTranscript,
+  PermissionStatus,
+  PrivacyPane,
   RecordingStatus,
   Settings,
   TagDef
 } from '../../shared/types'
+import { getPermissionStatus, openPrivacyPane } from '../permissions'
+import { getChromeMeetSnapshot } from '../chromeProbe'
+import { showMainWindow } from '../tray'
 import {
   deleteSpeakerFromGlobalDB,
   listEnrolledSpeakers,
@@ -322,6 +328,34 @@ export function registerIpcHandlers(): void {
       return setMeetingTags(settings.outputFolder, meetingId, tagIds)
     }
   )
+
+  // ── system:* — tray + permissions surface ─────────────────────────────
+  // These are the channels the new Home banner + the tray menu hit. They
+  // intentionally sit at the IPC layer (not bundled into recording/*) so
+  // permission/queries don't pull in the engine module on first call.
+
+  ipcMain.handle(IPC.systemPermissions, async (): Promise<PermissionStatus> => {
+    return getPermissionStatus()
+  })
+
+  ipcMain.handle(IPC.systemOpenSettings, async (_event, pane: PrivacyPane): Promise<void> => {
+    await openPrivacyPane(pane)
+  })
+
+  ipcMain.handle(IPC.systemChromeMeet, async (): Promise<ChromeMeetSnapshot> => {
+    return getChromeMeetSnapshot()
+  })
+
+  ipcMain.handle(IPC.systemShowWindow, async (): Promise<void> => {
+    showMainWindow()
+  })
+
+  ipcMain.handle(IPC.systemQuit, async (): Promise<void> => {
+    // Defer one tick so the IPC reply makes it back to the renderer
+    // before the process tears down (otherwise the renderer logs a
+    // disconnected-pipe error in the console).
+    setImmediate(() => app.quit())
+  })
 }
 
 function filtersForFormat(format: ExportFormat): Array<{ name: string; extensions: string[] }> {
