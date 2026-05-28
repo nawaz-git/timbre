@@ -1601,3 +1601,53 @@
 .speaker-pill--flash {
   animation: speaker-pill-flash 1s ease-out;
 }
+
+/* ── Cascade banner ───────────────────────────────────────────
+   Non-blocking nudge anchored between the speaker pills row and
+   the tab strip. Solid background — NOT transparent. The 3px
+   left accent stripe is coloured by the renamed speaker via an
+   inline style on borderLeftColor. */
+.cascade-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+  padding: 12px 16px;
+  background: var(--bg-elevated, var(--bg-elev));
+  border: 1px solid var(--divider);
+  border-left: 3px solid var(--divider);
+  border-radius: 8px;
+  color: var(--fg);
+}
+.cascade-banner__icon {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--fg-dim, var(--fg-muted));
+  flex-shrink: 0;
+}
+.cascade-banner__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  min-width: 0;
+}
+.cascade-banner__line {
+  color: var(--fg);
+}
+.cascade-banner__line strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+.cascade-banner__line--dim {
+  color: var(--fg-dim, var(--fg-muted));
+}
+.cascade-banner__line--dim strong {
+  color: var(--fg);
+}
+.cascade-banner__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
