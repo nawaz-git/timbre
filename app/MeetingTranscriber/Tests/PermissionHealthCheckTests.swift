@@ -21,13 +21,17 @@ final class PermissionHealthCheckTests: XCTestCase {
         XCTAssertEqual(result, .denied)
     }
 
-    func testScreenRecordingDeniedEvenWithWindows() {
-        // System says no — we ignore the probe outcome.
+    func testScreenRecordingHealthyWhenProbeSeesTitlesDespitePreflightNo() {
+        // Reading a foreign window's title is impossible without a live Screen
+        // Recording grant, so the probe is authoritative: report healthy even when
+        // CGPreflightScreenCaptureAccess() returns a stale false-negative (observed
+        // after re-signing with the stable identity — the TCC csreq lags the new
+        // signature). This is the fix for the recurring "denied" loop.
         let result = PermissionHealthCheck.checkScreenRecording(
             systemAllowed: false,
             hasForeignWithTitle: true,
         )
-        XCTAssertEqual(result, .denied)
+        XCTAssertEqual(result, .healthy)
     }
 
     func testScreenRecordingBrokenSystemAllowsButNoTitles() {

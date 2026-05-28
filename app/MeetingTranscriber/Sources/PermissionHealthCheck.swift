@@ -99,16 +99,27 @@ enum PermissionHealthCheck {
     /// - `hasForeignWithTitle`: whether `CGWindowListCopyWindowInfo` returned at least one
     ///   window from another process that has a non-empty `kCGWindowName`.
     ///
+    /// The window-title probe is authoritative-positive: macOS strips `kCGWindowName`
+    /// from other processes' windows unless Screen Recording is actually granted, so a
+    /// non-empty foreign title is empirical proof the grant works — even when
+    /// `CGPreflightScreenCaptureAccess()` reports `false`. That preflight call returns a
+    /// stale false-negative whenever the bundle's code signature changes (e.g. after we
+    /// re-sign with the stable dev identity): the TCC record's stored code requirement
+    /// lags the new signature, so preflight says "no" while the capability is plainly live.
+    /// Trusting preflight over the probe was the root cause of the recurring
+    /// "Screen Recording denied" loop — the user grants it, the probe sees foreign titles,
+    /// but we reported denied anyway.
+    ///
     /// Outcomes:
-    /// - `denied`: system says no
-    /// - `healthy`: system says yes AND we can read foreign window titles
-    /// - `broken`: system says yes BUT we cannot read any foreign window titles (TCC mismatch)
+    /// - `healthy`: we can read foreign window titles (capability proven), regardless of preflight
+    /// - `broken`: preflight says yes BUT we cannot read any foreign window titles (TCC mismatch)
+    /// - `denied`: preflight says no AND we cannot read any foreign window titles
     static func checkScreenRecording(
         systemAllowed: Bool,
         hasForeignWithTitle: Bool,
     ) -> PermissionStatus {
-        if !systemAllowed { return .denied }
-        return hasForeignWithTitle ? .healthy : .broken
+        if hasForeignWithTitle { return .healthy }
+        return systemAllowed ? .broken : .denied
     }
 
     /// Parses a raw window list and reports whether any foreign window has a non-empty title.
@@ -272,13 +283,25 @@ enum PermissionHealthCheck {
 
         debugLog("probeMicrophone: buffers=\(stats.count) peak=\(stats.maxPeak) elapsed=\(elapsedMs)ms " +
             "sampleRate=\(format.sampleRate) channels=\(format.channelCount)")
+        // An authorized mic that delivers buffers means the capture path works — the
+        // permission is healthy. Whether those buffers carry signal or silence is an
+        // ENVIRONMENT concern (quiet room, or cold-start warm-up frames that are all-zero),
+        // not a permission failure, so we do NOT gate on peak amplitude. Gating on peak
+        // produced a false `.broken` verdict — with a scary "toggle it off and on" notice —
+        // whenever the health check ran in a silent room (observed at cold start with
+        // buffers>0 peak=0.0 despite authStatus=authorized). A genuinely silent RECORDING
+        // is caught downstream by SilentRecordingMonitor / ChannelHealthMonitor in real
+        // time with UI feedback — the right place for it, not a 0.5s startup gate.
         // swiftformat:disable:next preferIsEmpty
-        return stats.count > 0 && stats.maxPeak > Self.silentMicPeakThreshold // swiftlint:disable:this empty_count
+        return stats.count > 0 // swiftlint:disable:this empty_count
     }
 
-    /// Polls `snapshot` until peak crosses `threshold` (healthy) or `now()` passes `deadline`
-    /// (broken). Polling on `count > 0` would exit on the first warm-up buffer — which is
-    /// commonly all-zeros — and falsely report `.broken`.
+    /// Polls `snapshot` until peak crosses `threshold` (real signal observed — stop early)
+    /// or `now()` passes `deadline` (timed out). Crossing the threshold is only an
+    /// early-exit optimisation: the verdict is decided by the caller from `count`, not the
+    /// peak (see `probeMicrophone`). We still wait for signal-or-deadline rather than
+    /// exiting on the first `count > 0` because the first buffers are commonly all-zero
+    /// warm-up frames, and returning early would log a misleading peak=0 for working mics.
     ///
     /// `now` and `sleep` are injected so unit tests can drive the loop with a virtual clock.
     static func waitForProbeSignal(
