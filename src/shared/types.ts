@@ -16,11 +16,11 @@ export interface Settings {
    * Surfaced in Settings → Output and via the tray menu.
    */
   autoStartWatching: boolean
-  // ─── TICKET-IPC-002 (onboarding) — keep self-contained for merge ───────
   /**
-   * Wall-clock ms epoch when the user finished the onboarding wizard.
-   * `undefined` => the wizard has not been completed and should be shown.
-   * Set via `onboarding:complete`, cleared via `onboarding:reset`.
+   * Wall-clock ms epoch when the user finished (or skipped) the onboarding
+   * wizard. `undefined` => the wizard has not been completed and App.tsx
+   * mounts it instead of the normal shell. Set via `onboarding:complete`,
+   * cleared via `onboarding:reset`.
    */
   onboardingCompletedAt?: number
 }
@@ -320,29 +320,30 @@ export interface CaptureWatchdogSignal {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// TICKET-IPC-002 — Onboarding main-process surface.
-// Self-contained region (TICKET-UI-003 edits this file in parallel — keep
-// all onboarding additions inside this block to ease the merge).
+// Onboarding (TICKET-IPC-002 + TICKET-UI-003) — main-process surface +
+// renderer contract. The wizard walks the user through granting these TCC
+// services to the HELPER (`ai.nawaz.mintr-engine`), not to Mintr itself.
 // ═══════════════════════════════════════════════════════════════════════
 
-/**
- * The three macOS TCC services the onboarding wizard walks the user
- * through granting to the HELPER (`ai.nawaz.mintr-engine`), not to Mintr.
- */
+/** The three macOS TCC services the bundled MintrEngine helper needs granted. */
 export type OnboardingService = 'screen-recording' | 'microphone' | 'accessibility'
 
 /**
- * Per-service grant verdict for the helper. `unknown` means we have no
- * signal (neither the engine's verdict file nor the tccd log named it);
- * the wizard treats `unknown` like `not-determined` for prompting.
+ * Per-service grant verdict for the helper. `not-determined` means the OS
+ * has never been asked (yellow chip); `denied` is an explicit "Don't Allow"
+ * (red); `granted` is good (green); `unknown` means no signal (neither the
+ * engine's verdict file nor the tccd log named it) — treated like
+ * `not-determined` by the wizard for prompting.
  */
 export type GrantStatus = 'granted' | 'denied' | 'not-determined' | 'unknown'
 
 /**
- * Snapshot of the HELPER's TCC state, surfaced to the onboarding wizard.
- * Computed in `src/main/onboarding.ts` by preferring the engine's own
- * live verdict file (`/tmp/mt-permission.log`) and falling back to the
- * unified TCC subsystem log filtered to the helper's bundle id.
+ * Snapshot of the HELPER's TCC state, surfaced to the onboarding wizard via
+ * `window.api.onboarding.probe()`. Computed in `src/main/onboarding.ts` by
+ * preferring the engine's own live verdict file (`/tmp/mt-permission.log`)
+ * and falling back to the unified TCC subsystem log filtered to the helper's
+ * bundle id. `watchLoopRunning` is the engine-health signal the wizard waits
+ * for after a restart-and-verify.
  */
 export interface HelperPermissionSnapshot {
   screenRecording: GrantStatus

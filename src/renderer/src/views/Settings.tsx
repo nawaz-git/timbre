@@ -6,11 +6,15 @@ import {
   Palette,
   Play,
   Plus,
+  RotateCcw,
+  ShieldCheck,
   Tag as TagIcon,
   Trash2
 } from 'lucide-react'
 import mintrMark from '../assets/mintr-mark.png'
+import { PermissionChecklist } from '../components/PermissionChecklist'
 import { useSettings } from '../state/settings'
+import { useOnboardingComplete } from '../state/onboarding'
 import { useTags } from '../state/tags'
 import type { TagDef, ThemeMode } from '../../../shared/types'
 
@@ -82,6 +86,7 @@ function SettingsRow({
 
 export function SettingsView(): JSX.Element {
   const { settings, setSettings } = useSettings()
+  const { reset: rerunWizard } = useOnboardingComplete()
   const { tags, addTag, updateTag, deleteTag } = useTags()
   const [newTagName, setNewTagName] = useState('')
   const [newTagColor, setNewTagColor] = useState(NEW_TAG_PALETTE[0])
@@ -153,6 +158,27 @@ export function SettingsView(): JSX.Element {
 
   return (
     <div className="settings">
+      {/* ── Setup & Permissions (TICKET-UI-003) ────────────────────── */}
+      <Section icon={<ShieldCheck size={16} />} title="Setup & Permissions">
+        <div className="settings-row__description settings-row__description--top">
+          The bundled engine needs these macOS permissions to capture
+          meetings. Grant any that aren&apos;t green, or re-run the guided
+          first-run wizard.
+        </div>
+        <PermissionChecklist mode="settings" />
+        <div className="settings-row__value">
+          <button
+            className="btn"
+            onClick={() => {
+              void rerunWizard()
+            }}
+          >
+            <RotateCcw size={14} aria-hidden="true" />
+            <span>Re-run setup wizard</span>
+          </button>
+        </div>
+      </Section>
+
       {/* ── Output ─────────────────────────────────────────────────── */}
       <Section icon={<Folder size={16} />} title="Output">
         <SettingsRow

@@ -13,6 +13,7 @@ import { TagsProvider } from './state/tags'
 import { HomeView } from './views/Home'
 import { MeetingsView } from './views/Meetings'
 import { NetworkView } from './views/Network'
+import { Onboarding } from './views/Onboarding'
 import { SettingsView } from './views/Settings'
 
 type ViewKey = 'home' | 'meetings' | 'network' | 'settings'
@@ -197,11 +198,26 @@ function AppShell(): JSX.Element {
   )
 }
 
+/**
+ * TICKET-UI-003 gate. Sits inside SettingsProvider so it can read settings.
+ * When settings have loaded and the user has never completed onboarding
+ * (`!onboardingCompletedAt`), we early-return the full-pane wizard INSTEAD of
+ * the normal AppShell body — the AppShell (nav, ⌘1-4 shortcuts, sidebar) is
+ * left completely intact and simply not mounted until onboarding is done.
+ * While settings are still loading we render nothing to avoid a wizard flash.
+ */
+function Root(): JSX.Element | null {
+  const { settings } = useSettings()
+  if (!settings) return null
+  if (!settings.onboardingCompletedAt) return <Onboarding />
+  return <AppShell />
+}
+
 export default function App(): JSX.Element {
   return (
     <SettingsProvider>
       <TagsProvider>
-        <AppShell />
+        <Root />
       </TagsProvider>
     </SettingsProvider>
   )
