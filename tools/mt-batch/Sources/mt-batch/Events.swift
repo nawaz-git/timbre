@@ -45,6 +45,33 @@ enum Events {
         emit(["event": "merging"])
     }
 
+    /// Per-detected-speaker match outcome against the global speakers DB.
+    /// Emitted once per run when `--global-db` was passed, even when no
+    /// enrollments matched — gives the Electron UI a single deterministic
+    /// signal that matching ran and which detected speakers were recognised.
+    static func matchedSpeakers(_ matches: [GlobalSpeakerDB.MatchResult]) {
+        let arr: [[String: Any]] = matches.map { result in
+            var entry: [String: Any] = ["detected": result.detectedLabel]
+            // Use NSNull so the JSON emitter writes a literal `null` for
+            // unmatched speakers. This mirrors the schema the prompt
+            // specifies — `enrolled: null` is the explicit "no match" signal.
+            if let name = result.enrolledName {
+                entry["enrolled"] = name
+            } else {
+                entry["enrolled"] = NSNull()
+            }
+            // Round to 4 decimal places — keeps the line short without
+            // hiding the signal vs. the 0.05 margin threshold.
+            if let sim = result.bestSimilarity {
+                entry["similarity"] = (Double(sim) * 10000).rounded() / 10000
+            } else {
+                entry["similarity"] = NSNull()
+            }
+            return entry
+        }
+        emit(["event": "matched_speakers", "matches": arr])
+    }
+
     static func done(outputDir: String) {
         emit(["event": "done", "outputDir": outputDir])
     }

@@ -12,12 +12,33 @@ import Foundation
 /// no TCC interaction. Stdout carries one JSON object per line so an
 /// Electron parent can stream progress; stderr carries human-readable
 /// diagnostics. Exit code is 0 on success, non-zero on any failure.
+///
+/// The CLI exposes two subcommands behind one binary:
+///   * `transcribe` (the default) — the full pipeline above.
+///   * `list-speakers` — quickly dump enrolled names from a global DB
+///     without loading any models.
+///
+/// `defaultSubcommand: Transcribe.self` preserves the original flat CLI:
+/// `mt-batch --input … --output-dir …` is still parsed as a transcribe run
+/// for backward compatibility with the Electron driver and earlier scripts.
 @main
 struct MTBatch: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mt-batch",
         abstract: "Headless batch transcription + speaker diarization.",
         version: "0.1.0",
+        subcommands: [Transcribe.self, ListSpeakers.self],
+        defaultSubcommand: Transcribe.self,
+    )
+}
+
+/// Default subcommand — runs the full ASR + diarization pipeline.
+/// Arguments are unchanged from the pre-subcommand CLI; new flags below
+/// (`--global-db`, `--match-threshold`, `--match-margin`) are additive.
+struct Transcribe: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "transcribe",
+        abstract: "Run transcription + diarization on an audio file.",
     )
 
     @Option(name: .long, help: "Path to the input audio (or video) file.")
@@ -56,9 +77,29 @@ struct MTBatch: AsyncParsableCommand {
     )
     var numSpeakers: Int?
 
+    @Option(
+        name: .long,
+        // swiftlint:disable:next line_length
+        help: "Optional path to a global speakers.json. Diarized clusters are matched against enrolled centroids; matches above --match-threshold (with --match-margin gap) auto-name 'Speaker N' to the enrolled name. Read-only — mt-batch never writes back. Missing file = empty DB.",
+    )
+    var globalDb: String?
+
+    @Option(
+        name: .long,
+        help: "Cosine-similarity threshold for auto-naming (default 0.70). Same voice + model typically scores 0.95+.",
+    )
+    var matchThreshold: Float = GlobalSpeakerDB.defaultMatchThreshold
+
+    @Option(
+        name: .long,
+        // swiftlint:disable:next line_length
+        help: "Required gap between top-1 and top-2 enrolled similarity scores (default 0.05). Prevents flip-flopping when two enrolled voices are both borderline.",
+    )
+    var matchMargin: Float = GlobalSpeakerDB.defaultMatchMargin
+
     func run() async throws {
-        let inputURL = URL(fileURLWithPath: Self.expandTilde(input))
-        let outputURL = URL(fileURLWithPath: Self.expandTilde(outputDir))
+        let inputURL = URL(fileURLWithPath: PathHelpers.expandTilde(input))
+        let outputURL = URL(fileURLWithPath: PathHelpers.expandTilde(outputDir))
 
         do {
             try await runPipeline(inputURL: inputURL, outputURL: outputURL)
@@ -67,19 +108,6 @@ struct MTBatch: AsyncParsableCommand {
             Log.err(error.localizedDescription)
             throw ExitCode.failure
         }
-    }
-
-    /// Expand a leading `~/` to the current user's home directory. Swift's
-    /// `URL(fileURLWithPath:)` doesn't expand tildes; doing it here keeps
-    /// the CLI usable from shells that don't expand quoted paths.
-    private static func expandTilde(_ path: String) -> String {
-        guard path.hasPrefix("~") else { return path }
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if path == "~" { return home }
-        if path.hasPrefix("~/") {
-            return home + String(path.dropFirst(1))
-        }
-        return path
     }
 
     // MARK: - Pipeline
@@ -94,6 +122,10 @@ struct MTBatch: AsyncParsableCommand {
         try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
         let runStart = Date()
 
+        // Load the global DB up-front so a malformed file fails fast instead
+        // of after a 5-min transcription. The loader logs + returns [] on
+        // parse failure, so the pipeline still produces a transcript.
+        let enrolled = loadEnrolledSpeakers()
         let prepared = try await prepareAudio(inputURL: inputURL, outputURL: outputURL)
         let (transcriber, diarizer) = try await loadModels(engineChoice: engineChoice)
         let (transcript, diarization) = try await runEngines(
@@ -106,11 +138,24 @@ struct MTBatch: AsyncParsableCommand {
             diarization: diarization,
             duration: prepared.duration,
             outputURL: outputURL,
+            enrolled: enrolled,
         )
 
         let total = Date().timeIntervalSince(runStart)
-        Log.info("Done in \(formatDuration(total)) — output: \(outputURL.path)")
+        Log.info("Done in \(PathHelpers.formatDuration(total)) — output: \(outputURL.path)")
         Events.done(outputDir: outputURL.path)
+    }
+
+    /// Load the global DB if `--global-db` was passed. nil return means
+    /// the user opted out; an empty array means the file was missing or
+    /// malformed (matcher still runs, finds no candidates, emits an empty
+    /// `matched_speakers` event so the UI knows matching was attempted).
+    private func loadEnrolledSpeakers() -> [StoredSpeakerEntry]? { // swiftlint:disable:this discouraged_optional_collection
+        guard let globalDbPath = globalDb else { return nil }
+        let url = URL(fileURLWithPath: PathHelpers.expandTilde(globalDbPath))
+        let entries = GlobalSpeakerDB.load(from: url)
+        Log.info("Loaded global speakers DB: \(entries.count) enrolled speaker(s) at \(url.path)")
+        return entries
     }
 
     /// Stage 1: load the input file, resample to 16 kHz mono, write `audio.wav`.
@@ -129,7 +174,7 @@ struct MTBatch: AsyncParsableCommand {
             AudioLoader.resample(rawSamples, from: sourceRate, to: AudioLoader.targetSampleRate)
         }
         let duration = Double(samples16k.count) / Double(AudioLoader.targetSampleRate)
-        Log.info("Loaded \(samples16k.count) samples (\(formatDuration(duration)) @ 16 kHz mono)")
+        Log.info("Loaded \(samples16k.count) samples (\(PathHelpers.formatDuration(duration)) @ 16 kHz mono)")
         let audioWAVURL = outputURL.appendingPathComponent("audio.wav")
         try AudioLoader.saveWAV(
             samples: samples16k, sampleRate: AudioLoader.targetSampleRate, url: audioWAVURL,
@@ -196,7 +241,7 @@ struct MTBatch: AsyncParsableCommand {
         let transcript = try await transcriptTask
         Log.info(
             "Transcription complete: \(transcript.count) segments in " +
-                "\(formatDuration(Date().timeIntervalSince(transcribeStart)))",
+                "\(PathHelpers.formatDuration(Date().timeIntervalSince(transcribeStart)))",
         )
         let diarization = try await diarizationTask
         Log.info(
@@ -206,18 +251,37 @@ struct MTBatch: AsyncParsableCommand {
         return (transcript, diarization)
     }
 
-    /// Stage 4: merge transcript + diarization timelines and write all
-    /// outputs (`transcript.txt`, `transcript.json`, `speakers.json`).
+    /// Stage 4: merge transcript + diarization timelines, optionally apply
+    /// global-DB name overrides, and write all outputs (`transcript.txt`,
+    /// `transcript.json`, `speakers.json`).
     private func persistResults(
         transcript: [TimedSegment],
         diarization: DiarizationOutput,
         duration: TimeInterval,
         outputURL: URL,
+        enrolled: [StoredSpeakerEntry]?, // swiftlint:disable:this discouraged_optional_collection
     ) throws {
         Events.merging()
+
+        // Global-DB matching happens *before* we rewrite the transcript so
+        // the entire JSON + text pipeline downstream operates on the final
+        // human-readable speaker names. nameOverrides is empty when no
+        // enrolled DB was provided OR when nothing matched — both paths
+        // safely no-op through the merger.
+        let (nameOverrides, matchResults) = matchEnrolledSpeakers(
+            diarization: diarization,
+            enrolled: enrolled,
+        )
+
+        if let matchResults {
+            Events.matchedSpeakers(matchResults)
+            logMatchSummary(matchResults)
+        }
+
         let labeled = Merger.mergeTranscriptWithDiarization(
             transcript: transcript,
             diarization: diarization.segments,
+            nameOverrides: nameOverrides,
         )
         try writeTranscriptText(labeled, to: outputURL.appendingPathComponent("transcript.txt"))
         let speakerCount = Set(labeled.map(\.speaker).filter { !$0.isEmpty }).count
@@ -231,8 +295,57 @@ struct MTBatch: AsyncParsableCommand {
         try persistSpeakerDB(
             embeddings: diarization.embeddings,
             speakingTimes: diarization.speakingTimes,
+            nameOverrides: nameOverrides,
             outputDir: outputURL,
         )
+    }
+
+    /// Run the cluster-vs-enrolled match if an enrolled DB was provided.
+    /// Returns `(nameOverrides, matchResults)`:
+    ///   * `nameOverrides` maps `"Speaker N"` → `"Alice"` for confirmed
+    ///     matches. The merger applies it directly to segment labels and we
+    ///     reuse it when rewriting the per-meeting `speakers.json`.
+    ///   * `matchResults` is the structured per-label outcome used by the
+    ///     `matched_speakers` event. nil when matching wasn't requested at
+    ///     all (so we don't emit a misleading empty event).
+    private func matchEnrolledSpeakers(
+        diarization: DiarizationOutput,
+        enrolled: [StoredSpeakerEntry]?, // swiftlint:disable:this discouraged_optional_collection
+    ) -> (
+        overrides: [String: String],
+        // swiftlint:disable:next discouraged_optional_collection
+        results: [GlobalSpeakerDB.MatchResult]?,
+    ) {
+        guard let enrolled else { return ([:], nil) }
+        let results = GlobalSpeakerDB.match(
+            detectedCentroids: diarization.embeddings,
+            enrolled: enrolled,
+            threshold: matchThreshold,
+            margin: matchMargin,
+        )
+        var overrides: [String: String] = [:]
+        for result in results {
+            if let name = result.enrolledName {
+                overrides[result.detectedLabel] = name
+            }
+        }
+        return (overrides, results)
+    }
+
+    /// One-line summary on stderr so a human watching the run sees the
+    /// match outcome alongside the JSONL stream. Skipped when no enrolled
+    /// DB was supplied (no decisions to report).
+    private func logMatchSummary(_ results: [GlobalSpeakerDB.MatchResult]) {
+        if results.isEmpty {
+            Log.info("Global DB matching: no detected speakers to match")
+            return
+        }
+        let lines = results.map { r -> String in
+            let simStr = r.bestSimilarity.map { String(format: "%.3f", $0) } ?? "-"
+            let assigned = r.enrolledName ?? "(no match)"
+            return "  \(r.detectedLabel) → \(assigned) (similarity=\(simStr))"
+        }
+        Log.info("Global DB matching:\n\(lines.joined(separator: "\n"))")
     }
 
     // MARK: - Output writers
@@ -268,29 +381,84 @@ struct MTBatch: AsyncParsableCommand {
         try data.write(to: url, options: .atomic)
     }
 
+    /// Persist the per-meeting `speakers.json` with the *final* names — when
+    /// matching renamed "Speaker 1" → "Alice", the local entry is keyed by
+    /// "Alice" too, so a follow-up consumer (e.g. the Electron app folding
+    /// this run's data back into the global DB) doesn't need a separate
+    /// rename step.
+    ///
+    /// The centroid still comes from THIS meeting's diarization, not the
+    /// merged global centroid — global-DB writes happen exclusively from
+    /// the Electron parent, so we never mix the two anchors implicitly.
     private func persistSpeakerDB(
         embeddings: [String: [Float]],
         speakingTimes: [String: TimeInterval],
+        nameOverrides: [String: String],
         outputDir: URL,
     ) throws {
         let dbURL = outputDir.appendingPathComponent("speakers.json")
         let existing = SpeakerDB.load(from: dbURL)
+        let renamedEmbeddings = renameKeys(embeddings, with: nameOverrides)
+        let renamedSpeakingTimes = renameKeys(speakingTimes, with: nameOverrides)
         let next = SpeakerDB.apply(
             existing: existing,
-            embeddings: embeddings,
-            speakingTimes: speakingTimes,
+            embeddings: renamedEmbeddings,
+            speakingTimes: renamedSpeakingTimes,
         )
         try SpeakerDB.save(next, to: dbURL)
     }
 
-    // MARK: - Formatting
-
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        let s = max(0, Int(seconds.rounded()))
-        if s >= 60 {
-            return String(format: "%dm %02ds", s / 60, s % 60)
+    /// Rebuild a `[label: V]` dictionary with override-applied keys. Falls
+    /// back to the original label when no override exists, so unmatched
+    /// clusters keep their "Speaker N" identity.
+    private func renameKeys<V>(_ dict: [String: V], with overrides: [String: String]) -> [String: V] {
+        var renamed: [String: V] = [:]
+        for (key, value) in dict {
+            renamed[overrides[key] ?? key] = value
         }
-        return String(format: "%ds", s)
+        return renamed
+    }
+}
+
+/// `list-speakers` subcommand — prints one JSON line per enrolled speaker in
+/// the global DB. Used by the Electron UI to render the "known voices" picker
+/// without spinning up the full ASR + diarization pipeline. Quiet success on
+/// an empty / missing DB: prints nothing and exits 0. Schema is intentionally
+/// minimal (name, useCount, centroidSampleCount, lastUsed) — we deliberately
+/// don't expose centroids on stdout so a misconfigured shell redirection
+/// can't dump 256-float vectors per speaker into a log file.
+struct ListSpeakers: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list-speakers",
+        abstract: "List enrolled speakers from a global speakers.json. One JSON object per line.",
+    )
+
+    @Option(name: .long, help: "Path to the global speakers.json file.")
+    var globalDb: String
+
+    func run() {
+        let url = URL(fileURLWithPath: PathHelpers.expandTilde(globalDb))
+        let entries = GlobalSpeakerDB.load(from: url)
+        for entry in entries {
+            var json: [String: Any] = [
+                "name": entry.name,
+                "useCount": entry.useCount,
+                "centroidSampleCount": entry.centroidSampleCount,
+            ]
+            if let lastUsed = entry.lastUsed {
+                json["lastUsed"] = lastUsed.timeIntervalSince1970
+            } else {
+                json["lastUsed"] = NSNull()
+            }
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: json,
+                options: [.sortedKeys],
+            ) else {
+                continue
+            }
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        }
     }
 }
 
@@ -333,5 +501,32 @@ final class ProgressBox: @unchecked Sendable {
             return true
         }
         return false
+    }
+}
+
+/// Small helpers shared between subcommands. Extracted here because both
+/// `Transcribe` and `ListSpeakers` need path expansion, and `Transcribe`
+/// also needs the duration formatter that used to live as a private method
+/// on the original flat command.
+enum PathHelpers {
+    /// Expand a leading `~/` to the current user's home directory. Swift's
+    /// `URL(fileURLWithPath:)` doesn't expand tildes; doing it here keeps
+    /// the CLI usable from shells that don't expand quoted paths.
+    static func expandTilde(_ path: String) -> String {
+        guard path.hasPrefix("~") else { return path }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == "~" { return home }
+        if path.hasPrefix("~/") {
+            return home + String(path.dropFirst(1))
+        }
+        return path
+    }
+
+    static func formatDuration(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        if s >= 60 {
+            return String(format: "%dm %02ds", s / 60, s % 60)
+        }
+        return String(format: "%ds", s)
     }
 }
