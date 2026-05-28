@@ -332,14 +332,43 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
   }
 
   // Step 3: launch the binary directly — NO `open`, NO LaunchServices.
-  // `detached: false` keeps the helper as a child of Mintr so quitting
-  // Mintr cleans up the helper too (the OS sends SIGHUP on parent exit).
+  //
+  // v0.18+: critical tweaks vs v0.15-v0.17.
+  //
+  // `detached: true`: makes the helper its own session-group leader,
+  // severing the macOS process-responsibility chain to Mintr. Otherwise
+  // TCC requests from the helper get attributed to Mintr's bundle id
+  // (which lacks Accessibility / certain entitlements), the helper's
+  // internal PermissionHealthCheck fails, and WatchLoop never starts —
+  // confirmed via unified-log diff between Mintr-spawned (PID 31443:
+  // PermissionHealthCheck failed, no WatchLoop) vs shell-spawned
+  // (PID 32837: WatchLoop started cleanly).
+  //
+  // `env`: a deliberately *small* environment instead of inheriting
+  // process.env wholesale. Electron sets ELECTRON_RUN_AS_NODE,
+  // ELECTRON_NO_ATTACH_CONSOLE, NODE_OPTIONS, dyld interposer paths,
+  // Vite dev-server vars, etc. Any of these can change the helper's
+  // behaviour (AppKit assertion modes, dyld load behaviour). The helper
+  // only needs PATH, HOME, USER, TMPDIR to do its job — keep it minimal.
+  //
+  // `child.unref()`: lets Mintr exit cleanly even if the helper is still
+  // alive. We then cull stale helpers on the next Mintr launch via
+  // `killLiveRecorderSync()` (which already runs at startup), so we
+  // don't leak zombies across sessions.
   const child = spawn(execPath, [], {
     cwd: appPath,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...env },
-    detached: false
+    env: {
+      PATH: '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+      HOME: process.env.HOME ?? '',
+      USER: process.env.USER ?? '',
+      TMPDIR: process.env.TMPDIR ?? '/tmp',
+      LANG: process.env.LANG ?? 'en_US.UTF-8',
+      ...env
+    },
+    detached: true
   })
+  child.unref()
 
   child.stdout?.on('data', (chunk: Buffer) => {
     // The helper emits to os.log primarily, but anything that does land
