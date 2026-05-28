@@ -126,7 +126,15 @@ async function ensureFolder(path: string): Promise<void> {
 }
 
 function makeWatcher(path: string, kind: 'live' | 'imported'): FSWatcher {
-  const w = watch(path, { persistent: false, recursive: false }, (eventType, filename) => {
+  // Critical: recursive: true. The engine writes its outputs inside
+  //   <root>/protocols/<file>.txt    — transcripts
+  //   <root>/recordings/<file>.wav   — audio
+  // With recursive: false, fs.watch only fires on changes to the immediate
+  // directory entries — writes inside protocols/ or recordings/ are
+  // invisible. v0.15 logged a real captured meeting at 19:38 that never
+  // surfaced in the UI because of exactly this. macOS's fs.watch
+  // supports `recursive: true` natively (via FSEvents under the hood).
+  const w = watch(path, { persistent: false, recursive: true }, (eventType, filename) => {
     const wasIdle = state.lastEngineWriteAt === 0
     const previousAge = Date.now() - state.lastEngineWriteAt
     // Any change at all bumps the engine-write timestamp — this is the
