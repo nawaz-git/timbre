@@ -7,9 +7,13 @@ import type {
   ChromeMeetSnapshot,
   EnrolledSpeaker,
   ExportFormat,
+  HelperPermissionSnapshot,
   ImportResult,
   MeetingSummary,
   MeetingTranscript,
+  OnboardingRestartResult,
+  OnboardingService,
+  OnboardingVerifyResult,
   PermissionStatus,
   PrivacyPane,
   RecordingStatus,
@@ -52,6 +56,7 @@ import {
   updateTag,
   writeSettings
 } from '../settings'
+import * as onboarding from '../onboarding'
 
 /** Register every IPC handler. Called once after `app.whenReady()`. */
 export function registerIpcHandlers(): void {
@@ -392,6 +397,39 @@ export function registerIpcHandlers(): void {
       return { ok: result.ok, message: result.message }
     }
   )
+
+  // ── onboarding:* — wizard main-process surface (TICKET-IPC-002) ────────
+  // Queries the HELPER's per-service TCC state (not Mintr's own), drives
+  // the engine restart/verify cycle, and persists wizard completion. All
+  // logic lives in `../onboarding`; these handlers are thin delegations.
+  ipcMain.handle(
+    IPC.onboardingProbe,
+    async (): Promise<HelperPermissionSnapshot> => onboarding.probeHelperPermissions()
+  )
+
+  ipcMain.handle(
+    IPC.onboardingOpenPane,
+    async (_event, svc: OnboardingService): Promise<void> => onboarding.openPane(svc)
+  )
+
+  ipcMain.handle(
+    IPC.onboardingRevealHelper,
+    async (): Promise<{ revealed: boolean; path?: string }> => onboarding.revealHelper()
+  )
+
+  ipcMain.handle(
+    IPC.onboardingRestartEngine,
+    async (): Promise<OnboardingRestartResult> => onboarding.restartEngine()
+  )
+
+  ipcMain.handle(
+    IPC.onboardingVerifyEngine,
+    async (): Promise<OnboardingVerifyResult> => onboarding.verifyEngine()
+  )
+
+  ipcMain.handle(IPC.onboardingComplete, async (): Promise<void> => onboarding.markComplete())
+
+  ipcMain.handle(IPC.onboardingReset, async (): Promise<void> => onboarding.reset())
 }
 
 function filtersForFormat(format: ExportFormat): Array<{ name: string; extensions: string[] }> {

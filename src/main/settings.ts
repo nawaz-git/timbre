@@ -35,6 +35,8 @@ function defaultSettings(): Settings {
     // First launch auto-enrols into watch mode; the tray menu surfaces
     // a Pause toggle so users who want full control still have it.
     autoStartWatching: true
+    // onboardingCompletedAt is intentionally absent from defaults —
+    // `undefined` is the "wizard not yet completed" sentinel (TICKET-IPC-002).
   }
 }
 
@@ -58,7 +60,18 @@ export async function readSettings(): Promise<Settings> {
   const autoStartWatchingRaw = store.get<boolean>('autoStartWatching')
   const autoStartWatching =
     typeof autoStartWatchingRaw === 'boolean' ? autoStartWatchingRaw : defaults.autoStartWatching
-  return { outputFolder, theme, numSpeakers, sidebarCollapsed, autoStartWatching }
+  // TICKET-IPC-002: undefined => wizard not completed (no default).
+  const onboardingCompletedAtRaw = store.get<number>('onboardingCompletedAt')
+  const onboardingCompletedAt =
+    typeof onboardingCompletedAtRaw === 'number' ? onboardingCompletedAtRaw : undefined
+  return {
+    outputFolder,
+    theme,
+    numSpeakers,
+    sidebarCollapsed,
+    autoStartWatching,
+    onboardingCompletedAt
+  }
 }
 
 export async function writeSettings(patch: Partial<Settings>): Promise<Settings> {
@@ -73,6 +86,15 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   }
   if (patch.autoStartWatching !== undefined) {
     store.set('autoStartWatching', Boolean(patch.autoStartWatching))
+  }
+  // TICKET-IPC-002: use `in` (not `!== undefined`) so the reset path can
+  // explicitly clear completion by passing `onboardingCompletedAt: undefined`.
+  if ('onboardingCompletedAt' in patch) {
+    if (typeof patch.onboardingCompletedAt === 'number') {
+      store.set('onboardingCompletedAt', patch.onboardingCompletedAt)
+    } else {
+      store.set('onboardingCompletedAt', undefined)
+    }
   }
   return readSettings()
 }

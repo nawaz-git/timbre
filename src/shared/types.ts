@@ -16,6 +16,13 @@ export interface Settings {
    * Surfaced in Settings → Output and via the tray menu.
    */
   autoStartWatching: boolean
+  // ─── TICKET-IPC-002 (onboarding) — keep self-contained for merge ───────
+  /**
+   * Wall-clock ms epoch when the user finished the onboarding wizard.
+   * `undefined` => the wizard has not been completed and should be shown.
+   * Set via `onboarding:complete`, cleared via `onboarding:reset`.
+   */
+  onboardingCompletedAt?: number
 }
 
 export type RecordingState = 'idle' | 'watching' | 'recording' | 'transcribing'
@@ -206,7 +213,22 @@ export const IPC = {
    * let us programmatically add a TCC entry — drag-and-drop from
    * Finder is the canonical user-driven way.
    */
-  systemRevealHelper: 'system:revealHelper'
+  systemRevealHelper: 'system:revealHelper',
+  // ─── TICKET-IPC-002 (onboarding) — keep self-contained for merge ───────
+  /** Probe the HELPER's per-service TCC state → HelperPermissionSnapshot. */
+  onboardingProbe: 'onboarding:probe',
+  /** Deep-link System Settings to the privacy pane for a given service. */
+  onboardingOpenPane: 'onboarding:openPane',
+  /** Reveal the bundled MintrEngine.app in Finder for drag-to-grant. */
+  onboardingRevealHelper: 'onboarding:revealHelper',
+  /** Kill + relaunch the engine so freshly-granted TCC takes effect. */
+  onboardingRestartEngine: 'onboarding:restartEngine',
+  /** Poll the engine log for "Watch mode started" after a restart. */
+  onboardingVerifyEngine: 'onboarding:verifyEngine',
+  /** Persist onboardingCompletedAt = now. */
+  onboardingComplete: 'onboarding:complete',
+  /** Clear onboardingCompletedAt (re-show the wizard). */
+  onboardingReset: 'onboarding:reset'
 } as const
 
 /** Export format kinds for `meetings:export`. */
@@ -295,4 +317,49 @@ export interface CaptureWatchdogSignal {
   meetingId?: string
   /** Wall-clock ms when the signal flipped. UI uses this to render time-since. */
   firedAt?: number
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TICKET-IPC-002 — Onboarding main-process surface.
+// Self-contained region (TICKET-UI-003 edits this file in parallel — keep
+// all onboarding additions inside this block to ease the merge).
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * The three macOS TCC services the onboarding wizard walks the user
+ * through granting to the HELPER (`ai.nawaz.mintr-engine`), not to Mintr.
+ */
+export type OnboardingService = 'screen-recording' | 'microphone' | 'accessibility'
+
+/**
+ * Per-service grant verdict for the helper. `unknown` means we have no
+ * signal (neither the engine's verdict file nor the tccd log named it);
+ * the wizard treats `unknown` like `not-determined` for prompting.
+ */
+export type GrantStatus = 'granted' | 'denied' | 'not-determined' | 'unknown'
+
+/**
+ * Snapshot of the HELPER's TCC state, surfaced to the onboarding wizard.
+ * Computed in `src/main/onboarding.ts` by preferring the engine's own
+ * live verdict file (`/tmp/mt-permission.log`) and falling back to the
+ * unified TCC subsystem log filtered to the helper's bundle id.
+ */
+export interface HelperPermissionSnapshot {
+  screenRecording: GrantStatus
+  microphone: GrantStatus
+  accessibility: GrantStatus
+  /** True once the engine has logged "Watch mode started" since last (re)launch. */
+  watchLoopRunning: boolean
+}
+
+/** Result of `onboarding:restartEngine`. */
+export interface OnboardingRestartResult {
+  ok: boolean
+  message?: string
+}
+
+/** Result of `onboarding:verifyEngine`. */
+export interface OnboardingVerifyResult {
+  watchLoopRunning: boolean
+  detail?: string
 }

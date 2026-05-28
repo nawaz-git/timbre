@@ -8,9 +8,13 @@ import type {
   ChromeMeetSnapshot,
   EnrolledSpeaker,
   ExportFormat,
+  HelperPermissionSnapshot,
   ImportResult,
   MeetingSummary,
   MeetingTranscript,
+  OnboardingRestartResult,
+  OnboardingService,
+  OnboardingVerifyResult,
   PermissionStatus,
   PrivacyPane,
   RecordingStatus,
@@ -194,6 +198,26 @@ const api = {
         ipcRenderer.removeListener('meetings:changed', listener)
       }
     }
+  },
+  /**
+   * Onboarding wizard surface (TICKET-IPC-002). Mirrors the IPC contract
+   * the wizard (TICKET-UI-003) codes against. Unlike `system.permissions`,
+   * `probe()` reports the HELPER's (`ai.nawaz.mintr-engine`) TCC state —
+   * the correct principal — by preferring the engine's live verdict file
+   * and falling back to the tccd subsystem log.
+   */
+  onboarding: {
+    probe: (): Promise<HelperPermissionSnapshot> => ipcRenderer.invoke(IPC.onboardingProbe),
+    openPane: (svc: OnboardingService): Promise<void> =>
+      ipcRenderer.invoke(IPC.onboardingOpenPane, svc),
+    revealHelper: (): Promise<{ revealed: boolean; path?: string }> =>
+      ipcRenderer.invoke(IPC.onboardingRevealHelper),
+    restartEngine: (): Promise<OnboardingRestartResult> =>
+      ipcRenderer.invoke(IPC.onboardingRestartEngine),
+    verifyEngine: (): Promise<OnboardingVerifyResult> =>
+      ipcRenderer.invoke(IPC.onboardingVerifyEngine),
+    complete: (): Promise<void> => ipcRenderer.invoke(IPC.onboardingComplete),
+    reset: (): Promise<void> => ipcRenderer.invoke(IPC.onboardingReset)
   }
 }
 
