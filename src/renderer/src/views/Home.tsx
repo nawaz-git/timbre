@@ -1,4 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  Inbox,
+  Loader2,
+  Mic,
+  MicOff,
+  Radio,
+  Tag as TagIcon,
+  Upload,
+  UserCheck
+} from 'lucide-react'
 import { useRecordingStatus } from '../state/recording'
 import { useSettings } from '../state/settings'
 import { useTags } from '../state/tags'
@@ -24,6 +34,21 @@ const HEADLINE: Record<RecordingState, string> = {
   transcribing: 'Transcribing audio.'
 }
 
+/**
+ * The status glyph next to the state label. We swap the existing colored
+ * dot for a lucide icon — it carries more semantic weight at the same size
+ * and reads better against the all-monochrome status card. The Loader2
+ * `animate-spin` class is replaced here with the inline `home-status-icon--spin`
+ * class so we don't rely on Tailwind utility names.
+ */
+function StatusIcon({ state }: { state: RecordingState }): JSX.Element {
+  if (state === 'recording') return <Mic size={16} aria-hidden="true" />
+  if (state === 'watching') return <Radio size={16} aria-hidden="true" />
+  if (state === 'transcribing')
+    return <Loader2 size={16} aria-hidden="true" className="home-status-icon--spin" />
+  return <MicOff size={16} aria-hidden="true" />
+}
+
 interface JobBanner {
   jobId: string
   filePath: string
@@ -43,6 +68,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
   const { status, start, stop } = useRecordingStatus()
   const [banner, setBanner] = useState<JobBanner | null>(null)
   const [recent, setRecent] = useState<MeetingSummary[]>([])
+  const [recentLoading, setRecentLoading] = useState(true)
 
   const loadRecent = useCallback(async () => {
     try {
@@ -50,6 +76,8 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
       setRecent(list.slice(0, 5))
     } catch (err) {
       console.error('Failed to load recent meetings', err)
+    } finally {
+      setRecentLoading(false)
     }
   }, [])
 
@@ -122,18 +150,10 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
       jobId: job.jobId,
       filePath: result.filePath,
       phase: 'queued',
-      message: 'Queued for transcription. Speaker count is auto-detected — if the result looks wrong, open the meeting and use "Re-analyse…" with an explicit count.'
+      message:
+        'Queued for transcription. Speaker count is auto-detected — if the result looks wrong, open the meeting and use "Re-analyse…" with an explicit count.'
     })
   }, [settings])
-
-  const dotClass =
-    status.state === 'recording'
-      ? 'status-dot status-dot--recording'
-      : status.state === 'watching'
-        ? 'status-dot status-dot--watching'
-        : status.state === 'transcribing'
-          ? 'status-dot status-dot--transcribing'
-          : 'status-dot'
 
   const progressPercent =
     banner && (banner.phase === 'transcribing' || banner.phase === 'done')
@@ -150,11 +170,18 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
     [banner]
   )
 
+  const isWatching = status.state !== 'idle'
+
   return (
     <div className="home">
       <div className="status-card">
         <div className="status-indicator">
-          <span className={dotClass} />
+          <span
+            className={'home-status-icon home-status-icon--' + status.state}
+            aria-hidden="true"
+          >
+            <StatusIcon state={status.state} />
+          </span>
           <span>{STATE_LABEL[status.state]}</span>
         </div>
         <div className="status-headline">{HEADLINE[status.state]}</div>
@@ -179,12 +206,13 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
 
         <div className="actions-row">
           <button
-            className={status.state === 'idle' ? 'btn btn--primary' : 'btn btn--danger'}
+            className={isWatching ? 'btn btn--danger' : 'btn btn--primary'}
             onClick={() => {
               void onToggleWatch()
             }}
           >
-            {status.state === 'idle' ? 'Start Watching' : 'Stop Watching'}
+            <Radio size={16} aria-hidden="true" />
+            <span>{isWatching ? 'Stop Watching' : 'Start Watching'}</span>
           </button>
           <button
             className="btn"
@@ -192,7 +220,8 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
               void onImport()
             }}
           >
-            Import audio file…
+            <Upload size={16} aria-hidden="true" />
+            <span>Import audio file…</span>
           </button>
         </div>
 
@@ -208,21 +237,47 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
               `Job ${banner.jobId.slice(0, 8)} — ${banner.phase}${
                 banner.progress !== undefined ? ` (${banner.progress}%)` : ''
               }`}
-            {recognised.length > 0 && (
-              <div style={{ marginTop: 6 }}>
-                Recognised:{' '}
+          </div>
+        )}
+
+        {recognised.length > 0 && (
+          <div className="recognised-banner" role="status">
+            <UserCheck
+              size={14}
+              aria-hidden="true"
+              className="recognised-banner__icon"
+            />
+            <div className="recognised-banner__body">
+              <span className="recognised-banner__label">Recognised:</span>{' '}
+              <span className="recognised-banner__names">
                 {recognised
                   .map((m) => `${m.enrolled} (${Math.round(m.similarity * 100)}%)`)
                   .join(', ')}
-              </div>
-            )}
+              </span>
+            </div>
           </div>
         )}
       </div>
 
-      {recent.length > 0 && (
-        <div className="recent-meetings">
-          <h3 className="recent-meetings__heading">Recent meetings</h3>
+      <div className="recent-meetings">
+        <h3 className="recent-meetings__heading">Recent meetings</h3>
+        {recentLoading && (
+          <div className="recent-meetings__grid" aria-hidden="true">
+            <div className="skeleton-row" />
+            <div className="skeleton-row" />
+            <div className="skeleton-row" />
+          </div>
+        )}
+        {!recentLoading && recent.length === 0 && (
+          <div className="empty-state">
+            <Inbox size={32} aria-hidden="true" className="empty-state__icon" />
+            <div className="empty-state__title">No meetings yet</div>
+            <div className="empty-state__hint">
+              Import an audio file or start watching to create your first meeting.
+            </div>
+          </div>
+        )}
+        {!recentLoading && recent.length > 0 && (
           <div className="recent-meetings__grid">
             {recent.map((m) => (
               <button
@@ -234,9 +289,11 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
                 <div className="recent-card__title">{m.title}</div>
                 <div className="recent-card__meta">
                   <span>{formatDate(m.date)}</span>
-                  <span>·</span>
-                  <span>{formatDuration(m.durationSeconds)}</span>
-                  <span>·</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="recent-card__meta-duration">
+                    {formatDuration(m.durationSeconds)}
+                  </span>
+                  <span aria-hidden="true">·</span>
                   <span>
                     {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
                   </span>
@@ -252,7 +309,12 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
                           className="recent-card__tag"
                           style={{ background: t.color }}
                         >
-                          {t.name}
+                          <TagIcon
+                            size={10}
+                            aria-hidden="true"
+                            className="recent-card__tag-icon"
+                          />
+                          <span className="recent-card__tag-name">{t.name}</span>
                         </span>
                       )
                     })}
@@ -261,8 +323,8 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
               </button>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }

@@ -7,12 +7,15 @@ import {
   FileAudio,
   FileCode,
   FileText,
+  Filter,
+  Inbox,
   Pause,
   Play,
   RefreshCw,
   SkipBack,
   SkipForward,
-  Subtitles
+  Subtitles,
+  Tag as TagIcon
 } from 'lucide-react'
 import { formatDate, formatDuration } from '../state/format'
 import { useTags } from '../state/tags'
@@ -663,12 +666,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     <div className="meetings">
       <div className="meetings__list-wrap">
         {/* Tag filter chips */}
-        <div className="tag-filter-row">
+        <div className="tag-filter-row" role="toolbar" aria-label="Filter meetings by tag">
           <button
             className={'tag-chip' + (tagFilter === null ? ' tag-chip--active' : '')}
             onClick={() => setTagFilter(null)}
+            aria-pressed={tagFilter === null}
           >
-            All
+            <Filter size={11} aria-hidden="true" className="tag-chip__leading-icon" />
+            <span>All</span>
           </button>
           {allTags.map((tag) => {
             const active = tagFilter === tag.id
@@ -683,20 +688,37 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   } as React.CSSProperties
                 }
                 onClick={() => setTagFilter(tag.id)}
+                aria-pressed={active}
               >
                 <span className="tag-chip__dot" style={{ background: tag.color }} />
-                {tag.name}
-                {active && <span className="tag-chip__check">✓</span>}
+                <span>{tag.name}</span>
+                {active && (
+                  <Check size={11} aria-hidden="true" className="tag-chip__check" />
+                )}
               </button>
             )
           })}
         </div>
 
         <div className="meetings__list">
-          {loading && <div className="empty">Loading…</div>}
+          {loading && (
+            <div className="meetings__list-skeleton" aria-hidden="true">
+              <div className="skeleton-row" />
+              <div className="skeleton-row" />
+              <div className="skeleton-row" />
+            </div>
+          )}
           {!loading && filteredMeetings.length === 0 && (
-            <div className="empty">
-              {tagFilter ? 'No meetings with this tag.' : 'No meetings yet. Import audio to create one.'}
+            <div className="empty-state empty-state--in-list">
+              <Inbox size={32} aria-hidden="true" className="empty-state__icon" />
+              <div className="empty-state__title">
+                {tagFilter ? 'Nothing here yet' : 'No meetings yet'}
+              </div>
+              <div className="empty-state__hint">
+                {tagFilter
+                  ? 'No meetings match this tag.'
+                  : 'Import an audio file or start watching to create your first meeting.'}
+              </div>
             </div>
           )}
           {!loading &&
@@ -772,9 +794,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   </div>
                   <div className="meetings__row-meta">
                     <span>{formatDate(m.date)}</span>
-                    <span>·</span>
-                    <span>{formatDuration(m.durationSeconds)}</span>
-                    <span>·</span>
+                    <span aria-hidden="true">·</span>
+                    <span className="meetings__row-meta-duration">
+                      {formatDuration(m.durationSeconds)}
+                    </span>
+                    <span aria-hidden="true">·</span>
                     <span>
                       {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
                     </span>
@@ -790,7 +814,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                             className="meetings__row-tag-pill"
                             style={{ background: t.color }}
                           >
-                            {t.name}
+                            <TagIcon
+                              size={9}
+                              aria-hidden="true"
+                              className="meetings__row-tag-icon"
+                            />
+                            <span>{t.name}</span>
                           </span>
                         )
                       })}
