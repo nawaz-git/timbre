@@ -5,6 +5,8 @@ export type ThemeMode = 'auto' | 'light' | 'dark'
 export interface Settings {
   outputFolder: string
   theme: ThemeMode
+  /** Default number-of-speakers hint applied to file imports. */
+  numSpeakers: NumSpeakersHint
 }
 
 export type RecordingState = 'idle' | 'watching' | 'recording' | 'transcribing'
@@ -62,8 +64,25 @@ export type BackendEvent =
   | { jobId: string; event: 'transcribing'; progress: number }
   | { jobId: string; event: 'diarizing' }
   | { jobId: string; event: 'merging' }
+  | { jobId: string; event: 'matched_speakers'; matches: SpeakerMatch[] }
   | { jobId: string; event: 'done'; outputDir: string }
   | { jobId: string; event: 'error'; message: string }
+
+export interface SpeakerMatch {
+  detected: string
+  enrolled: string | null
+  similarity: number
+}
+
+export interface EnrolledSpeaker {
+  name: string
+  centroidSampleCount: number
+  useCount: number
+  lastUsed: number
+}
+
+/** Number-of-speakers hint passed through to mt-batch's --num-speakers. */
+export type NumSpeakersHint = 'auto' | 2 | 3 | 4 | 5 | 6
 
 export interface ImportResult {
   /** undefined when the user cancelled the dialog. */
@@ -80,8 +99,12 @@ export const IPC = {
   meetingsList: 'meetings:list',
   meetingsOpen: 'meetings:open',
   meetingsTranscript: 'meetings:transcript',
+  meetingsRenameSpeaker: 'meetings:renameSpeaker',
+  meetingsReanalyze: 'meetings:reanalyze',
   fileImport: 'file:import',
   backendSpawn: 'backend:spawn',
   pickFolder: 'settings:pickFolder',
-  openLiveFolder: 'settings:openLiveFolder'
+  openLiveFolder: 'settings:openLiveFolder',
+  speakersList: 'speakers:list',
+  speakersDelete: 'speakers:delete'
 } as const

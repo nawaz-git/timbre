@@ -1,8 +1,10 @@
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, spawnSync, type ChildProcess } from 'child_process'
 import { existsSync } from 'fs'
 import { promises as fs } from 'fs'
 import { join } from 'path'
 import { app, type WebContents } from 'electron'
+import type { EnrolledSpeaker, NumSpeakersHint } from '../shared/types'
+import { globalSpeakersDBPath } from './settings'
 
 /**
  * Resolve the path to the bundled `mt-batch` Swift CLI.
@@ -63,12 +65,19 @@ export function resolveLiveRecorderApp(): string | null {
   return null
 }
 
+export interface BatchMatch {
+  detected: string
+  enrolled: string | null
+  similarity: number
+}
+
 export type BatchEvent =
   | { event: 'loading_audio' }
   | { event: 'loading_models' }
   | { event: 'transcribing'; progress: number }
   | { event: 'diarizing' }
   | { event: 'merging' }
+  | { event: 'matched_speakers'; matches: BatchMatch[] }
   | { event: 'done'; outputDir: string }
   | { event: 'error'; message: string }
 
@@ -86,8 +95,19 @@ interface RunBatchOptions {
   outputDir: string
   /** Optional speaker hint forwarded as `--num-speakers`. */
   numSpeakers?: number
+  /** Optional global speakers DB path forwarded as `--global-db`. Defaults to the user's global DB. */
+  globalDB?: string
   /** Called for each parsed event. Errors during processing are reported via the `error` event. */
   onEvent: (ev: BatchEvent) => void
+}
+
+/**
+ * Resolve the numSpeakers setting (auto | 2-6) into an integer arg for mt-batch,
+ * or undefined when 'auto' (let the diarizer decide).
+ */
+export function numSpeakersToArg(hint: NumSpeakersHint | undefined): number | undefined {
+  if (typeof hint === 'number') return hint
+  return undefined
 }
 
 /**
@@ -109,6 +129,10 @@ export function runBatch(opts: RunBatchOptions): Promise<string> {
     if (typeof opts.numSpeakers === 'number') {
       args.push('--num-speakers', String(opts.numSpeakers))
     }
+    // Pass --global-db so the run can auto-recognise enrolled voices.
+    // mt-batch tolerates a non-existent file (treats as empty list).
+    const globalDB = opts.globalDB ?? globalSpeakersDBPath()
+    args.push('--global-db', globalDB)
 
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
 
@@ -267,4 +291,141 @@ export function makeWebContentsForwarder(
     if (webContents.isDestroyed()) return
     webContents.send('backend:event', { jobId, ...ev })
   }
+}
+
+// ─── Global speakers DB helpers ───────────────────────────────────────────
+
+interface StoredSpeaker {
+  name: string
+  centroid: number[]
+  centroidSampleCount: number
+  embeddings: number[][]
+  lastUsed: number
+  useCount: number
+}
+
+/**
+ * List enrolled speakers via `mt-batch list-speakers`. Returns [] if the
+ * global DB doesn't exist yet, or if mt-batch isn't available.
+ */
+export function listEnrolledSpeakers(): EnrolledSpeaker[] {
+  const bin = resolveBatchBinary()
+  if (!existsSync(bin)) return []
+  const dbPath = globalSpeakersDBPath()
+  const result = spawnSync(bin, ['list-speakers', '--global-db', dbPath], {
+    encoding: 'utf-8',
+    timeout: 5000
+  })
+  if (result.error || result.status !== 0) return []
+  const out = result.stdout?.trim()
+  if (!out) return []
+  const speakers: EnrolledSpeaker[] = []
+  for (const line of out.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const parsed = JSON.parse(trimmed) as EnrolledSpeaker
+      speakers.push(parsed)
+    } catch {
+      // ignore malformed lines
+    }
+  }
+  return speakers
+}
+
+async function readStoredSpeakers(path: string): Promise<StoredSpeaker[]> {
+  try {
+    const raw = await fs.readFile(path, 'utf-8')
+    const parsed = JSON.parse(raw) as StoredSpeaker[]
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+async function writeStoredSpeakersAtomic(
+  path: string,
+  speakers: StoredSpeaker[]
+): Promise<void> {
+  await fs.mkdir(join(path, '..'), { recursive: true })
+  const tmp = path + '.tmp'
+  await fs.writeFile(tmp, JSON.stringify(speakers, null, 2), 'utf-8')
+  await fs.rename(tmp, path)
+}
+
+/**
+ * Add or update an enrolled speaker in the global DB. If a speaker with
+ * `newName` already exists, the centroid is updated via a running mean
+ * (weighted by sampleCount). Otherwise a new entry is created using the
+ * meeting's centroid as the seed.
+ */
+export async function enrollOrUpdateSpeaker(
+  newName: string,
+  centroid: number[],
+  centroidSampleCount: number,
+  embedding: number[] | undefined
+): Promise<void> {
+  const dbPath = globalSpeakersDBPath()
+  const speakers = await readStoredSpeakers(dbPath)
+  const now = Date.now() / 1000
+  const existingIdx = speakers.findIndex((s) => s.name === newName)
+  if (existingIdx >= 0) {
+    const existing = speakers[existingIdx]
+    // Running-mean centroid update weighted by sample counts.
+    const aN = existing.centroidSampleCount || 1
+    const bN = centroidSampleCount || 1
+    const total = aN + bN
+    const merged = existing.centroid.map((v, i) => (v * aN + centroid[i] * bN) / total)
+    // L2-normalise so cosine math stays well-behaved.
+    const norm = Math.sqrt(merged.reduce((s, v) => s + v * v, 0)) || 1
+    existing.centroid = merged.map((v) => v / norm)
+    existing.centroidSampleCount = total
+    existing.useCount += 1
+    existing.lastUsed = now
+    if (embedding && existing.embeddings.length < 3) {
+      existing.embeddings.push(embedding)
+    }
+    speakers[existingIdx] = existing
+  } else {
+    speakers.push({
+      name: newName,
+      centroid,
+      centroidSampleCount,
+      embeddings: embedding ? [embedding] : [],
+      lastUsed: now,
+      useCount: 1
+    })
+  }
+  await writeStoredSpeakersAtomic(dbPath, speakers)
+}
+
+/**
+ * Remove a speaker from the global DB by name. No-op if not present.
+ */
+export async function deleteSpeakerFromGlobalDB(name: string): Promise<void> {
+  const dbPath = globalSpeakersDBPath()
+  const speakers = await readStoredSpeakers(dbPath)
+  const filtered = speakers.filter((s) => s.name !== name)
+  if (filtered.length === speakers.length) return
+  await writeStoredSpeakersAtomic(dbPath, filtered)
+}
+
+/**
+ * Read a meeting's `speakers.json` and return the StoredSpeaker entry that
+ * was assigned the given name in this run. Used by the rename flow to
+ * recover the centroid that produced the "Speaker N" label.
+ */
+export async function readMeetingSpeakers(meetingFolder: string): Promise<StoredSpeaker[]> {
+  return readStoredSpeakers(join(meetingFolder, 'speakers.json'))
+}
+
+/**
+ * Write back the meeting's speakers.json with renamed entries so later
+ * navigations see the right labels.
+ */
+export async function writeMeetingSpeakers(
+  meetingFolder: string,
+  speakers: StoredSpeaker[]
+): Promise<void> {
+  await writeStoredSpeakersAtomic(join(meetingFolder, 'speakers.json'), speakers)
 }

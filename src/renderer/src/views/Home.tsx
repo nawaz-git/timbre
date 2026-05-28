@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { useRecordingStatus } from '../state/recording'
 import { useSettings } from '../state/settings'
 import { formatDuration } from '../state/format'
-import type { BackendEvent, RecordingState } from '../../../shared/types'
+import type {
+  BackendEvent,
+  NumSpeakersHint,
+  RecordingState,
+  SpeakerMatch
+} from '../../../shared/types'
 
 const STATE_LABEL: Record<RecordingState, string> = {
   idle: 'Idle',
@@ -18,20 +23,26 @@ const HEADLINE: Record<RecordingState, string> = {
   transcribing: 'Transcribing audio.'
 }
 
+const NUM_SPEAKERS_OPTIONS: NumSpeakersHint[] = ['auto', 2, 3, 4, 5, 6]
+
+function labelForNumSpeakers(v: NumSpeakersHint): string {
+  return v === 'auto' ? 'Auto' : `${v} speakers`
+}
+
 interface JobBanner {
   jobId: string
   filePath: string
   phase: 'queued' | 'loading' | 'transcribing' | 'diarizing' | 'merging' | 'done' | 'error'
   progress?: number
   message?: string
+  matches?: SpeakerMatch[]
 }
 
 export function HomeView(): JSX.Element {
-  const { settings } = useSettings()
+  const { settings, setSettings } = useSettings()
   const { status, start, stop } = useRecordingStatus()
   const [banner, setBanner] = useState<JobBanner | null>(null)
 
-  // Subscribe to backend events for the duration of this view's lifecycle.
   useEffect(() => {
     const unsub = window.api.backend.onEvent((ev: BackendEvent) => {
       setBanner((current) => {
@@ -52,6 +63,8 @@ export function HomeView(): JSX.Element {
             return { ...current, phase: 'diarizing', message: 'Separating speakers…' }
           case 'merging':
             return { ...current, phase: 'merging', message: 'Building transcript…' }
+          case 'matched_speakers':
+            return { ...current, matches: ev.matches }
           case 'done':
             return {
               ...current,
@@ -61,6 +74,8 @@ export function HomeView(): JSX.Element {
             }
           case 'error':
             return { ...current, phase: 'error', message: ev.message }
+          default:
+            return current
         }
       })
     })
@@ -68,11 +83,8 @@ export function HomeView(): JSX.Element {
   }, [])
 
   const onToggleWatch = useCallback(async () => {
-    if (status.state === 'idle') {
-      await start()
-    } else {
-      await stop()
-    }
+    if (status.state === 'idle') await start()
+    else await stop()
   }, [status.state, start, stop])
 
   const onImport = useCallback(async () => {
@@ -106,8 +118,6 @@ export function HomeView(): JSX.Element {
           ? 'status-dot status-dot--transcribing'
           : 'status-dot'
 
-  // While the backend job is mid-flight, prefer its progress over the polled
-  // recording status for the progress bar (recording status only repolls 1 Hz).
   const progressPercent =
     banner && (banner.phase === 'transcribing' || banner.phase === 'done')
       ? banner.progress
@@ -117,6 +127,14 @@ export function HomeView(): JSX.Element {
     progressPercent !== undefined &&
     (status.state === 'transcribing' ||
       (banner !== null && banner.phase !== 'done' && banner.phase !== 'error'))
+
+  const onChangeNumSpeakers = useCallback(
+    async (v: NumSpeakersHint) => {
+      if (!settings) return
+      await setSettings({ numSpeakers: v })
+    },
+    [settings, setSettings]
+  )
 
   return (
     <div className="home">
@@ -137,10 +155,7 @@ export function HomeView(): JSX.Element {
         )}
 
         {showProgress && (
-          <div
-            className="progress-bar"
-            aria-label={`Transcription ${progressPercent}%`}
-          >
+          <div className="progress-bar" aria-label={`Transcription ${progressPercent}%`}>
             <div
               className="progress-bar__fill"
               style={{ width: `${Math.min(100, Math.max(0, progressPercent ?? 0))}%` }}
@@ -167,6 +182,39 @@ export function HomeView(): JSX.Element {
           </button>
         </div>
 
+        {settings && (
+          <div className="num-speakers-row" style={{ marginTop: 12 }}>
+            <span style={{ color: 'var(--fg-dim)', fontSize: 13 }}>Speaker count for next import:</span>
+            <select
+              value={String(settings.numSpeakers)}
+              onChange={(e) => {
+                const raw = e.target.value
+                const v: NumSpeakersHint = raw === 'auto' ? 'auto' : (Number(raw) as NumSpeakersHint)
+                void onChangeNumSpeakers(v)
+              }}
+              className="num-speakers-select"
+              style={{
+                background: 'var(--bg-elevated)',
+                color: 'var(--fg)',
+                border: '1px solid var(--divider)',
+                borderRadius: 6,
+                padding: '4px 8px',
+                fontSize: 13,
+                marginLeft: 8
+              }}
+            >
+              {NUM_SPEAKERS_OPTIONS.map((opt) => (
+                <option key={String(opt)} value={String(opt)}>
+                  {labelForNumSpeakers(opt)}
+                </option>
+              ))}
+            </select>
+            <span style={{ color: 'var(--fg-dim)', fontSize: 12, marginLeft: 8 }}>
+              Set explicitly (e.g. 2) if Auto collapses everyone to one speaker.
+            </span>
+          </div>
+        )}
+
         {banner && (
           <div
             className="status-detail"
@@ -179,6 +227,24 @@ export function HomeView(): JSX.Element {
               `Job ${banner.jobId.slice(0, 8)} — ${banner.phase}${
                 banner.progress !== undefined ? ` (${banner.progress}%)` : ''
               }`}
+            {banner.matches && banner.matches.length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                {banner.matches.filter((m) => m.enrolled).length > 0 ? (
+                  <span>
+                    Recognised:{' '}
+                    {banner.matches
+                      .filter((m) => m.enrolled)
+                      .map((m) => `${m.enrolled} (${Math.round(m.similarity * 100)}%)`)
+                      .join(', ')}
+                  </span>
+                ) : (
+                  <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>
+                    No enrolled voices matched. Rename a speaker in the Meetings tab to enrol them
+                    for next time.
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

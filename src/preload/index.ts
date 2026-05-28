@@ -4,6 +4,7 @@ import { IPC } from '../shared/types'
 import type {
   BackendEvent,
   BackendJob,
+  EnrolledSpeaker,
   ImportResult,
   MeetingSummary,
   MeetingTranscript,
@@ -33,7 +34,19 @@ const api = {
     list: (): Promise<MeetingSummary[]> => ipcRenderer.invoke(IPC.meetingsList),
     open: (folderPath: string): Promise<string> => ipcRenderer.invoke(IPC.meetingsOpen, folderPath),
     transcript: (meetingId: string): Promise<MeetingTranscript> =>
-      ipcRenderer.invoke(IPC.meetingsTranscript, meetingId)
+      ipcRenderer.invoke(IPC.meetingsTranscript, meetingId),
+    renameSpeaker: (
+      meetingId: string,
+      oldName: string,
+      newName: string
+    ): Promise<{ enrolled: boolean }> =>
+      ipcRenderer.invoke(IPC.meetingsRenameSpeaker, meetingId, oldName, newName),
+    reanalyze: (meetingId: string, numSpeakers?: number): Promise<BackendJob> =>
+      ipcRenderer.invoke(IPC.meetingsReanalyze, meetingId, numSpeakers)
+  },
+  speakers: {
+    list: (): Promise<EnrolledSpeaker[]> => ipcRenderer.invoke(IPC.speakersList),
+    delete: (name: string): Promise<void> => ipcRenderer.invoke(IPC.speakersDelete, name)
   },
   file: {
     import: (): Promise<ImportResult> => ipcRenderer.invoke(IPC.fileImport)

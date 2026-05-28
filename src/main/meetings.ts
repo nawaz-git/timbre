@@ -1,7 +1,19 @@
 import { promises as fs } from 'fs'
 import { homedir } from 'os'
 import { basename, join } from 'path'
-import type { MeetingSummary, MeetingTranscript, SpeakerRecord } from '../shared/types'
+import type {
+  MeetingSummary,
+  MeetingTranscript,
+  NumSpeakersHint,
+  SpeakerRecord
+} from '../shared/types'
+import {
+  enrollOrUpdateSpeaker,
+  readMeetingSpeakers,
+  runBatch,
+  writeMeetingSpeakers,
+  type BatchEvent
+} from './backend'
 
 /**
  * The Swift live-recording engine (`MeetingTranscriber.app`, bundled inside
@@ -224,3 +236,137 @@ export const liveRecordingsRoot = ENGINE_DEFAULT_ROOT
 
 // Re-export so the IPC layer can use it without an extra path import.
 export { basename }
+
+// ─── Mutations ───────────────────────────────────────────────────────────
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Rename one speaker label inside a meeting's transcript files AND enrol
+ * the corresponding voice in the global speakers DB. The next file import
+ * (or re-analysis) will then auto-recognise the named voice.
+ *
+ * Throws if the meeting doesn't have a `speakers.json` (e.g. live-recording
+ * format produced by MeetingTranscriber.app — those don't carry centroids
+ * we can enrol from, only flat transcript text).
+ */
+export async function renameSpeakerInMeeting(
+  outputFolder: string,
+  meetingId: string,
+  oldName: string,
+  newName: string
+): Promise<{ enrolled: boolean }> {
+  if (oldName === newName) return { enrolled: false }
+  if (!newName.trim()) throw new Error('New name must not be empty')
+  if (meetingId.startsWith('engine:')) {
+    throw new Error(
+      'Live-recording meetings (from the menu-bar engine) cannot be renamed yet — only file imports carry the speaker embeddings needed for cross-meeting matching.'
+    )
+  }
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${meetingId}`)
+  }
+  const folder = join(outputFolder, folderId)
+
+  // 1. Pull the centroid from the per-meeting speakers.json so we can enrol it.
+  const speakers = await readMeetingSpeakers(folder)
+  const entry = speakers.find((s) => s.name === oldName)
+  let enrolled = false
+  if (entry) {
+    await enrollOrUpdateSpeaker(
+      newName,
+      entry.centroid,
+      entry.centroidSampleCount,
+      entry.embeddings?.[0]
+    )
+    entry.name = newName
+    enrolled = true
+  }
+
+  // 2. Rewrite the meeting's own speakers.json so subsequent navigations
+  //    of THIS meeting also show the new name.
+  if (entry) await writeMeetingSpeakers(folder, speakers)
+
+  // 3. Patch transcript.txt — replace `oldName:` with `newName:` at line
+  //    boundaries to avoid clobbering text containing the same string.
+  const txtPath = join(folder, 'transcript.txt')
+  try {
+    const raw = await fs.readFile(txtPath, 'utf-8')
+    const re = new RegExp('(\\[\\d\\d:\\d\\d:\\d\\d\\] )' + escapeRegex(oldName) + '(:)', 'g')
+    const next = raw.replace(re, '$1' + newName + '$2')
+    if (next !== raw) await fs.writeFile(txtPath, next, 'utf-8')
+  } catch {
+    // transcript.txt may not exist on partial outputs — non-fatal.
+  }
+
+  // 4. Patch transcript.json — update each segment's speaker field.
+  const jsonPath = join(folder, 'transcript.json')
+  try {
+    const raw = await fs.readFile(jsonPath, 'utf-8')
+    interface TJSON {
+      segments?: Array<{ speaker?: string; [k: string]: unknown }>
+      [k: string]: unknown
+    }
+    const parsed = JSON.parse(raw) as TJSON
+    if (parsed.segments) {
+      for (const seg of parsed.segments) {
+        if (seg.speaker === oldName) seg.speaker = newName
+      }
+      await fs.writeFile(jsonPath, JSON.stringify(parsed, null, 2), 'utf-8')
+    }
+  } catch {
+    // transcript.json may not exist; non-fatal.
+  }
+
+  return { enrolled }
+}
+
+/**
+ * Re-run the mt-batch pipeline on an existing meeting's `audio.wav` with a
+ * fresh `--num-speakers` hint. Useful when the default diarization
+ * collapsed to one speaker.
+ */
+export async function reanalyzeMeeting(opts: {
+  outputFolder: string
+  meetingId: string
+  jobId: string
+  numSpeakers?: number
+  onEvent?: (ev: BatchEvent) => void
+}): Promise<string> {
+  if (opts.meetingId.startsWith('engine:')) {
+    throw new Error(
+      'Live-recording meetings cannot be re-analysed from the Electron UI yet — their audio lives next to the engine output and uses a different pipeline.'
+    )
+  }
+  const folderId = opts.meetingId.startsWith('imported:')
+    ? opts.meetingId.slice('imported:'.length)
+    : opts.meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${opts.meetingId}`)
+  }
+  const folder = join(opts.outputFolder, folderId)
+  const audio = join(folder, 'audio.wav')
+  try {
+    await fs.access(audio)
+  } catch {
+    throw new Error(`No audio.wav in ${folder} — cannot re-analyse without the source recording`)
+  }
+  return runBatch({
+    jobId: opts.jobId,
+    inputFile: audio,
+    outputDir: folder,
+    numSpeakers: opts.numSpeakers,
+    onEvent: opts.onEvent ?? ((): void => {})
+  })
+}
+
+/** Convenience: convert a NumSpeakersHint into the integer arg, or undefined. */
+export function numSpeakersHintToInt(hint: NumSpeakersHint | undefined): number | undefined {
+  if (typeof hint === 'number') return hint
+  return undefined
+}

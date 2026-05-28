@@ -83,7 +83,8 @@ export interface BatchInvocationResult {
 export async function importFile(
   filePath: string,
   outputRoot: string,
-  jobId: string
+  jobId: string,
+  numSpeakers?: number
 ): Promise<BatchInvocationResult> {
   const sourceName = basename(filePath)
   const folder = await createMeetingFolder(outputRoot, sourceName)
@@ -104,6 +105,7 @@ export async function importFile(
       jobId,
       inputFile: filePath,
       outputDir: folder,
+      numSpeakers,
       onEvent: (ev) => {
         if (ev.event === 'transcribing') {
           internal.progressPercent = Math.round(ev.progress * 100)
@@ -113,6 +115,50 @@ export async function importFile(
     })
     internal.lastOutputDir = folder
     return { jobId, outputDir: folder }
+  } finally {
+    internal.state = 'idle'
+    internal.title = undefined
+    internal.startedAt = undefined
+    internal.progressPercent = undefined
+  }
+}
+
+/**
+ * Re-analyse an existing meeting in place. Mirrors `importFile`'s state
+ * transitions so the UI shows transcribing-progress while it runs.
+ */
+export async function reanalyzeMeetingProc(opts: {
+  outputFolder: string
+  meetingId: string
+  jobId: string
+  numSpeakers?: number
+}): Promise<BatchInvocationResult> {
+  const { reanalyzeMeeting } = await import('./meetings')
+  internal.state = 'transcribing'
+  internal.title = `Re-analysing ${opts.meetingId}`
+  internal.startedAt = Date.now()
+  internal.progressPercent = 0
+  internal.lastError = undefined
+
+  const win = getMainWindow()
+  const forward = win
+    ? makeWebContentsForwarder(win.webContents, opts.jobId)
+    : (_ev: BatchEvent): void => {}
+
+  try {
+    const outputDir = await reanalyzeMeeting({
+      outputFolder: opts.outputFolder,
+      meetingId: opts.meetingId,
+      jobId: opts.jobId,
+      numSpeakers: opts.numSpeakers,
+      onEvent: (ev) => {
+        if (ev.event === 'transcribing') {
+          internal.progressPercent = Math.round(ev.progress * 100)
+        }
+        forward(ev)
+      }
+    })
+    return { jobId: opts.jobId, outputDir }
   } finally {
     internal.state = 'idle'
     internal.title = undefined

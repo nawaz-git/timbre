@@ -3,14 +3,31 @@ import { randomUUID } from 'crypto'
 import { IPC } from '../../shared/types'
 import type {
   BackendJob,
+  EnrolledSpeaker,
   ImportResult,
   MeetingSummary,
   MeetingTranscript,
   RecordingStatus,
   Settings
 } from '../../shared/types'
-import { listMeetings, liveRecordingsRoot, readTranscript } from '../meetings'
-import { getStatus, importFile, startWatching, stopWatching } from '../recording'
+import {
+  deleteSpeakerFromGlobalDB,
+  listEnrolledSpeakers,
+  numSpeakersToArg
+} from '../backend'
+import {
+  listMeetings,
+  liveRecordingsRoot,
+  readTranscript,
+  renameSpeakerInMeeting
+} from '../meetings'
+import {
+  getStatus,
+  importFile,
+  reanalyzeMeetingProc,
+  startWatching,
+  stopWatching
+} from '../recording'
 import { readSettings, writeSettings } from '../settings'
 
 /** Register every IPC handler. Called once after `app.whenReady()`. */
@@ -101,11 +118,13 @@ export function registerIpcHandlers(): void {
     IPC.backendSpawn,
     async (_event, filePath: string, outputDir: string): Promise<BackendJob> => {
       const jobId = randomUUID()
-      console.log('[backend:spawn]', { jobId, filePath, outputDir })
+      const settings = await readSettings()
+      const numSpeakers = numSpeakersToArg(settings.numSpeakers)
+      console.log('[backend:spawn]', { jobId, filePath, outputDir, numSpeakers })
       // Fire-and-forget: kicks off transcription in main, surfaces progress
       // via `backend:event` IPC + recording.status polling. The renderer
       // receives the jobId immediately so it can correlate later events.
-      importFile(filePath, outputDir, jobId)
+      importFile(filePath, outputDir, jobId, numSpeakers)
         .then((result) => {
           console.log('[backend:spawn] done', result)
         })
@@ -115,4 +134,54 @@ export function registerIpcHandlers(): void {
       return { jobId, filePath, outputDir }
     }
   )
+
+  ipcMain.handle(
+    IPC.meetingsRenameSpeaker,
+    async (
+      _event,
+      meetingId: string,
+      oldName: string,
+      newName: string
+    ): Promise<{ enrolled: boolean }> => {
+      const settings = await readSettings()
+      return renameSpeakerInMeeting(settings.outputFolder, meetingId, oldName, newName)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.meetingsReanalyze,
+    async (
+      _event,
+      meetingId: string,
+      numSpeakers?: number
+    ): Promise<BackendJob> => {
+      const jobId = randomUUID()
+      const settings = await readSettings()
+      const hint = typeof numSpeakers === 'number'
+        ? numSpeakers
+        : numSpeakersToArg(settings.numSpeakers)
+      console.log('[meetings:reanalyze]', { jobId, meetingId, hint })
+      reanalyzeMeetingProc({
+        outputFolder: settings.outputFolder,
+        meetingId,
+        jobId,
+        numSpeakers: hint
+      })
+        .then((result) => {
+          console.log('[meetings:reanalyze] done', result)
+        })
+        .catch((err: Error) => {
+          console.error('[meetings:reanalyze] failed', err.message)
+        })
+      return { jobId, filePath: meetingId, outputDir: settings.outputFolder }
+    }
+  )
+
+  ipcMain.handle(IPC.speakersList, async (): Promise<EnrolledSpeaker[]> => {
+    return listEnrolledSpeakers()
+  })
+
+  ipcMain.handle(IPC.speakersDelete, async (_event, name: string): Promise<void> => {
+    return deleteSpeakerFromGlobalDB(name)
+  })
 }
