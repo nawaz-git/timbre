@@ -273,13 +273,13 @@ function buildMenu(): Menu {
   const watchdog = getWatchdogSignal()
   if (watchdog.helperPermissionLikely) {
     items.push({
-      label: '⚠︎  Engine helper not capturing — fix permission…',
+      label: '⚠︎  Mintr Engine not capturing — fix permission…',
       click: () => {
         void openPrivacyPane('screen-recording')
       }
     })
     items.push({
-      label: '   Look for "MeetingTranscriber" in the list',
+      label: '   Look for "Mintr Engine" in the list',
       enabled: false
     })
     items.push({ type: 'separator' })

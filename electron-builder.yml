@@ -72,3 +72,9 @@ dmg:
   artifactName: ${productName}-${version}-${arch}.${ext}
 
 npmRebuild: false
+
+# v0.19+ — rebadge the bundled MeetingTranscriber helper to MintrEngine
+# (new bundle id, new display name, new file path). See scripts/afterPack.js
+# for the why + how. This is what finally severs the helper from Mintr's
+# TCC scope and gives it its own fresh permission grants.
+afterPack: scripts/afterPack.js

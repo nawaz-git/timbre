@@ -31,13 +31,29 @@ export function resolveBatchBinary(): string {
 }
 
 /**
- * Resolve the path to the bundled meeting-transcriber.app for live recording.
- * Returns `null` when the bundle isn't present — Live recording falls back to
- * a friendly error message in that case.
+ * Resolve the path to the bundled engine helper.
+ *
+ * v0.19+: the packaged helper is renamed to `MintrEngine.app` by the
+ * electron-builder afterPack hook so it can carry its own Mintr-aligned
+ * bundle id (`ai.nawaz.mintr-engine`), separate from the upstream
+ * MeetingTranscriber project. We probe the new name first, then fall
+ * back to the legacy `MeetingTranscriber.app` so:
+ *
+ *   - `electron-vite dev` (where afterPack doesn't run) still works
+ *   - users on v0.18 or earlier installs continue running until they
+ *     reinstall the rebranded v0.19+ DMG
+ *
+ * Returns `null` when neither bundle is present.
  */
 export function resolveLiveRecorderApp(): string | null {
   const candidates = app.isPackaged
-    ? [join(process.resourcesPath, 'MeetingTranscriber.app')]
+    ? [
+        // v0.19+ packaged location (rebranded by afterPack)
+        join(process.resourcesPath, 'MintrEngine.app'),
+        // Legacy packaged location (pre-rebrand, kept for forward-compat
+        // during dev rebuilds where afterPack may not have run)
+        join(process.resourcesPath, 'MeetingTranscriber.app')
+      ]
     : [
         // Release bundle from `./scripts/build_release.sh --no-notarize`
         join(
@@ -246,21 +262,25 @@ export function killLiveRecorderSync(): { killed: number } {
       console.warn('[live-recorder] direct kill failed', err)
     }
   }
-  // Second: belt-and-suspenders pkill of every MeetingTranscriber binary
-  // path on the system. Match the BINARY name inside the .app bundle —
-  // any other process named that exactly is going to be a copy of our
-  // engine. We intentionally don't constrain to a path prefix here so a
-  // standalone install that's stealing our slot via LaunchServices still
-  // gets cleaned up.
-  try {
-    const result = spawnSync(
-      '/usr/bin/pkill',
-      ['-f', 'MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber'],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    )
-    if (result.status === 0) killed += 1
-  } catch (err) {
-    console.warn('[live-recorder] pkill failed', err)
+  // Second: belt-and-suspenders pkill of every helper binary path on
+  // the system. We match TWO patterns to catch both the v0.19+ rebranded
+  // helper (MintrEngine.app/Contents/MacOS/MintrEngine) and any
+  // pre-v0.19 helper still alive from a previous install (the legacy
+  // MeetingTranscriber.app path, including a user's standalone install
+  // in /Applications). On an upgrade, we want both classes gone.
+  const patterns = [
+    'MintrEngine.app/Contents/MacOS/MintrEngine',
+    'MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber'
+  ]
+  for (const pattern of patterns) {
+    try {
+      const result = spawnSync('/usr/bin/pkill', ['-f', pattern], {
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      if (result.status === 0) killed += 1
+    } catch (err) {
+      console.warn(`[live-recorder] pkill ${pattern} failed`, err)
+    }
   }
   liveProcess = null
   return { killed }
@@ -410,10 +430,17 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
  */
 export function stopLiveRecorder(): { ok: boolean; message?: string } {
   // 1) Polite AppleScript quit. Lets the helper close any open files
-  //    and write its trailing transcript/metadata.
-  spawn('/usr/bin/osascript', ['-e', 'tell application "MeetingTranscriber" to quit'], {
-    stdio: ['ignore', 'pipe', 'pipe']
-  })
+  //    and write its trailing transcript/metadata. We send the quit
+  //    to BOTH application names — v0.19+ "MintrEngine" and the legacy
+  //    "MeetingTranscriber" — so this works whether the user is on the
+  //    rebranded build or upgrading from an older one.
+  for (const appName of ['MintrEngine', 'MeetingTranscriber']) {
+    spawn(
+      '/usr/bin/osascript',
+      ['-e', `tell application "${appName}" to quit`],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    )
+  }
   // 2) Hard-kill the bundled binary 250ms later. If the AppleScript
   //    quit landed, this finds no process and is a no-op. If it didn't
   //    (helper was hung, frozen on TCC-denied syscall, etc.), this

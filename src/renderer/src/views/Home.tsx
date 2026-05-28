@@ -304,16 +304,16 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
             </div>
             <div className="permission-banner__desc">
               Mintr detected your Meet, but the bundled capture engine
-              (<code className="inline-code">MeetingTranscriber</code>) hasn&apos;t
-              recorded any audio yet. The helper has its own Screen Recording
+              (<code className="inline-code">Mintr Engine</code>) hasn&apos;t
+              recorded any audio yet. The engine has its own Screen Recording
               entry in System Settings, separate from Mintr&apos;s.
               <br />
               <strong>Two-step fix:</strong> (1) Look for{' '}
-              <code className="inline-code">MeetingTranscriber</code> in the
+              <code className="inline-code">Mintr Engine</code> in the
               Screen Recording list and toggle it on. (2) Click{' '}
-              <em>Restart helper</em> below — macOS doesn&apos;t refresh
+              <em>Restart engine</em> below — macOS doesn&apos;t refresh
               permission for a running process, so a granted permission only
-              takes effect after the helper restarts.
+              takes effect after the engine restarts.
             </div>
             {restartResult && (
               <div className="permission-banner__result">{restartResult}</div>
@@ -330,10 +330,10 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
             <button
               className="btn btn--small"
               onClick={() => void window.api.system.revealHelper()}
-              title="Reveal MeetingTranscriber.app in Finder so you can drag it onto the Screen Recording + dialog"
+              title="Reveal Mintr Engine.app in Finder so you can drag it onto the Screen Recording + dialog"
             >
               <FolderOpen size={14} aria-hidden="true" />
-              <span>Reveal helper in Finder</span>
+              <span>Reveal engine in Finder</span>
             </button>
             <button
               className="btn btn--small"
@@ -345,7 +345,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
                 aria-hidden="true"
                 className={restartingHelper ? 'home-status-icon--spin' : undefined}
               />
-              <span>{restartingHelper ? 'Restarting…' : 'Restart helper'}</span>
+              <span>{restartingHelper ? 'Restarting…' : 'Restart engine'}</span>
             </button>
           </div>
         </div>
