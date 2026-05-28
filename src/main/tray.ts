@@ -1,19 +1,19 @@
 /**
- * macOS menubar tray — always-on background presence for Mintr.
+ * macOS menubar tray — always-on background presence for Timbre.
  *
  * What problem does this solve? Before v0.12 the only feedback the user
- * got that Mintr was watching for meetings was a status text on the Home
+ * got that Timbre was watching for meetings was a status text on the Home
  * view, which is invisible the moment they close the window or alt-tab
- * away. They could (and did) walk into a Google Meet thinking Mintr was
+ * away. They could (and did) walk into a Google Meet thinking Timbre was
  * capturing, only to find nothing in the Meetings tab afterwards.
  *
  * The tray gives them a persistent, always-visible status surface plus
- * one-click controls — Pause, Resume, Show Mintr, Open System Settings
+ * one-click controls — Pause, Resume, Show Timbre, Open System Settings
  * (when a permission is denied), Quit. Modeled after Tailscale, ProtonVPN,
  * Bartender — same affordance, same mental model.
  *
  * Implementation:
- *   - One Electron Tray with a 22pt PNG of the Mintr leaf (colored, not
+ *   - One Electron Tray with a 22pt PNG of the Timbre leaf (colored, not
  *     a template — we want the brand visible like Slack/Spotify/Tailscale
  *     do, not blend in like a system utility).
  *   - State is derived from three sources: recording.ts (idle / watching /
@@ -36,13 +36,52 @@ import {
 } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
-import type { RecordingStatus, ChromeMeetSnapshot, PermissionStatus } from '../shared/types'
+import type {
+  RecordingStatus,
+  ChromeMeetSnapshot,
+  PermissionStatus,
+  HelperPermissionSnapshot,
+  GrantStatus
+} from '../shared/types'
 import { onStatusChange, getStatus, startWatching, stopWatching } from './recording'
 import { getPermissionStatus, openPrivacyPane } from './permissions'
 import { getChromeMeetSnapshot } from './chromeProbe'
 import { getWatchdogSignal } from './captureWatchdog'
+import { probeHelperPermissions } from './onboarding'
 
 let tray: Tray | null = null
+
+/**
+ * Latest permission verdict for the bundled ENGINE (ai.nawaz.mintr-engine),
+ * which actually holds the Screen Recording / Microphone TCC grants. Electron's
+ * own `getMediaAccessStatus` reports Timbre's bundle id — the WRONG principal —
+ * so the tray used to show a permanent "Grant Screen Recording…" even when the
+ * engine was fully granted and capturing. We poll the engine's live verdict
+ * (the same source the Home banner uses) and cache it for the sync builders.
+ * Starts 'unknown' so we never flash a warning before the first probe resolves.
+ */
+let enginePerms: HelperPermissionSnapshot = {
+  screenRecording: 'unknown',
+  microphone: 'unknown',
+  accessibility: 'unknown',
+  watchLoopRunning: false
+}
+
+/** Only an explicit denial counts as "missing" — 'unknown' (pre-probe) does not. */
+function permMissing(s: GrantStatus): boolean {
+  return s === 'denied' || s === 'not-determined'
+}
+
+/** Re-probe the engine verdict, cache it, and repaint the tray. Bounded + safe. */
+async function refreshEnginePerms(): Promise<void> {
+  try {
+    enginePerms = await probeHelperPermissions()
+  } catch {
+    // keep the last-known verdict on any probe error
+  }
+  rebuildMenu()
+  refreshTitle()
+}
 /**
  * Repaint tick — refreshes the title timer (e.g. "Meeting · 4:23") once a
  * second while a meeting is live. We do NOT rebuild the menu every tick;
@@ -112,9 +151,13 @@ export function createTray(): void {
   // 22 px is the macOS-recommended menubar height. Resizing here keeps
   // the icon crisp even if the source PNG is larger.
   const resized = image.isEmpty() ? image : image.resize({ width: 22, height: 22 })
+  // Template image: the tray PNG is a black glyph on transparency, so macOS
+  // renders it monochrome and auto-tints for light/dark menu bars — no white
+  // tile, no manual theming. (Replaces the old opaque white-background icon.)
+  resized.setTemplateImage(true)
 
   tray = new Tray(resized)
-  tray.setToolTip('Mintr')
+  tray.setToolTip('Timbre')
 
   rebuildMenu()
 
@@ -131,10 +174,14 @@ export function createTray(): void {
     refreshTitle()
   })
 
-  // Permissions don't have a push channel — re-poll once a minute so the
-  // menu picks up newly-granted permissions even if the user grants them
-  // outside our flow.
-  setInterval(() => rebuildMenu(), 60_000)
+  // The engine holds the real Screen Recording / Microphone grants, so poll
+  // its live verdict and repaint. Initial probe immediately; re-probe every
+  // 10s so a just-granted permission clears the tray warning quickly without
+  // waiting on a push event we don't have.
+  void refreshEnginePerms()
+  setInterval(() => {
+    void refreshEnginePerms()
+  }, 10_000)
 
   // Chrome probe push channel — chromeProbe.ts broadcasts to all renderer
   // windows, but the tray lives in main and doesn't get those. We poll
@@ -169,7 +216,6 @@ function refreshTitle(): void {
   if (!tray) return
   const status = getStatus()
   const chrome = getChromeMeetSnapshot()
-  const perms = getPermissionStatus()
 
   // Title text shown NEXT to the icon. On a crowded menubar, every extra
   // pixel can push us off-screen — v0.12 shipped "Meeting · 4:23" type
@@ -180,7 +226,7 @@ function refreshTitle(): void {
   // alone carries the brand; states are conveyed via a single-glyph
   // indicator. Full state text lives in the menu + tooltip.
   let title = ''
-  if (perms.screenRecording === 'denied') {
+  if (permMissing(enginePerms.screenRecording)) {
     title = '⚠'
   } else if (status.state === 'recording' || (chrome.tab && status.state === 'watching')) {
     title = '●'
@@ -189,7 +235,7 @@ function refreshTitle(): void {
 
   // Tooltip — long-form status, only visible on hover so it never costs
   // menubar width. macOS shows tooltips with a ~500ms hover delay.
-  tray.setToolTip(buildTooltip(status, chrome, perms))
+  tray.setToolTip(buildTooltip(status, chrome))
 
   // Manage the per-second tick. We only run the timer when there's a
   // changing value to display (mm:ss meeting timer in the tooltip).
@@ -203,27 +249,23 @@ function refreshTitle(): void {
   }
 }
 
-function buildTooltip(
-  status: RecordingStatus,
-  chrome: ChromeMeetSnapshot,
-  perms: PermissionStatus
-): string {
-  if (perms.screenRecording === 'denied') {
-    return 'Mintr — Screen Recording permission required'
+function buildTooltip(status: RecordingStatus, chrome: ChromeMeetSnapshot): string {
+  if (permMissing(enginePerms.screenRecording)) {
+    return 'Timbre — Screen Recording permission required'
   }
   if (status.state === 'recording' && typeof status.elapsedSeconds === 'number') {
-    return `Mintr — recording meeting · ${formatMMSS(status.elapsedSeconds)}`
+    return `Timbre — recording meeting · ${formatMMSS(status.elapsedSeconds)}`
   }
   if (status.state === 'transcribing') {
-    return `Mintr — transcribing · ${status.progressPercent ?? 0}%`
+    return `Timbre — transcribing · ${status.progressPercent ?? 0}%`
   }
   if (chrome.tab) {
-    return `Mintr — Google Meet detected (${chrome.tab.meetingId})`
+    return `Timbre — Google Meet detected (${chrome.tab.meetingId})`
   }
   if (status.state === 'watching') {
-    return 'Mintr — watching for meetings'
+    return 'Timbre — watching for meetings'
   }
-  return 'Mintr — paused'
+  return 'Timbre — paused'
 }
 
 function formatMMSS(totalSec: number): string {
@@ -255,7 +297,7 @@ function buildMenu(): Menu {
   // ── Permission warnings ─────────────────────────────────────────────
   // Surface BEFORE the action items, because nothing else works if Screen
   // Recording is denied. One-click open of System Settings.
-  if (perms.screenRecording === 'denied' || perms.screenRecording === 'not-determined') {
+  if (permMissing(enginePerms.screenRecording)) {
     items.push({
       label: '⚠︎  Grant Screen Recording…',
       click: () => {
@@ -273,18 +315,18 @@ function buildMenu(): Menu {
   const watchdog = getWatchdogSignal()
   if (watchdog.helperPermissionLikely) {
     items.push({
-      label: '⚠︎  Mintr Engine not capturing — fix permission…',
+      label: '⚠︎  Timbre Engine not capturing — fix permission…',
       click: () => {
         void openPrivacyPane('screen-recording')
       }
     })
     items.push({
-      label: '   Look for "Mintr Engine" in the list',
+      label: '   Look for "Timbre Engine" in the list',
       enabled: false
     })
     items.push({ type: 'separator' })
   }
-  if (perms.microphone === 'denied') {
+  if (permMissing(enginePerms.microphone)) {
     items.push({
       label: '⚠︎  Grant Microphone access…',
       click: () => {
@@ -295,7 +337,7 @@ function buildMenu(): Menu {
   }
   if (perms.automationChrome === 'denied') {
     items.push({
-      label: '⚠︎  Allow Mintr to read Chrome tabs…',
+      label: '⚠︎  Allow Timbre to read Chrome tabs…',
       click: () => {
         void openPrivacyPane('automation')
       }
@@ -330,7 +372,7 @@ function buildMenu(): Menu {
 
   // ── Window controls ─────────────────────────────────────────────────
   items.push({
-    label: 'Show Mintr',
+    label: 'Show Timbre',
     click: () => {
       showMainWindow()
     },
@@ -340,7 +382,7 @@ function buildMenu(): Menu {
 
   // ── Quit ────────────────────────────────────────────────────────────
   items.push({
-    label: 'Quit Mintr',
+    label: 'Quit Timbre',
     click: () => {
       // Force-quit irrespective of the macOS "close window keeps app alive"
       // convention. The tray is the user's contract that the app is

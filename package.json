@@ -1,8 +1,8 @@
 {
-  "name": "mintr",
-  "productName": "Mintr",
-  "version": "0.28.0",
-  "description": "Mintr — Mac desktop app for on-device meeting transcription.",
+  "name": "timbre",
+  "productName": "Timbre",
+  "version": "0.29.0",
+  "description": "Timbre — Mac desktop app for on-device meeting transcription.",
   "main": "./out/main/index.js",
   "author": "contact@nawaz.ai",
   "homepage": "https://github.com/nawazpasha/meeting-transcriber",

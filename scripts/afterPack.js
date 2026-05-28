@@ -48,7 +48,7 @@ const OLD_EXEC_NAME = 'MeetingTranscriber'
 const NEW_APP_NAME = 'MintrEngine.app'
 const NEW_EXEC_NAME = 'MintrEngine'
 const NEW_BUNDLE_ID = 'ai.nawaz.mintr-engine'
-const NEW_DISPLAY_NAME = 'Mintr Engine'
+const NEW_DISPLAY_NAME = 'Timbre Engine'
 
 /**
  * Patch a binary plist (Info.plist) via PlistBuddy — preserves the

@@ -135,7 +135,7 @@ function PathField(): JSX.Element {
         type="button"
         className="btn btn--sm perm-path__copy"
         onClick={onCopy}
-        aria-label="Copy MintrEngine path"
+        aria-label="Copy Timbre Engine path"
       >
         <Copy size={13} aria-hidden="true" />
         <span>{copied ? 'Copied' : 'Copy'}</span>
@@ -159,7 +159,7 @@ function PlusServiceActions({
     <div className="perm-row__actions">
       <p className="perm-row__copy">
         Open {meta.paneLabel}, click <strong>+</strong>, press{' '}
-        <kbd className="perm-kbd">⌘⇧G</kbd>, paste the MintrEngine path, click{' '}
+        <kbd className="perm-kbd">⌘⇧G</kbd>, paste the Timbre Engine path, click{' '}
         <strong>Open</strong>, then turn it <strong>on</strong>.
         {meta.service === 'screen-recording' && (
           <>
@@ -182,7 +182,7 @@ function PlusServiceActions({
         </button>
         <button type="button" className="btn btn--sm" onClick={onReveal}>
           <FolderOpen size={13} aria-hidden="true" />
-          <span>Reveal MintrEngine in Finder</span>
+          <span>Reveal Timbre Engine in Finder</span>
         </button>
       </div>
       {status === 'granted' && (
@@ -212,7 +212,7 @@ function MicServiceActions({
       {status === 'denied' ? (
         <>
           <p className="perm-row__copy">
-            Open Microphone settings and turn the <strong>MintrEngine</strong>{' '}
+            Open Microphone settings and turn the <strong>Timbre Engine</strong>{' '}
             toggle <strong>on</strong>. You denied access before, so no new
             prompt will appear — flip the existing switch.
           </p>

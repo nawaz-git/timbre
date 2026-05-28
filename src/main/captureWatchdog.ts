@@ -254,7 +254,7 @@ function scheduleCaptureStartedNotification(filename?: string): void {
   lastStartNotificationAt = now
   try {
     const n = new Notification({
-      title: 'Mintr — capture started',
+      title: 'Timbre — capture started',
       body: filename
         ? `Recording ${prettyMeetingName(filename)}`
         : 'Recording your meeting…',
@@ -275,10 +275,10 @@ function scheduleCaptureEndedNotification(filename?: string): void {
     endedNotificationTimer = null
     try {
       const n = new Notification({
-        title: 'Mintr — meeting captured',
+        title: 'Timbre — meeting captured',
         body: filename
-          ? `Saved ${prettyMeetingName(filename)}. Open Mintr to view the transcript.`
-          : 'Meeting saved. Open Mintr to view the transcript.',
+          ? `Saved ${prettyMeetingName(filename)}. Open Timbre to view the transcript.`
+          : 'Meeting saved. Open Timbre to view the transcript.',
         silent: false
       })
       n.show()

@@ -433,7 +433,7 @@
   align-items: flex-start;
   gap: var(--space-3, 12px);
   padding: var(--space-4, 14px) var(--space-4, 16px);
-  border: 1px solid var(--accent, #10b981);
+  border: 1px solid var(--accent);
   border-radius: var(--radius-lg, 10px);
   background: rgba(16, 185, 129, 0.06);
   color: var(--fg);
@@ -516,7 +516,7 @@
   flex-direction: column;
   gap: var(--space-3, 12px);
   padding: var(--space-4, 16px);
-  border: 1px solid var(--accent, #10b981);
+  border: 1px solid var(--accent);
   border-radius: var(--radius-lg, 10px);
   background: rgba(16, 185, 129, 0.07);
   color: var(--fg);
@@ -531,7 +531,7 @@
   font: 600 11px/1 var(--font-sans);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--accent, #10b981);
+  color: var(--accent);
 }
 .capture-live-card__dot {
   width: 8px;
@@ -2731,7 +2731,7 @@
  * dot on the capture cards because Recent Meetings rows are dense.
  */
 .recent-card--live {
-  border-color: var(--accent, #10b981);
+  border-color: var(--accent);
   background: rgba(16, 185, 129, 0.06);
 }
 [data-theme='dark'] .recent-card--live {
@@ -3825,7 +3825,7 @@
 .link-btn {
   background: transparent;
   border: none;
-  color: var(--accent, #10b981);
+  color: var(--accent);
   cursor: pointer;
   text-decoration: underline;
   font: inherit;

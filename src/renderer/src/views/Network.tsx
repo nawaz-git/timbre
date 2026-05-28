@@ -289,7 +289,7 @@ export function NetworkView({ onOpenMeeting }: NetworkViewProps): JSX.Element {
               <Inbox size={32} aria-hidden="true" />
               <div className="network__empty-title">Your network will appear here</div>
               <div className="network__empty-hint">
-                Capture or import 2 or more meetings and Mintr will start mapping who you
+                Capture or import 2 or more meetings and Timbre will start mapping who you
                 talk to, how often, and which projects bring them together — all derived
                 locally from your transcripts.
               </div>

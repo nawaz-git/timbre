@@ -33,9 +33,9 @@ export function Onboarding({ onDone }: { onDone?: () => void }): JSX.Element {
           <span className="onboarding__mark" aria-hidden="true">
             <img src={mintrMark} alt="" width={48} height={48} draggable={false} />
           </span>
-          <h1 className="onboarding__title">Welcome to Mintr</h1>
+          <h1 className="onboarding__title">Welcome to Timbre</h1>
           <p className="onboarding__lede">
-            Mintr transcribes your meetings entirely on your Mac — audio never
+            Timbre transcribes your meetings entirely on your Mac — audio never
             leaves the device. To capture meetings, the bundled engine needs a
             few macOS permissions. Grant them below; no terminal required.
           </p>
@@ -66,7 +66,7 @@ export function Onboarding({ onDone }: { onDone?: () => void }): JSX.Element {
               void finish()
             }}
           >
-            {ready ? 'Done — start using Mintr' : 'Finish setup'}
+            {ready ? 'Done — start using Timbre' : 'Finish setup'}
           </button>
         </footer>
       </div>

@@ -218,7 +218,7 @@ export function SettingsView(): JSX.Element {
       <Section icon={<Play size={16} />} title="Background behaviour">
         <SettingsRow
           label="Auto-start watching on launch"
-          description="Mintr lives in the menubar like Tailscale or 1Password. When this is on, Mintr begins watching for meetings the moment it starts — so a Meet you join won't slip past unrecorded. Turn it off to require an explicit Start each session."
+          description="Timbre lives in the menubar like Tailscale or 1Password. When this is on, Timbre begins watching for meetings the moment it starts — so a Meet you join won't slip past unrecorded. Turn it off to require an explicit Start each session."
         >
           <label className="toggle-switch" title="Auto-start watching">
             <input
@@ -372,7 +372,7 @@ export function SettingsView(): JSX.Element {
             <img src={mintrMark} alt="" width={36} height={36} draggable={false} />
           </span>
           <div className="about-brand__copy">
-            <div className="about-brand__name">Mintr</div>
+            <div className="about-brand__name">Timbre</div>
             <div className="about-brand__tagline">
               On-device meeting transcription. Audio never leaves your Mac.
             </div>

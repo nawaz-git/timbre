@@ -31,7 +31,7 @@ module.exports = {
   // ID is a breaking change — re-grant required — so we defer it until a
   // dedicated upgrade path is in place.
   appId: 'ai.nawaz.meeting-transcriber',
-  productName: 'Mintr',
+  productName: 'Timbre',
   directories: {
     buildResources: 'build'
   },
@@ -85,16 +85,16 @@ module.exports = {
     entitlementsInherit: 'build/entitlements.mac.plist',
     extendInfo: {
       NSMicrophoneUsageDescription:
-        'Mintr needs microphone access to record and transcribe meetings on-device.',
+        'Timbre needs microphone access to record and transcribe meetings on-device.',
       NSScreenCaptureUsageDescription:
-        'Mintr needs screen capture access to capture system audio from meetings on-device.',
+        'Timbre needs screen capture access to capture system audio from meetings on-device.',
       NSDocumentsFolderUsageDescription:
-        'Mintr reads and writes transcripts in your Documents folder.',
+        'Timbre reads and writes transcripts in your Documents folder.',
       // AppleScript / Automation — required for the Chrome tab probe.
       // Without this string the OS shows a generic "Mintr wants to control
       // Google Chrome" prompt; with it the user sees the justification.
       NSAppleEventsUsageDescription:
-        'Mintr reads the URL of your active Chrome / Brave / Edge / Arc tab so it can detect when you join a Google Meet and start capturing automatically. The page contents are never read.',
+        'Timbre reads the URL of your active Chrome / Brave / Edge / Arc tab so it can detect when you join a Google Meet and start capturing automatically. The page contents are never read.',
       // LSUIElement controls whether the app shows up in the Dock + ⌘-Tab.
       // We keep it false (the default) so users CAN bring the main window
       // back via the Dock — the tray is additive, not a replacement.

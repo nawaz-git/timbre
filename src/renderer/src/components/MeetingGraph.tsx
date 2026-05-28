@@ -74,9 +74,9 @@ export function MeetingGraph(props: MeetingGraphProps): JSX.Element {
         labelFillDim: 'rgba(161, 161, 170, 0.55)',
         nodeStroke: 'rgba(244, 244, 245, 0.18)',
         nodeStrokeHover: 'rgba(244, 244, 245, 0.55)',
-        nodeStrokeSelected: '#10b981',
+        nodeStrokeSelected: '#fafafa',
         linkFill: 'rgba(244, 244, 245, 0.12)',
-        linkFillHighlight: 'rgba(16, 185, 129, 0.55)',
+        linkFillHighlight: 'rgba(250, 250, 250, 0.55)',
         linkFillDashed: 'rgba(161, 161, 170, 0.30)',
         background: 'transparent'
       }
@@ -86,9 +86,9 @@ export function MeetingGraph(props: MeetingGraphProps): JSX.Element {
       labelFillDim: 'rgba(82, 82, 91, 0.55)',
       nodeStroke: 'rgba(24, 24, 27, 0.15)',
       nodeStrokeHover: 'rgba(24, 24, 27, 0.55)',
-      nodeStrokeSelected: '#047857',
+      nodeStrokeSelected: '#18181b',
       linkFill: 'rgba(24, 24, 27, 0.10)',
-      linkFillHighlight: 'rgba(4, 120, 87, 0.55)',
+      linkFillHighlight: 'rgba(24, 24, 27, 0.55)',
       linkFillDashed: 'rgba(82, 82, 91, 0.35)',
       background: 'transparent'
     }

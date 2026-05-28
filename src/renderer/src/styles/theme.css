@@ -44,19 +44,18 @@
   --divider-strong: #2e2e33;
 
   /*
-   * Brand accent — mint green.
+   * Brand accent — minimal monochrome (Timbre).
    *
-   * `--accent` is the button-surface green. Picked dark enough that white
-   * label text on top clears WCAG AA contrast (~5.3:1 on emerald-600).
-   * `--accent-hover` lightens by one Tailwind stop on hover. `--accent-mark`
-   * is the higher-saturation brand-mark green used on the small `Sparkles`
-   * icon in the sidebar where contrast is not at stake (icon is white on
-   * coloured background, but the icon is decorative not informational).
+   * Dark mode inverts to a near-white surface with near-black label text
+   * (the crisp Linear/Vercel "primary action" look). All accent-background
+   * elements pull their text from `--accent-fg`, so flipping it per mode keeps
+   * contrast correct. `--accent-mark` is the brand-mark colour (the small
+   * sidebar icon); kept neutral so nothing reads as "branded green".
    */
-  --accent: #059669;
-  --accent-hover: #047857;
-  --accent-mark: #10b981;
-  --accent-fg: #ffffff;
+  --accent: #fafafa;
+  --accent-hover: #e4e4e7;
+  --accent-mark: #fafafa;
+  --accent-fg: #0a0a0a;
 
   /* ── Status / danger ─────────────────────────────────────────── */
   --danger: #f87171;
@@ -64,7 +63,8 @@
 
   /* ── Status indicator dots ───────────────────────────────────── */
   --status-recording: #ef4444;
-  --status-watching: #10b981;
+  /* "watching / granted" — neutral grey (was mint green) for a monochrome UI */
+  --status-watching: #a1a1aa;
   --status-transcribing: #f59e0b;
   --status-idle: #71717a;
 
@@ -103,10 +103,10 @@
   --divider: #e5e5e1;
   --divider-strong: #d4d4d0;
 
-  /* ── Brand accent (mint green — darker variant for AA on white) ── */
-  --accent: #047857;
-  --accent-hover: #065f46;
-  --accent-mark: #047857;
+  /* ── Brand accent (minimal monochrome — near-black on white) ── */
+  --accent: #18181b;
+  --accent-hover: #000000;
+  --accent-mark: #18181b;
   --accent-fg: #ffffff;
 
   /* ── Status / danger ─────────────────────────────────────────── */
@@ -115,7 +115,8 @@
 
   /* ── Status indicator dots ───────────────────────────────────── */
   --status-recording: #dc2626;
-  --status-watching: #047857;
+  /* "watching / granted" — neutral grey (was mint green) */
+  --status-watching: #52525b;
   --status-transcribing: #b45309;
   --status-idle: #a1a1aa;
 

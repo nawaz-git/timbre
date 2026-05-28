@@ -328,7 +328,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
               Screen Recording permission needed
             </div>
             <div className="permission-banner__desc">
-              Mintr reads the active window title to detect when you join a Google
+              Timbre reads the active window title to detect when you join a Google
               Meet or other call. Without this permission, meetings start without
               being captured. The screen pixels are never recorded — only the
               window title.
@@ -346,7 +346,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
 
       {/*
         Helper-permission banner (v0.13+). Mintr bundles a separate Swift
-        helper app, MintrEngine.app, which has its OWN TCC bundle id
+        helper app, Timbre Engine, which has its OWN TCC bundle id
         (`ai.nawaz.mintr-engine`). Granting any TCC permission to Mintr
         does NOT grant it to the engine. The capture watchdog fires when
         Chrome reports a live Meet but the engine hasn't written any
@@ -357,7 +357,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
         explicitly so the user can find it in the list.
 
         For `accessibility`: macOS does NOT auto-prompt — the user must
-        manually drag MintrEngine.app onto the Accessibility list,
+        manually drag Timbre Engine onto the Accessibility list,
         which is why this needs its own dedicated copy.
         For `microphone` / `screenRecording`: explicit copy too.
         For `unknown` (and undefined, e.g. while we're still classifying):
@@ -375,40 +375,40 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
         let primaryLabel: string
         let primaryPane: 'screen-recording' | 'microphone' | 'accessibility'
         if (hint === 'accessibility') {
-          title = 'Mintr Engine needs Accessibility permission'
+          title = 'Timbre Engine needs Accessibility permission'
           primaryLabel = 'Open Accessibility'
           primaryPane = 'accessibility'
           body = (
             <>
               macOS doesn&apos;t prompt for this automatically. Click{' '}
               <em>Open Accessibility</em>, then drag{' '}
-              <code className="inline-code">MintrEngine.app</code> from the
+              <code className="inline-code">Timbre Engine</code> from the
               Finder window onto the Accessibility list. Then click{' '}
               <em>Restart engine</em> — macOS only picks up newly-granted
               permissions when the process restarts.
             </>
           )
         } else if (hint === 'microphone') {
-          title = 'Mintr Engine needs Microphone access'
+          title = 'Timbre Engine needs Microphone access'
           primaryLabel = 'Open Microphone'
           primaryPane = 'microphone'
           body = (
             <>
               The bundled capture engine couldn&apos;t open the system
               microphone. Click <em>Open Microphone</em>, toggle{' '}
-              <code className="inline-code">Mintr Engine</code> on, then
+              <code className="inline-code">Timbre Engine</code> on, then
               click <em>Restart engine</em> below.
             </>
           )
         } else if (hint === 'screenRecording') {
-          title = 'Mintr Engine needs Screen Recording'
+          title = 'Timbre Engine needs Screen Recording'
           primaryLabel = 'Open Screen Recording'
           primaryPane = 'screen-recording'
           body = (
             <>
               The engine reads the active window title to detect Meet
               calls. Click <em>Open Screen Recording</em>, toggle{' '}
-              <code className="inline-code">Mintr Engine</code> on, then
+              <code className="inline-code">Timbre Engine</code> on, then
               click <em>Restart engine</em>.
             </>
           )
@@ -421,13 +421,13 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
           primaryPane = 'screen-recording'
           body = (
             <>
-              Mintr detected your Meet, but the bundled capture engine
-              (<code className="inline-code">Mintr Engine</code>) hasn&apos;t
+              Timbre detected your Meet, but the bundled capture engine
+              (<code className="inline-code">Timbre Engine</code>) hasn&apos;t
               recorded any audio yet. The engine has its own permission
-              entries in System Settings, separate from Mintr&apos;s.
+              entries in System Settings, separate from Timbre&apos;s.
               <br />
               <strong>Two-step fix:</strong> (1) Look for{' '}
-              <code className="inline-code">Mintr Engine</code> in the
+              <code className="inline-code">Timbre Engine</code> in the
               Screen Recording list and toggle it on. (2) Click{' '}
               <em>Restart engine</em> below — macOS doesn&apos;t refresh
               permission for a running process, so a granted permission only
@@ -458,7 +458,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
               <button
                 className="btn btn--small"
                 onClick={() => void window.api.system.revealHelper()}
-                title="Reveal MintrEngine.app in Finder so you can drag it onto the privacy pane"
+                title="Reveal Timbre Engine in Finder so you can drag it onto the privacy pane"
               >
                 <FolderOpen size={14} aria-hidden="true" />
                 <span>Reveal engine in Finder</span>
@@ -502,7 +502,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
               Verifying capture (30s)…
             </div>
             <div className="permission-banner__desc">
-              Mintr Engine restarted. Waiting to see if it can capture
+              Timbre Engine restarted. Waiting to see if it can capture
               your meeting.
             </div>
           </div>
@@ -523,7 +523,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
             </div>
             {!screenPermissionMissing && status.state === 'watching' && (
               <div className="meet-live-card__hint">
-                Mintr is watching — capture will start automatically once Meet
+                Timbre is watching — capture will start automatically once Meet
                 begins playing audio.
               </div>
             )}
@@ -588,7 +588,15 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
         </div>
         <div className="status-headline">{HEADLINE[status.state]}</div>
 
-        {status.title && (
+        {/*
+          Only surface the title + elapsed timer once an actual meeting is in
+          flight (recording / transcribing). While merely idle-"watching", the
+          backend reports a "Live meeting watch" session with a running elapsed
+          counter — but a perpetually-counting timer when nothing is happening
+          is noise, so we suppress it. The "Listening for meetings." headline
+          above still communicates the watch state without a ticking clock.
+        */}
+        {status.title && status.state !== 'watching' && (
           <div className="status-detail">
             <strong style={{ color: 'var(--fg)', fontWeight: 500 }}>{status.title}</strong>
             {typeof status.elapsedSeconds === 'number' && (

@@ -46,7 +46,7 @@ declare global {
 
 /** Canonical macOS path of the bundled helper, shown copyable in the UI. */
 export const MINTR_ENGINE_PATH =
-  '/Applications/Mintr.app/Contents/Resources/MintrEngine.app'
+  '/Applications/Timbre.app/Contents/Resources/MintrEngine.app'
 
 const POLL_INTERVAL_MS = 2000
 
