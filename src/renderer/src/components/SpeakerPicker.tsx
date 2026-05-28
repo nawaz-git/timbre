@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Check, X } from 'lucide-react'
 import type { EnrolledSpeaker } from '../../../shared/types'
 
@@ -15,6 +16,22 @@ interface SpeakerPickerProps {
    * names that came out of diarization. Optional — defaults to none.
    */
   addedSpeakers?: string[]
+  /**
+   * The trigger element — used to anchor the popover. The popover positions
+   * itself with `position: fixed` against this element's
+   * `getBoundingClientRect()`, then re-measures on scroll/resize.
+   *
+   * Why this matters: prior versions used `position: absolute` inside the
+   * trigger's wrapper, which trapped the popover inside the trigger's
+   * stacking context. Combined with a `transform`-based entrance animation,
+   * Chromium would promote the popover to its own composited layer, and
+   * `backdrop-filter` would silently no-op against that layer — making the
+   * popup appear translucent over high-contrast colored text (a recurring
+   * "the popup is transparent!" bug across v0.6 → v0.9). Rendering via
+   * portal to `document.body` and using viewport-anchored `position: fixed`
+   * sidesteps the whole problem class.
+   */
+  anchorEl: HTMLElement | null
   /** Called when user picks an existing name. */
   onPick: (name: string) => Promise<void> | void
   /** Called on dismiss. */
@@ -43,24 +60,28 @@ function dotColor(name: string): string {
   return SPEAKER_PALETTE[h % SPEAKER_PALETTE.length]
 }
 
+const POPUP_WIDTH = 300
+const POPUP_MARGIN_FROM_EDGE = 8
+const GAP_BELOW_ANCHOR = 4
+
 /**
- * Speaker-assignment dropdown — Apple-glass redesign for v0.7.0.
+ * Speaker-assignment dropdown — Portal-mounted, solid surface, viewport-fixed.
  *
- * Anchored absolutely under its trigger (the parent must establish a
- * positioned context — both `.speaker-pill-wrap` and
- * `.segment-row__picker-anchor` do). The popup uses a translucent
- * rgba surface + `backdrop-filter: saturate(180%) blur(24px)` for true
- * Apple-style frosted glass, with a layered shadow stack and hairline
- * border. A solid-background `@supports` fallback ensures the popup
- * never reads as transparent on engines without backdrop-filter.
- * Floats above the transcript via z-index 1000 — the text below
- * still reads softly through the blur, never sharply through gaps.
+ * Rendered via `createPortal(..., document.body)` so the popover lives as a
+ * direct child of `<body>`. Positioned with `position: fixed` against the
+ * `anchorEl`'s bounding rect — no ancestor stacking context can clip,
+ * defocus, or composite around it.
+ *
+ * Background is the solid `--surface-overlay` token (theme-aware: white in
+ * light, near-black in dark) with no `backdrop-filter` and no `transform`-
+ * based entrance animation. Entrance is opacity-only so the popover never
+ * gets promoted to its own composited layer mid-frame.
  *
  * Layout:
  *   ┌──────────────────────────────────────────┐
- *   │ Change speaker         [+ Add new]       │  header
- *   │ Check {current}              (current)   │  (hidden in add-mode)
- *   │ ALSO IN THIS MEETING                     │  group label
+ *   │ Change speaker         [+ Add new]       │
+ *   │ ✓ {current}                  (current)   │
+ *   │ ALSO IN THIS MEETING                     │
  *   │ ● Pratik                                 │
  *   │ ● Bhaskar               (added)          │
  *   │ ENROLLED VOICES                          │
@@ -70,53 +91,80 @@ function dotColor(name: string): string {
  * Clicking "+ Add new" morphs the header (only the header — list stays
  * intact) into an inline input with Save + lucide-X buttons. Enter
  * commits, Escape reverts to the title row. When `hideInMeetingGroup`
- * is true the picker opens directly in add-mode (there's no current
- * to switch away from).
+ * is true the picker opens directly in add-mode.
  */
-export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
+export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
   const {
     current,
     inThisMeeting,
     enrolled,
     addedSpeakers,
+    anchorEl,
     onPick,
     onClose,
     hideInMeetingGroup,
     newNamePlaceholder
   } = props
 
-  // In `hideInMeetingGroup` (the "+ Add speaker" flow) we boot straight
-  // into the inline-input mode — that flow has no other purpose.
   const [adding, setAdding] = useState<boolean>(!!hideInMeetingGroup)
   const [newValue, setNewValue] = useState('')
   const [busy, setBusy] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
 
-  // Dismiss on outside click or Escape (Escape only when NOT editing —
-  // when editing, Escape reverts the header to its title state).
+  // Viewport-coord position. We anchor the popover to bottom-left of the
+  // trigger and clamp against the right edge of the window so it never
+  // hangs off-screen on narrow widths.
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
+
+  useLayoutEffect(() => {
+    function measure(): void {
+      if (!anchorEl) return
+      const r = anchorEl.getBoundingClientRect()
+      const left = Math.min(
+        Math.max(POPUP_MARGIN_FROM_EDGE, r.left),
+        window.innerWidth - POPUP_WIDTH - POPUP_MARGIN_FROM_EDGE
+      )
+      setPos({ top: r.bottom + GAP_BELOW_ANCHOR, left })
+    }
+    measure()
+    // Re-measure on any scroll in any ancestor (capture phase catches
+    // bubbling from inner scrollers like `.transcript-list`).
+    window.addEventListener('scroll', measure, true)
+    window.addEventListener('resize', measure)
+    return () => {
+      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('resize', measure)
+    }
+  }, [anchorEl])
+
+  // Dismiss on outside click or Escape. Escape during inline-edit only
+  // reverts the header (unless we booted in add-mode, where there's
+  // nowhere to revert to).
   useEffect(() => {
-    function onDocClick(e: MouseEvent): void {
-      if (!wrapRef.current) return
-      if (!wrapRef.current.contains(e.target as Node)) onClose()
+    function onDocMouseDown(e: MouseEvent): void {
+      const target = e.target as Node
+      if (wrapRef.current?.contains(target)) return
+      if (anchorEl?.contains(target)) return
+      onClose()
     }
     function onKey(e: KeyboardEvent): void {
       if (e.key !== 'Escape') return
+      e.stopPropagation()
       if (adding && !hideInMeetingGroup) {
-        // Revert to title row, keep the picker open.
         setAdding(false)
         setNewValue('')
       } else {
         onClose()
       }
     }
-    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('mousedown', onDocMouseDown)
     document.addEventListener('keydown', onKey)
     return () => {
-      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('mousedown', onDocMouseDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [onClose, adding, hideInMeetingGroup])
+  }, [onClose, adding, hideInMeetingGroup, anchorEl])
 
   // Autofocus when we enter add-mode (whether initially or via user click).
   useEffect(() => {
@@ -157,8 +205,17 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
 
   const title = hideInMeetingGroup ? 'Add speaker' : 'Change speaker'
 
-  return (
-    <div ref={wrapRef} className="speaker-picker" role="dialog" aria-label={title}>
+  if (!anchorEl) return null
+
+  const popover = (
+    <div
+      ref={wrapRef}
+      className="speaker-picker"
+      role="dialog"
+      aria-label={title}
+      style={{ top: pos.top, left: pos.left, width: POPUP_WIDTH }}
+      onClick={(e) => e.stopPropagation()}
+    >
       {/* ── Header row ─────────────────────────────────────────── */}
       <div className="speaker-picker__header">
         {adding ? (
@@ -172,8 +229,6 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
                   e.preventDefault()
                   void handlePick(newValue)
                 }
-                // Escape handled in the document-level listener so it
-                // also unwinds when the input is blurred via tabbing.
               }}
               placeholder={newNamePlaceholder ?? 'Type name here…'}
               disabled={busy}
@@ -296,4 +351,6 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
       )}
     </div>
   )
+
+  return createPortal(popover, document.body)
 }

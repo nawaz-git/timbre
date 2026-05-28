@@ -180,6 +180,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
   // Speaker picker — which cluster name is open?
   const [pickerForCluster, setPickerForCluster] = useState<string | null>(null)
+  // Anchor element for ALL three SpeakerPicker invocations (cluster pill,
+  // per-segment label, "+ Add speaker"). Only one picker is open at a time
+  // so a single ref state covers all three. The picker is portal-mounted
+  // and positions itself via getBoundingClientRect against this element.
+  const [pickerAnchor, setPickerAnchor] = useState<HTMLElement | null>(null)
   // Per-segment reassignment dropdown — segment index, or null when closed.
   const [pickerForSegment, setPickerForSegment] = useState<number | null>(null)
   // "+ Add speaker" dropdown anchored to its button on the Speakers tab.
@@ -1140,7 +1145,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                             ['--pill-color' as string]: color
                           } as React.CSSProperties
                         }
-                        onClick={() => setPickerForCluster(name)}
+                        onClick={(e) => {
+                          setPickerAnchor(e.currentTarget)
+                          setPickerForCluster(name)
+                        }}
                         title="Click to rename or assign an enrolled voice"
                       >
                         <span className="speaker-pill__dot" />
@@ -1157,8 +1165,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                           current={name}
                           inThisMeeting={speakersInTranscript}
                           enrolled={enrolledSpeakers}
+                          anchorEl={pickerAnchor}
                           onPick={(newName) => onPickSpeaker(name, newName)}
-                          onClose={() => setPickerForCluster(null)}
+                          onClose={() => {
+                            setPickerForCluster(null)
+                            setPickerAnchor(null)
+                          }}
                         />
                       )}
                     </div>
@@ -1503,26 +1515,30 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                             onClick={(e) => {
                               // Don't trigger the seek action on the parent row.
                               e.stopPropagation()
-                              setPickerForSegment((cur) => (cur === i ? null : i))
+                              const target = e.currentTarget
+                              setPickerForSegment((cur) => {
+                                const next = cur === i ? null : i
+                                setPickerAnchor(next === null ? null : target)
+                                return next
+                              })
                             }}
                             title="Click to reassign this segment's speaker"
                           >
                             {seg.speaker}
                           </button>
                           {pickerForSegment === i && (
-                            <div
-                              className="segment-row__picker-anchor"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <SpeakerPicker
-                                current={seg.speaker}
-                                inThisMeeting={allSpeakersForPicker}
-                                addedSpeakers={selectedMeeting.additionalSpeakers ?? []}
-                                enrolled={enrolledSpeakers}
-                                onPick={(newName) => onReassignSegment(i, newName)}
-                                onClose={() => setPickerForSegment(null)}
-                              />
-                            </div>
+                            <SpeakerPicker
+                              current={seg.speaker}
+                              inThisMeeting={allSpeakersForPicker}
+                              addedSpeakers={selectedMeeting.additionalSpeakers ?? []}
+                              enrolled={enrolledSpeakers}
+                              anchorEl={pickerAnchor}
+                              onPick={(newName) => onReassignSegment(i, newName)}
+                              onClose={() => {
+                                setPickerForSegment(null)
+                                setPickerAnchor(null)
+                              }}
+                            />
                           )}
                         </span>
                         <span className="segment-row__text">{seg.text}</span>
@@ -1562,7 +1578,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                               ['--pill-color' as string]: color
                             } as React.CSSProperties
                           }
-                          onClick={() => setPickerForCluster(name)}
+                          onClick={(e) => {
+                            setPickerAnchor(e.currentTarget)
+                            setPickerForCluster(name)
+                          }}
                         >
                           <span className="speaker-pill__dot" />
                           <span className="speaker-pill__name">{name}</span>
@@ -1579,8 +1598,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                             inThisMeeting={allSpeakersForPicker}
                             addedSpeakers={selectedMeeting.additionalSpeakers ?? []}
                             enrolled={enrolledSpeakers}
+                            anchorEl={pickerAnchor}
                             onPick={(newName) => onPickSpeaker(name, newName)}
-                            onClose={() => setPickerForCluster(null)}
+                            onClose={() => {
+                              setPickerForCluster(null)
+                              setPickerAnchor(null)
+                            }}
                           />
                         )}
                       </div>
@@ -1609,7 +1632,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   <div className="speaker-pill-wrap">
                     <button
                       className="add-speaker-btn"
-                      onClick={() => setAddSpeakerOpen((v) => !v)}
+                      onClick={(e) => {
+                        const target = e.currentTarget
+                        setAddSpeakerOpen((v) => {
+                          const next = !v
+                          setPickerAnchor(next ? target : null)
+                          return next
+                        })
+                      }}
                       title="Add a person who was present but not auto-detected"
                     >
                       + Add speaker
@@ -1619,8 +1649,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                         current=""
                         inThisMeeting={allSpeakersForPicker}
                         enrolled={enrolledSpeakers}
+                        anchorEl={pickerAnchor}
                         onPick={(newName) => onAddSpeaker(newName)}
-                        onClose={() => setAddSpeakerOpen(false)}
+                        onClose={() => {
+                          setAddSpeakerOpen(false)
+                          setPickerAnchor(null)
+                        }}
                         hideInMeetingGroup
                         newNamePlaceholder="Type a new name…"
                       />

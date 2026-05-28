@@ -1593,20 +1593,6 @@
   box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
 }
 
-/*
- * Anchor for the SpeakerPicker dropdown that pops out of a segment row.
- * Positioned absolutely under the speaker label so it doesn't push the
- * surrounding text around when it opens. The wrapper itself uses a high
- * z-index so the trapped stacking context doesn't cap the dropdown's
- * own z-index (1000) — without this the dropdown would still stack at
- * 50 relative to siblings outside this row.
- */
-.segment-row__picker-anchor {
-  position: absolute;
-  top: calc(100% + 2px);
-  left: 0;
-  z-index: 1000;
-}
 .segment-row__text {
   font: var(--text-body-lg, 400 14px/1.55 inherit);
   font-size: 14px;
@@ -1818,98 +1804,84 @@
   line-height: 1.5;
 }
 
-/* ── Speaker picker dropdown (v0.7.0 — Apple frosted glass) ───
+/* ── Speaker picker dropdown (v0.10.0 — portal + solid) ───────
 
-   Trigger wrappers must establish a positioned context so the
-   dropdown can absolute-position relative to them. We also bump
-   z-index on the wrappers to 50 so the trapped stacking context
-   doesn't cap the dropdown's own z-index. */
+   The picker is now portal-mounted (createPortal to document.body)
+   and viewport-fixed against the trigger's bounding rect. These
+   wrappers are kept as inline-block layout slots only — they no
+   longer host the popup itself, so positioning context here is
+   merely cosmetic. */
 .speaker-pill-wrap {
-  position: relative;
   display: inline-block;
-  z-index: 50;
 }
-/* The per-segment anchor (declared earlier in this file) also
-   sits at z-index 1000 — we bump its wrapper context here in the
-   transcript so the popup floats above sibling segment rows. */
 .segment-row__speaker-wrap {
-  z-index: 50;
+  display: inline-block;
 }
 
 /*
- * Apple-style frosted glass dropdown. Instead of a solid surface
- * token the popup blends with whatever is behind it — rgba background
- * + `backdrop-filter: saturate(180%) blur(24px)` produces the same
- * macOS-toolbar feel. The hairline border (rgba over light bg, rgba
- * white over dark bg) catches the edge, and a three-stop shadow stack
- * lifts the popup convincingly off the surface. A solid-background
- * `@supports not` fallback covers engines without backdrop-filter so
- * the popup is never see-through there.
+ * Solid, portal-mounted picker. The v0.6 → v0.9 glass attempts
+ * (rgba + backdrop-filter) kept rendering see-through because
+ * Chromium silently no-ops backdrop-filter when an ancestor (or
+ * the popup itself, mid-animation) is on a composited layer. The
+ * scale-based entrance animation we used promoted the popup to
+ * its own layer, killing the blur every time. The new design:
  *
- * NO `opacity` on this container — glass is achieved purely via the
- * rgba background and backdrop-filter. NO `position: fixed`.
+ *   1. Solid `--surface-overlay` background (#ffffff / #1c1c1c).
+ *   2. Opacity-only entrance — no transform, no compositing surprise.
+ *   3. Three-stop shadow stack for lift instead of translucency.
+ *   4. Portal + position:fixed so no ancestor can clip or shadow.
  */
 .speaker-picker {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 1000;
-  min-width: 280px;
-  max-width: 360px;
-  max-height: 400px;
+  /* Portal-mounted + viewport-fixed. position/top/left are set inline by
+     the React component from the anchor's getBoundingClientRect(). Width
+     is inline too (POPUP_WIDTH = 300). z-index high enough to beat any
+     in-app surface; since we're a direct child of <body>, no ancestor
+     can clip or compose around us. */
+  position: fixed;
+  z-index: 9999;
+  max-height: min(420px, calc(100vh - 32px));
   overflow-y: auto;
   padding: var(--space-1, 4px);
   border-radius: var(--radius-lg, 12px);
-  /* Strong hairline border so the popup's edge is clearly defined
-     against any transcript background. */
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  /* Bumped from 0.72 ⇒ 0.94 — backdrop-filter alone can't carry an
-     "obviously a popover" feel in light mode; the popup needs to read
-     as effectively opaque with just a hint of frost showing through. */
-  background: rgba(255, 255, 255, 0.94);
-  -webkit-backdrop-filter: saturate(180%) blur(24px);
-  backdrop-filter: saturate(180%) blur(24px);
-  /* Three-stop shadow lifts the popup convincingly off the transcript;
-     stronger than v0.7 to pair with the heavier surface alpha. */
+  border: 1px solid var(--divider-strong, rgba(0, 0, 0, 0.12));
+  /* SOLID surface token — no backdrop-filter, no rgba transparency. The
+     v0.6→v0.9 glass attempts kept failing because Chromium silently
+     no-ops backdrop-filter when an ancestor has a composited layer
+     (and our entrance animation used to create one via transform). The
+     solid path is bulletproof in every browser + Electron build. */
+  background: var(--surface-overlay, #ffffff);
+  color: var(--fg);
+  /* Heavier shadow stack to compensate for losing the glass aesthetic —
+     gives the popover convincing lift off the transcript. */
   box-shadow:
-    0 2px 4px rgba(15, 23, 42, 0.06),
-    0 12px 28px rgba(15, 23, 42, 0.14),
-    0 24px 56px rgba(15, 23, 42, 0.20);
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 8px 16px rgba(15, 23, 42, 0.10),
+    0 24px 48px rgba(15, 23, 42, 0.22);
   font-family: inherit;
-  animation: picker-in 140ms cubic-bezier(0.32, 0.72, 0, 1);
-  transform-origin: top left;
+  /* Opacity-only entrance. No transform → no composited layer → no
+     stacking/compositing surprises. */
+  animation: picker-in 120ms ease-out;
 }
-/* Solid fallback for browsers without backdrop-filter — guarantees
-   the popup is never transparent on engines that drop the blur. */
-@supports not ((backdrop-filter: blur(24px)) or (-webkit-backdrop-filter: blur(24px))) {
-  .speaker-picker {
-    background: rgba(255, 255, 255, 1);
-  }
-}
-
+/* Dark-theme picker: solid raised surface, heavier shadow for the
+   darker background it has to lift off of. No backdrop-filter, no
+   alpha — the v0.6 → v0.9 glass attempts kept failing on Electron's
+   compositor. The token already resolves to #1c1c1c (solid). */
 [data-theme='dark'] .speaker-picker {
-  background: rgba(28, 28, 30, 0.94);
-  border-color: rgba(255, 255, 255, 0.14);
+  background: var(--surface-overlay, #1c1c1c);
+  border-color: rgba(255, 255, 255, 0.10);
   box-shadow:
-    0 2px 4px rgba(0, 0, 0, 0.30),
-    0 12px 28px rgba(0, 0, 0, 0.45),
-    0 24px 56px rgba(0, 0, 0, 0.60);
-}
-@supports not ((backdrop-filter: blur(24px)) or (-webkit-backdrop-filter: blur(24px))) {
-  [data-theme='dark'] .speaker-picker {
-    background: rgba(28, 28, 30, 1);
-  }
+    0 1px 2px rgba(0, 0, 0, 0.30),
+    0 8px 16px rgba(0, 0, 0, 0.45),
+    0 24px 48px rgba(0, 0, 0, 0.65);
 }
 
+/* Opacity-only entrance. NO transform — transform would create a
+   composited layer mid-animation and was the root cause of the
+   long-running backdrop-filter no-op bug. Opacity is GPU-cheap and
+   compositor-safe. */
 @keyframes picker-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px) scale(0.97);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* Ancestor scroll/clipping fix — the dropdown must escape these
