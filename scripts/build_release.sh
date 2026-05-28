@@ -178,6 +178,15 @@ if [ "$NOTARIZE" = true ]; then
         xcrun stapler staple "$APP_BUNDLE"
         xcrun stapler validate "$APP_BUNDLE"
     fi
+elif [ -n "${MINTR_SIGN_IDENTITY:-}" ]; then
+    # Explicit stable identity by NAME (e.g. a self-signed "Mintr Dev Signing"
+    # cert). `detect_sign_hash` uses `find-identity -v`, which only lists
+    # TRUSTED identities — an untrusted self-signed cert never appears there
+    # and would silently fall through to ad-hoc, defeating the stable-cdhash
+    # TCC fix. Signing by name bypasses that trust filter. Keep --deep --force
+    # --entitlements as in the cert path.
+    codesign --deep --force --sign "$MINTR_SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
+    echo "  Signed with identity: $MINTR_SIGN_IDENTITY"
 else
     # Use local development certificate if available (extract 40-char hex SHA-1 hash)
     SIGN_HASH=$(detect_sign_hash)
