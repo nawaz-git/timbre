@@ -376,6 +376,31 @@
   color: #f87171;
 }
 
+/*
+ * Yellow-tinted verifying variant (v0.20+, TICKET-003). Used during the
+ * 30s grace window after the user clicks Restart engine — same shape as
+ * the warning/danger banners, but the colour signals "we're waiting,
+ * don't panic". Tone matches the default `.permission-banner` (amber)
+ * intentionally — the danger banner has just been dismissed and we want
+ * the user to read this as a softer follow-up, not another alarm.
+ */
+.permission-banner--verifying {
+  border-color: rgba(245, 158, 11, 0.40);
+  background: rgba(245, 158, 11, 0.07);
+}
+[data-theme='dark'] .permission-banner--verifying {
+  border-color: rgba(251, 191, 36, 0.40);
+  background: rgba(251, 191, 36, 0.07);
+}
+.permission-banner--verifying .permission-banner__icon {
+  background: rgba(245, 158, 11, 0.18);
+  color: #b45309;
+}
+[data-theme='dark'] .permission-banner--verifying .permission-banner__icon {
+  background: rgba(251, 191, 36, 0.20);
+  color: #fbbf24;
+}
+
 /* Inline-code chip for naming bundle ids / TCC entries in banner copy. */
 .inline-code {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);

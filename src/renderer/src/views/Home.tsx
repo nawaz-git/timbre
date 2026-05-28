@@ -102,6 +102,13 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
   const liveCapture = useLiveCapture(chromeMeet.tab?.meetingId ?? null)
   const [restartingHelper, setRestartingHelper] = useState(false)
   const [restartResult, setRestartResult] = useState<string | null>(null)
+  // TICKET-003: yellow transitional "Verifying capture (30s)…" banner
+  // that takes the red banner's place immediately after a successful
+  // Restart engine click. Cleared when the engine writes a file, the
+  // user leaves the Meet, or 30s elapses without activity.
+  const [verifyingCapture, setVerifyingCapture] = useState<{ startedAt: number } | null>(
+    null
+  )
 
   // mm:ss timer for the live capture card. We derive it from
   // liveCapture.startedAt and re-render once per second to keep it
@@ -114,18 +121,54 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
     return () => clearInterval(id)
   }, [liveCapture.active])
 
+  // TICKET-003: auto-clear the yellow "Verifying capture (30s)…"
+  // banner. Three exits:
+  //   (a) 30s elapses — let the watchdog re-fire organically if the
+  //       restart didn't actually fix capture (single setTimeout,
+  //       cleared in cleanup).
+  //   (b) the Chrome Meet goes away (`chromeMeet.tab === null`) —
+  //       there's nothing left to verify against.
+  //   (c) the engine writes a file (`liveCapture.active === true`) —
+  //       capture is confirmed working, banner mission accomplished.
+  useEffect(() => {
+    if (!verifyingCapture) return
+    if (!chromeMeet.tab) {
+      setVerifyingCapture(null)
+      return
+    }
+    if (liveCapture.active) {
+      setVerifyingCapture(null)
+      return
+    }
+    const remaining = 30_000 - (Date.now() - verifyingCapture.startedAt)
+    if (remaining <= 0) {
+      setVerifyingCapture(null)
+      return
+    }
+    const id = setTimeout(() => setVerifyingCapture(null), remaining)
+    return () => clearTimeout(id)
+  }, [verifyingCapture, chromeMeet.tab, liveCapture.active])
+
   const handleRestartHelper = useCallback(async () => {
     setRestartingHelper(true)
     setRestartResult(null)
     try {
       const result = await window.api.system.restartHelper()
-      setRestartResult(
-        result.ok
-          ? 'Helper restarted — it should now pick up the granted permission.'
-          : `Helper restart failed: ${result.message ?? 'unknown error'}`
-      )
+      if (result.ok) {
+        // TICKET-003: on success, drop the inline result text and
+        // hand off to the new yellow verifying banner. The main-side
+        // watchdog reset will already have pushed a cleared signal,
+        // so the red banner disappears on the same render cycle.
+        setVerifyingCapture({ startedAt: Date.now() })
+      } else {
+        setRestartResult(
+          `Engine restart failed: ${result.message ?? 'unknown error'}`
+        )
+      }
     } catch (err) {
-      setRestartResult(`Helper restart failed: ${err instanceof Error ? err.message : String(err)}`)
+      setRestartResult(
+        `Engine restart failed: ${err instanceof Error ? err.message : String(err)}`
+      )
     } finally {
       setRestartingHelper(false)
     }
@@ -347,6 +390,35 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
               />
               <span>{restartingHelper ? 'Restarting…' : 'Restart engine'}</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/*
+        TICKET-003: transitional yellow banner shown after a successful
+        Restart engine click. The red banner has just been cleared by
+        the main-side watchdog reset; this one takes its slot for up
+        to 30s while we wait to see if the freshly-respawned engine
+        manages to write a file. We gate on `!watchdog.helperPermissionLikely`
+        defensively — if the watchdog re-fires inside the 30s window
+        (engine still broken) the red banner reclaims the slot.
+      */}
+      {verifyingCapture && !watchdog.helperPermissionLikely && (
+        <div
+          className="permission-banner permission-banner--verifying"
+          role="status"
+        >
+          <span className="permission-banner__icon" aria-hidden="true">
+            <Loader2 size={16} className="home-status-icon--spin" />
+          </span>
+          <div className="permission-banner__body">
+            <div className="permission-banner__title">
+              Verifying capture (30s)…
+            </div>
+            <div className="permission-banner__desc">
+              Mintr Engine restarted. Waiting to see if it can capture
+              your meeting.
+            </div>
           </div>
         </div>
       )}
