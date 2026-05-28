@@ -29,39 +29,61 @@
   transition: width 160ms ease;
 }
 
+/*
+ * Sidebar toggle button.
+ *
+ * Positioning is identical in both expanded and collapsed states — the
+ * button always sits below the macOS traffic-light strip (which occupies
+ * the top-left corner from ~12px to ~40px). We anchor at `top: 56px` so
+ * there's an 8-16px gap below the lights even on the densest layouts.
+ *
+ * Horizontal anchor uses `left: 50%` + translate(-50%) so the same rule
+ * works for both 200px-wide (expanded) and 56px-wide (collapsed) sidebars.
+ * Solid `var(--bg)` background means the button never appears to "merge"
+ * with the title bar drag region behind it.
+ *
+ * 32×32 box on a 16px chevron — generous hit target for fingertip use on
+ * trackpads and tablets without dominating the sidebar.
+ */
 .sidebar__toggle {
   -webkit-app-region: no-drag;
   position: absolute;
-  top: 8px;
-  right: 6px;
-  width: 22px;
-  height: 22px;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: transparent;
+  background: var(--bg);
   color: var(--fg-muted);
-  border: 1px solid transparent;
-  border-radius: 4px;
-  font-size: 11px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  font-size: 14px;
   line-height: 1;
   cursor: pointer;
-  z-index: 2;
-  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+  z-index: 5;
+  transition:
+    background 80ms ease,
+    color 80ms ease,
+    border-color 80ms ease;
 }
 .sidebar__toggle:hover {
   background: var(--bg-hover);
   color: var(--fg);
-  border-color: var(--divider);
+  border-color: var(--divider-strong);
 }
-.sidebar--collapsed .sidebar__toggle {
-  right: 50%;
-  transform: translateX(50%);
+.sidebar__toggle:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
 }
 
 .sidebar__brand {
-  /* Reserve room for macOS traffic lights when titleBarStyle: hiddenInset. */
-  padding: 36px 20px 20px;
+  /* Reserve room for the toggle button (top: 56px, height: 32px ⇒ ends
+     at 88px) plus an 8px gap. Without this padding the brand label would
+     collide with the toggle on first paint. */
+  padding: 100px 20px 20px;
   font-weight: 600;
   letter-spacing: 0.02em;
   font-size: 13px;
@@ -86,7 +108,7 @@
 }
 
 .sidebar--collapsed .sidebar__brand {
-  padding: 36px 0 20px;
+  padding: 100px 0 20px;
   justify-content: center;
 }
 .sidebar--collapsed .sidebar__brand-mark {
@@ -393,27 +415,54 @@
   white-space: nowrap;
 }
 
+/*
+ * Rename affordance on each meeting row.
+ *
+ * The inner SVG is 14px on a 24×24 button — a generous hit target that
+ * still feels light at row scale. Hidden by default; revealed only on row
+ * hover/focus-within (`opacity: 0 → 1`, 120ms fade). When the row is the
+ * currently selected meeting we keep it visible so the user can rename
+ * without losing the selection.
+ *
+ * Color uses `var(--fg-muted)` (not opacity dimming) so the SVG strokes
+ * stay crisp on both themes; brightens to `var(--fg)` on icon hover.
+ */
 .meetings__row-edit {
+  -webkit-appearance: none;
+  appearance: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  font-size: 12px;
-  line-height: 1;
+  width: 24px;
+  height: 24px;
+  margin-right: -4px; /* visual nudge: align with row right padding */
+  padding: 0;
+  background: transparent;
   color: var(--fg-muted);
-  border-radius: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   cursor: pointer;
   opacity: 0;
   flex-shrink: 0;
-  transition: opacity 80ms ease, background 80ms ease, color 80ms ease;
+  transition:
+    opacity 120ms ease,
+    background 80ms ease,
+    color 80ms ease,
+    border-color 80ms ease;
 }
 .meetings__row-edit:hover {
-  background: var(--bg-active);
+  background: var(--bg-elevated, var(--bg-elev));
   color: var(--fg);
+  border-color: var(--divider);
+}
+.meetings__row-edit:focus-visible {
+  outline: none;
+  border-color: var(--fg);
+  opacity: 1;
 }
 .meetings__row:hover .meetings__row-edit,
-.meetings__row:focus-within .meetings__row-edit {
+.meetings__row:focus-within .meetings__row-edit,
+.meetings__row--active .meetings__row-edit {
   opacity: 1;
 }
 
