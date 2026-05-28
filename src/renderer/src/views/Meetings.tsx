@@ -90,6 +90,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
   // Speaker picker — which cluster name is open?
   const [pickerForCluster, setPickerForCluster] = useState<string | null>(null)
+  // Per-segment reassignment dropdown — segment index, or null when closed.
+  const [pickerForSegment, setPickerForSegment] = useState<number | null>(null)
+  // "+ Add speaker" dropdown anchored to its button on the Speakers tab.
+  const [addSpeakerOpen, setAddSpeakerOpen] = useState(false)
   const [enrolledSpeakers, setEnrolledSpeakers] = useState<EnrolledSpeaker[]>([])
 
   // Re-analyse
@@ -154,6 +158,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       setStatusBanner(null)
       setTitleEditing(false)
       setPickerForCluster(null)
+      setPickerForSegment(null)
+      setAddSpeakerOpen(false)
       setCurrentTime(0)
       setIsPlaying(false)
       setTab('transcript')
@@ -210,6 +216,24 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
   const speakersInTranscript = useMemo(() => uniqueSpeakers(segments), [segments])
 
+  /**
+   * Detected speakers + user-added "additional" speakers (the latter come
+   * from `metadata.json → additionalSpeakers` and represent people who
+   * were present but missed by diarization). Both sets are offered in the
+   * per-segment reassignment dropdown so the user can re-tag a misheard
+   * segment to anyone in the meeting.
+   */
+  const allSpeakersForPicker = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: string[] = []
+    for (const n of [...speakersInTranscript, ...(selectedMeeting?.additionalSpeakers ?? [])]) {
+      if (!n || seen.has(n)) continue
+      seen.add(n)
+      merged.push(n)
+    }
+    return merged
+  }, [speakersInTranscript, selectedMeeting])
+
   const audioSrc = useMemo(() => {
     if (!selectedMeeting?.hasAudio) return null
     const id = selectedMeeting.id.startsWith('imported:')
@@ -224,7 +248,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     const handler = (e: KeyboardEvent): void => {
       const target = e.target as HTMLElement | null
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return
-      if (titleEditing || pickerForCluster) return
+      if (titleEditing || pickerForCluster || pickerForSegment !== null || addSpeakerOpen) return
       if (e.code === 'Space') {
         e.preventDefault()
         if (audioRef.current) {
@@ -246,7 +270,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [selectedMeeting, titleEditing, pickerForCluster])
+  }, [selectedMeeting, titleEditing, pickerForCluster, pickerForSegment, addSpeakerOpen])
 
   const activeSegmentIndex = useMemo(() => {
     if (segments.length === 0) return -1
@@ -332,6 +356,49 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       }
     },
     [selectedId, loadTranscript, loadEnrolled, refresh]
+  )
+
+  /**
+   * Reassign a SINGLE segment's speaker (not the cluster). Other segments
+   * sharing the old name are untouched. Backed by `meetings:reassignSegment`.
+   */
+  const onReassignSegment = useCallback(
+    async (segmentIndex: number, newName: string) => {
+      if (!selectedId) return
+      try {
+        await window.api.meetings.reassignSegment(selectedId, segmentIndex, newName)
+        setPickerForSegment(null)
+        setStatusBanner(`Segment ${segmentIndex + 1} → "${newName}".`)
+        await loadTranscript(selectedId)
+        await refresh()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setStatusBanner(`Reassign failed: ${msg}`)
+      }
+    },
+    [selectedId, loadTranscript, refresh]
+  )
+
+  /**
+   * Append a name to this meeting's `additionalSpeakers`. The picker
+   * passes either an enrolled name (from the dropdown) or a freshly-typed
+   * name. The list refresh propagates the new name into the per-segment
+   * picker via `selectedMeeting.additionalSpeakers`.
+   */
+  const onAddSpeaker = useCallback(
+    async (name: string) => {
+      if (!selectedId) return
+      try {
+        await window.api.meetings.addSpeaker(selectedId, name)
+        setAddSpeakerOpen(false)
+        setStatusBanner(`Added "${name}" to this meeting.`)
+        await refresh()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setStatusBanner(`Add speaker failed: ${msg}`)
+      }
+    },
+    [selectedId, refresh]
   )
 
   const onReanalyze = useCallback(async () => {
@@ -688,7 +755,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     statusBanner.startsWith('Re-analyse failed') ||
                     statusBanner.startsWith('Rename failed') ||
                     statusBanner.startsWith('Export failed') ||
-                    statusBanner.startsWith('Tag update failed')
+                    statusBanner.startsWith('Tag update failed') ||
+                    statusBanner.startsWith('Reassign failed') ||
+                    statusBanner.startsWith('Add speaker failed')
                       ? 'var(--danger, #ef4444)'
                       : undefined
                 }}
@@ -707,24 +776,55 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 {!transcriptLoading && segments.length > 0 && (
                   <div className="transcript-list" ref={transcriptListRef}>
                     {segments.map((seg, i) => (
-                      <button
+                      <div
                         key={i}
                         data-segment-index={i}
                         className={
                           'segment-row' + (i === activeSegmentIndex ? ' segment-row--active' : '')
                         }
+                        role="button"
+                        tabIndex={0}
                         onClick={() => seekTo(seg.start, true)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            seekTo(seg.start, true)
+                          }
+                        }}
                         title="Click to jump to this point"
                       >
                         <span className="segment-row__time">{formatHHMMSS(seg.start)}</span>
-                        <span
-                          className="segment-row__speaker"
-                          style={{ color: colorForSpeaker(seg.speaker) }}
-                        >
-                          {seg.speaker}
+                        <span className="segment-row__speaker-wrap">
+                          <button
+                            type="button"
+                            className="segment-row__speaker"
+                            style={{ color: colorForSpeaker(seg.speaker) }}
+                            onClick={(e) => {
+                              // Don't trigger the seek action on the parent row.
+                              e.stopPropagation()
+                              setPickerForSegment((cur) => (cur === i ? null : i))
+                            }}
+                            title="Click to reassign this segment's speaker"
+                          >
+                            {seg.speaker}
+                          </button>
+                          {pickerForSegment === i && (
+                            <div
+                              className="segment-row__picker-anchor"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <SpeakerPicker
+                                current={seg.speaker}
+                                inThisMeeting={allSpeakersForPicker}
+                                enrolled={enrolledSpeakers}
+                                onPick={(newName) => onReassignSegment(i, newName)}
+                                onClose={() => setPickerForSegment(null)}
+                              />
+                            </div>
+                          )}
                         </span>
                         <span className="segment-row__text">{seg.text}</span>
-                      </button>
+                      </div>
                     ))}
                   </div>
                 )}
@@ -738,10 +838,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   already-enrolled voice. Enrolled voices are matched automatically in future
                   imports.
                 </p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {speakersInTranscript.length === 0 && (
-                    <div className="empty">No speakers detected yet.</div>
-                  )}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                  {speakersInTranscript.length === 0 &&
+                    (selectedMeeting.additionalSpeakers ?? []).length === 0 && (
+                      <div className="empty">No speakers detected yet.</div>
+                    )}
                   {speakersInTranscript.map((name) => (
                     <div key={name} className="speaker-pill-wrap">
                       <button
@@ -759,7 +860,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       {pickerForCluster === name && (
                         <SpeakerPicker
                           current={name}
-                          inThisMeeting={speakersInTranscript}
+                          inThisMeeting={allSpeakersForPicker}
                           enrolled={enrolledSpeakers}
                           onPick={(newName) => onPickSpeaker(name, newName)}
                           onClose={() => setPickerForCluster(null)}
@@ -767,6 +868,42 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       )}
                     </div>
                   ))}
+                  {(selectedMeeting.additionalSpeakers ?? [])
+                    .filter((n) => !speakersInTranscript.includes(n))
+                    .map((name) => (
+                      <span
+                        key={`add-${name}`}
+                        className="speaker-pill speaker-pill--added"
+                        style={{ borderColor: colorForSpeaker(name) }}
+                        title="Added manually — assign segments to this person from the Transcript tab."
+                      >
+                        <span
+                          className="speaker-pill__dot"
+                          style={{ background: colorForSpeaker(name) }}
+                        />
+                        {name}
+                      </span>
+                    ))}
+                  <div className="speaker-pill-wrap">
+                    <button
+                      className="add-speaker-btn"
+                      onClick={() => setAddSpeakerOpen((v) => !v)}
+                      title="Add a person who was present but not auto-detected"
+                    >
+                      + Add speaker
+                    </button>
+                    {addSpeakerOpen && (
+                      <SpeakerPicker
+                        current=""
+                        inThisMeeting={allSpeakersForPicker}
+                        enrolled={enrolledSpeakers}
+                        onPick={(newName) => onAddSpeaker(newName)}
+                        onClose={() => setAddSpeakerOpen(false)}
+                        hideInMeetingGroup
+                        newNamePlaceholder="Type a new name…"
+                      />
+                    )}
+                  </div>
                 </div>
                 {enrolledSpeakers.length > 0 && (
                   <>

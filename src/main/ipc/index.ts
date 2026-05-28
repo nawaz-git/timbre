@@ -19,10 +19,12 @@ import {
   numSpeakersToArg
 } from '../backend'
 import {
+  addSpeakerToMeeting,
   exportMeeting,
   listMeetings,
   liveRecordingsRoot,
   readTranscript,
+  reassignSegmentSpeaker,
   renameMeetingTitle,
   renameSpeakerInMeeting,
   setMeetingTags
@@ -158,6 +160,36 @@ export function registerIpcHandlers(): void {
     ): Promise<{ enrolled: boolean }> => {
       const settings = await readSettings()
       return renameSpeakerInMeeting(settings.outputFolder, meetingId, oldName, newName)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.meetingsReassignSegment,
+    async (
+      _event,
+      meetingId: string,
+      segmentIndex: number,
+      newSpeaker: string
+    ): Promise<{ speakerCount: number; newSpeaker: string }> => {
+      const settings = await readSettings()
+      return reassignSegmentSpeaker(
+        settings.outputFolder,
+        meetingId,
+        segmentIndex,
+        newSpeaker
+      )
+    }
+  )
+
+  ipcMain.handle(
+    IPC.meetingsAddSpeaker,
+    async (
+      _event,
+      meetingId: string,
+      speakerName: string
+    ): Promise<{ additionalSpeakers: string[] }> => {
+      const settings = await readSettings()
+      return addSpeakerToMeeting(settings.outputFolder, meetingId, speakerName)
     }
   )
 
