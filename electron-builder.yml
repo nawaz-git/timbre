@@ -1,5 +1,13 @@
+## Mintr — v0.7.0
+##
+## NOTE: `appId` deliberately stays at `ai.nawaz.meeting-transcriber` even
+## though the product brand is now "Mintr". Reusing the bundle ID keeps the
+## macOS TCC (microphone / screen-recording / Documents) permissions that
+## existing users have already granted to past builds. Renaming the bundle
+## ID is a breaking change — re-grant required — so we defer it until a
+## dedicated upgrade path is in place.
 appId: ai.nawaz.meeting-transcriber
-productName: Meeting Transcriber
+productName: Mintr
 directories:
   buildResources: build
 files:
@@ -27,6 +35,10 @@ extraResources:
 
 mac:
   category: public.app-category.productivity
+  # `electron-builder` auto-detects `build/icon.icns` but we declare it
+  # explicitly so the production icon (mint leaf + sound wave) wires up
+  # regardless of buildResources discovery order.
+  icon: build/icon.icns
   target:
     - target: dmg
       arch:
@@ -39,11 +51,11 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     NSMicrophoneUsageDescription: >-
-      Meeting Transcriber needs microphone access to record and transcribe meetings on-device.
+      Mintr needs microphone access to record and transcribe meetings on-device.
     NSScreenCaptureUsageDescription: >-
-      Meeting Transcriber needs screen capture access to capture system audio from meetings on-device.
+      Mintr needs screen capture access to capture system audio from meetings on-device.
     NSDocumentsFolderUsageDescription: >-
-      Meeting Transcriber reads and writes transcripts in your Documents folder.
+      Mintr reads and writes transcripts in your Documents folder.
 
 dmg:
   artifactName: ${productName}-${version}-${arch}.${ext}

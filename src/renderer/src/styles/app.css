@@ -1,18 +1,27 @@
-/* Layout + view styles. Plain CSS, no preprocessor. */
+/*
+ * Layout + view styles. Plain CSS, no preprocessor.
+ *
+ * Token policy: every colour / spacing / radius / shadow MUST reference
+ * a CSS variable from theme.css. Hard-coded values are a smell and will
+ * be challenged in review. New per-component sections (TICKETS B + C)
+ * should adopt --surface-* / --space-* / --radius-* directly; legacy
+ * aliases like --bg-elev are kept alive in theme.css only so existing
+ * sections render correctly during the migration.
+ */
 
 .app {
   display: grid;
-  grid-template-columns: 200px 1fr;
+  grid-template-columns: 220px 1fr;
   height: 100vh;
   width: 100vw;
-  background: var(--bg);
+  background: var(--surface-base);
   color: var(--fg);
   overflow: hidden;
   transition: grid-template-columns 160ms ease;
 }
 
 .app--sidebar-collapsed {
-  grid-template-columns: 56px 1fr;
+  grid-template-columns: 60px 1fr;
 }
 
 /* ---------- Sidebar ---------- */
@@ -21,7 +30,7 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: var(--surface-base);
   border-right: 1px solid var(--divider);
   -webkit-app-region: drag;
   user-select: none;
@@ -38,12 +47,13 @@
  * there's an 8-16px gap below the lights even on the densest layouts.
  *
  * Horizontal anchor uses `left: 50%` + translate(-50%) so the same rule
- * works for both 200px-wide (expanded) and 56px-wide (collapsed) sidebars.
- * Solid `var(--bg)` background means the button never appears to "merge"
- * with the title bar drag region behind it.
+ * works for both expanded and collapsed sidebars. Solid surface-base
+ * background means the button never appears to "merge" with the title
+ * bar drag region behind it.
  *
- * 32×32 box on a 16px chevron — generous hit target for fingertip use on
- * trackpads and tablets without dominating the sidebar.
+ * 28×28 box on a 14px lucide chevron — generous hit target without
+ * dominating the sidebar. Lucide icons render as currentColor SVG so
+ * the colour token controls them via `color: ...`.
  */
 .sidebar__toggle {
   -webkit-app-region: no-drag;
@@ -51,68 +61,72 @@
   top: 56px;
   left: 50%;
   transform: translateX(-50%);
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg);
+  background: var(--surface-base);
   color: var(--fg-muted);
   border: 1px solid var(--divider);
-  border-radius: 6px;
-  font-size: 14px;
-  line-height: 1;
+  border-radius: var(--radius-md);
   cursor: pointer;
   z-index: 5;
   transition:
     background 80ms ease,
     color 80ms ease,
-    border-color 80ms ease;
+    border-color 80ms ease,
+    box-shadow 80ms ease;
 }
 .sidebar__toggle:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover);
   color: var(--fg);
   border-color: var(--divider-strong);
 }
 .sidebar__toggle:focus-visible {
-  outline: 2px solid var(--fg);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .sidebar__brand {
-  /* Reserve room for the toggle button (top: 56px, height: 32px ⇒ ends
-     at 88px) plus an 8px gap. Without this padding the brand label would
-     collide with the toggle on first paint. */
-  padding: 100px 20px 20px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  font-size: 13px;
+  /* Reserve room for the toggle button (top: 56px, height: 28px ⇒ ends
+     at 84px) plus a comfortable gap. Without this padding the brand
+     label would collide with the toggle on first paint. */
+  padding: 96px var(--space-4) var(--space-5);
   display: flex;
   align-items: center;
+  gap: var(--space-2);
   white-space: nowrap;
   overflow: hidden;
+  color: var(--fg);
 }
 
 .sidebar__brand-mark {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  background: var(--fg);
-  margin-right: 10px;
-  border-radius: 1px;
+  /* Small mint-leaf-coloured square housing the Sparkles glyph. We use
+     --accent-mark (the higher-saturation brand green) rather than
+     --accent (which we biased darker for button contrast). Both are in
+     the mint-green family — visually consistent — but this one reads
+     more "brand" than "interactive". */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-mark);
+  color: var(--accent-fg);
   flex-shrink: 0;
 }
 
 .sidebar__brand-label {
+  font: 600 var(--text-h1-size) / 1 var(--font-sans);
+  letter-spacing: -0.005em;
   transition: opacity 120ms ease;
 }
 
 .sidebar--collapsed .sidebar__brand {
-  padding: 100px 0 20px;
+  padding: 96px 0 var(--space-5);
   justify-content: center;
-}
-.sidebar--collapsed .sidebar__brand-mark {
-  margin-right: 0;
 }
 .sidebar--collapsed .sidebar__brand-label {
   display: none;
@@ -121,7 +135,7 @@
 .sidebar__nav {
   display: flex;
   flex-direction: column;
-  padding: 8px 8px;
+  padding: var(--space-2);
   gap: 2px;
   -webkit-app-region: no-drag;
 }
@@ -129,24 +143,36 @@
 .sidebar__nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   width: 100%;
-  padding: 8px 12px;
-  border-radius: 6px;
+  padding: var(--space-2) 10px;
+  border-radius: var(--radius-md);
   color: var(--fg-muted);
   text-align: left;
-  font-size: 13px;
-  transition: background 80ms ease, color 80ms ease;
+  font: 400 var(--text-body-size) / 1 var(--font-sans);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition:
+    background 80ms ease,
+    color 80ms ease,
+    box-shadow 80ms ease;
 }
 
 .sidebar__nav-item:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover);
   color: var(--fg);
 }
 
 .sidebar__nav-item--active {
-  background: var(--bg-active);
+  background: var(--surface-raised);
   color: var(--fg);
+  font-weight: 500;
+}
+
+.sidebar__nav-item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .sidebar__nav-icon {
@@ -154,7 +180,7 @@
   align-items: center;
   justify-content: center;
   width: 18px;
-  font-size: 14px;
+  height: 18px;
   line-height: 1;
   flex-shrink: 0;
   color: inherit;
@@ -167,11 +193,11 @@
 }
 
 .sidebar--collapsed .sidebar__nav {
-  padding: 8px 4px;
+  padding: var(--space-2) var(--space-1);
 }
 .sidebar--collapsed .sidebar__nav-item {
   justify-content: center;
-  padding: 8px 0;
+  padding: var(--space-2) 0;
 }
 .sidebar--collapsed .sidebar__nav-label {
   display: none;
@@ -179,9 +205,9 @@
 
 .sidebar__footer {
   margin-top: auto;
-  padding: 16px 20px;
+  padding: var(--space-4) var(--space-5);
   border-top: 1px solid var(--divider);
-  font-size: 11px;
+  font: 500 var(--text-caption-size) / 1.4 var(--font-sans);
   color: var(--fg-subtle);
 }
 
@@ -196,33 +222,33 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--surface-base);
 }
 
 .content__header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 28px 32px 16px;
+  padding: var(--space-7) var(--space-8) var(--space-4);
   border-bottom: 1px solid var(--divider);
   -webkit-app-region: drag;
 }
 
 .content__title {
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font: 600 var(--text-h1-size) / 1.3 var(--font-sans);
+  letter-spacing: -0.005em;
+  color: var(--fg);
 }
 
 .content__subtitle {
+  font: 500 var(--text-caption-size) / 1.4 var(--font-sans);
   color: var(--fg-muted);
-  font-size: 12px;
 }
 
 .content__body {
   flex: 1;
   overflow: auto;
-  padding: 24px 32px 32px;
+  padding: var(--space-6) var(--space-8) var(--space-8);
   -webkit-app-region: no-drag;
 }
 
@@ -248,18 +274,19 @@
 .status-indicator {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 13px;
-  color: var(--fg-muted);
+  gap: var(--space-3);
+  font: 600 var(--text-label-size) / 1 var(--font-sans);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
 }
 
 .status-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: var(--status-idle);
+  flex-shrink: 0;
 }
 
 .status-dot--watching {
@@ -312,26 +339,56 @@
   flex-wrap: wrap;
 }
 
+/* ---------- Button system ----------
+ *
+ * Foundation for every button in the app. Variants compose via `.btn` +
+ * a modifier class (`btn--primary`, `btn--ghost`, `btn--danger`, etc).
+ * Size modifiers (`btn--sm`, `btn--lg`) adjust height and padding only —
+ * the family stays visually coherent.
+ *
+ * Every interactive button surfaces a focus ring on `:focus-visible` so
+ * keyboard nav remains accessible.
+ *
+ * Lucide icons inside a button are styled with `stroke: currentColor` so
+ * the icon picks up the same colour as the label automatically.
+ */
+
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 16px;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 14px;
   border: 1px solid var(--divider-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--fg);
-  font-size: 13px;
-  font-weight: 500;
-  transition: background 80ms ease, border-color 80ms ease;
+  font: 500 var(--text-button-size) / 1 var(--font-sans);
+  cursor: pointer;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease,
+    box-shadow 80ms ease,
+    opacity 80ms ease;
 }
 
 .btn:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover);
 }
 
 .btn:active {
-  background: var(--bg-active);
+  background: var(--surface-active);
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn--primary {
@@ -341,8 +398,20 @@
 }
 
 .btn--primary:hover {
-  opacity: 0.88;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn--primary:active {
   background: var(--accent);
+}
+
+.btn--ghost {
+  border-color: transparent;
+}
+
+.btn--ghost:hover {
+  background: var(--surface-hover);
 }
 
 .btn--danger {
@@ -351,7 +420,19 @@
 }
 
 .btn--danger:hover {
-  background: rgba(255, 85, 85, 0.08);
+  background: var(--danger-soft);
+}
+
+.btn--sm {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.btn--lg {
+  height: 38px;
+  padding: 0 18px;
+  font-size: 14px;
 }
 
 /* ---------- Meetings view ---------- */
@@ -386,8 +467,11 @@
 }
 
 .meetings__row:focus-visible {
-  background: var(--bg-hover);
-  box-shadow: inset 2px 0 0 var(--fg);
+  outline: none;
+  background: var(--surface-hover);
+  box-shadow:
+    inset 2px 0 0 var(--accent),
+    var(--focus-ring);
 }
 
 .meetings__row--active {
@@ -1036,7 +1120,11 @@
   flex-shrink: 0;
 }
 .tag-chip:hover {
-  background: var(--bg-elevated);
+  background: var(--surface-hover);
+}
+.tag-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .tag-chip--active {
   /* Filled at ~25% alpha using the per-tag color exposed as --chip-color

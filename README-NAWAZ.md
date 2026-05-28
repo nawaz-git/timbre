@@ -1,5 +1,11 @@
 # Meeting Transcriber — Overnight build, morning verification
 
+> **Note (v0.7.0):** The app has been rebranded from "Meeting Transcriber"
+> to **Mintr** as part of the public open-source launch. The historic notes
+> below still reference the old name where they describe earlier builds —
+> that's left intact for archival accuracy. New docs and the app UI use
+> the new brand.
+
 Built overnight on 2026-05-28. Here's what shipped, what works, and what to verify.
 
 ## Install
