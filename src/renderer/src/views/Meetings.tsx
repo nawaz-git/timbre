@@ -1006,6 +1006,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                               <SpeakerPicker
                                 current={seg.speaker}
                                 inThisMeeting={allSpeakersForPicker}
+                                addedSpeakers={selectedMeeting.additionalSpeakers ?? []}
                                 enrolled={enrolledSpeakers}
                                 onPick={(newName) => onReassignSegment(i, newName)}
                                 onClose={() => setPickerForSegment(null)}
@@ -1058,6 +1059,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                           <SpeakerPicker
                             current={name}
                             inThisMeeting={allSpeakersForPicker}
+                            addedSpeakers={selectedMeeting.additionalSpeakers ?? []}
                             enrolled={enrolledSpeakers}
                             onPick={(newName) => onPickSpeaker(name, newName)}
                             onClose={() => setPickerForCluster(null)}
