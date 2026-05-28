@@ -49,6 +49,51 @@ const EXPORT_FORMATS: ExportFormatMeta[] = [
   { value: 'audio', label: 'Audio', hint: 'Original WAV recording (.wav)', Icon: FileAudio }
 ]
 
+/** Payload returned by `meetings:exportPreview` (mirrors preload type). */
+interface ExportPreviewPayload {
+  filename: string
+  body: string
+  contentType: string
+  isBinary?: boolean
+  sizeBytes?: number
+}
+
+/**
+ * Cache slot for a single format's preview state. An absent entry in
+ * `previewCache[format]` is implicitly the loading state — the fetcher
+ * writes ONLY the terminal status ('ready' | 'error') after its await
+ * completes, which keeps it out of the React cascading-render trap.
+ */
+type ExportPreviewState =
+  | { status: 'ready'; payload: ExportPreviewPayload }
+  | { status: 'error'; message: string }
+
+/**
+ * Pretty-print byte counts for the Audio preview placeholder. Switches
+ * units at 1024 boundaries — most meeting WAVs land in the MB range.
+ */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+/**
+ * Pretty-print JSON for the preview pane. Falls back to the raw string
+ * if the body is not valid JSON (defensive — `exportMeeting('json')`
+ * already returns parsed file contents, so this should never fail in
+ * practice, but the pane shouldn't blank out if the file is corrupt).
+ */
+function tryFormatJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return raw
+  }
+}
+
 const TAB_DEFS: { key: TabKey; label: string }[] = [
   { key: 'transcript', label: 'Transcript' },
   { key: 'speakers', label: 'Speakers' },
@@ -146,8 +191,18 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const [reanalyzeSpeakers, setReanalyzeSpeakers] = useState<NumSpeakersHint>('auto')
   const [reanalyzeJobId, setReanalyzeJobId] = useState<string | null>(null)
 
-  // Export
+  // Export tab — preview-then-export flow.
+  // Currently-selected format in the preview pane (default Plain text).
   const [exportBusy, setExportBusy] = useState(false)
+  const [previewFormat, setPreviewFormat] = useState<ExportFormat>('txt')
+  // Cache previews per format so toggling between chips is instant after the
+  // first fetch. Keyed by format; entries are tagged with status so the
+  // pane can render skeleton / error / content from a single state slice.
+  // Invalidated on meeting switch (different transcript files entirely) and
+  // after a successful re-analyse (transcript content has changed on disk).
+  const [previewCache, setPreviewCache] = useState<
+    Partial<Record<ExportFormat, ExportPreviewState>>
+  >({})
 
   // Audio playback
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -237,6 +292,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       setCurrentTime(0)
       setIsPlaying(false)
       setTab('transcript')
+      // Reset the Export-tab state for the new meeting — the previous
+      // meeting's cached previews belong to different transcript files.
+      setPreviewFormat('txt')
+      setPreviewCache({})
       await loadTranscript(m.id)
       await loadEnrolled()
     },
@@ -265,6 +324,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           // renamed speaker will have been picked up by the global-DB match.
           // The banner has done its job; clear it.
           setLastReassignedSpeaker(null)
+          // Transcript files on disk changed — drop the export-preview
+          // cache so the Export tab refetches against the new contents.
+          setPreviewCache({})
           if (selectedId) void loadTranscript(selectedId)
         }
       } else if (ev.event === 'error' && reanalyzeJobId && ev.jobId === reanalyzeJobId) {
@@ -403,6 +465,62 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     }
   }, [activeSegmentIndex, isPlaying])
 
+  /**
+   * Lazy-load the export preview for the currently-selected format whenever
+   * the Export tab is the active tab. Cached per format inside the meeting
+   * session — switching back to a format we've already loaded is instant.
+   * Skipped for audio when the meeting has no audio file (the pane shows
+   * a "not available" placeholder using the existing `hasAudio` flag).
+   * Also skipped for engine-prefix meetings (live recordings) since they
+   * only support txt/md export.
+   */
+  useEffect(() => {
+    if (tab !== 'export') return
+    if (!selectedId || !selectedMeeting) return
+    const fmt = previewFormat
+    // Don't fetch audio preview when there's no audio file.
+    if (fmt === 'audio' && !selectedMeeting.hasAudio) return
+    // Engine meetings only support txt/md — don't ask the backend for the rest.
+    if (
+      selectedMeeting.id.startsWith('engine:') &&
+      fmt !== 'txt' &&
+      fmt !== 'md'
+    ) {
+      return
+    }
+    // Already fetched (or in-flight) — let the cached entry stand.
+    if (previewCache[fmt]) return
+    let cancelled = false
+    // Treat "no cache entry" as the loading state in the renderer instead
+    // of writing an explicit { status: 'loading' } before the await — that
+    // synchronous setState inside an effect trips the cascading-render lint
+    // rule. The placeholder branch renders the same skeleton either way.
+    void (async () => {
+      try {
+        const payload = await window.api.meetings.exportPreview(
+          selectedId,
+          fmt,
+          selectedMeeting.title
+        )
+        if (cancelled) return
+        setPreviewCache((prev) => ({
+          ...prev,
+          [fmt]: { status: 'ready', payload }
+        }))
+      } catch (err) {
+        if (cancelled) return
+        const message = err instanceof Error ? err.message : String(err)
+        setPreviewCache((prev) => ({
+          ...prev,
+          [fmt]: { status: 'error', message }
+        }))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [tab, selectedId, selectedMeeting, previewFormat, previewCache])
+
   // ─── Actions ──────────────────────────────────────────────────────────
 
   const seekTo = useCallback((t: number, play = true) => {
@@ -530,6 +648,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         // Show (or update) the cascade banner for this meeting-session.
         setLastReassignedSpeaker(newName)
         setPickerForCluster(null)
+        // Transcript files were rewritten by the rename — drop any cached
+        // export previews so the next preview fetch reads fresh contents.
+        setPreviewCache({})
         await loadTranscript(selectedId)
         await loadEnrolled()
         await refresh()
@@ -557,6 +678,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         // Setting the banner to the new name (replacing, not stacking) keeps
         // one banner per meeting-session even after multiple reassigns.
         setLastReassignedSpeaker(newName)
+        // Transcript files were rewritten — drop cached export previews.
+        setPreviewCache({})
         await loadTranscript(selectedId)
         await refresh()
       } catch (err) {
@@ -1488,34 +1611,183 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             )}
 
             {tab === 'export' && (
-              <div className="tab-pane">
-                <p className="tab-pane__intro">
-                  Export this meeting in different formats. Audio export is the original WAV.
-                </p>
-                <div className="export-grid">
+              <div className="tab-pane export-preview">
+                {/*
+                 * Format selector chips. Live recordings (engine: prefix)
+                 * only support txt/md export, so the rest are disabled
+                 * with an explanatory title. Audio is disabled when the
+                 * meeting has no audio file.
+                 */}
+                <div
+                  className="export-preview__chips"
+                  role="tablist"
+                  aria-label="Export format"
+                >
                   {EXPORT_FORMATS.map((f) => {
                     const Icon = f.Icon
+                    const isEngineOnly = selectedMeeting.id.startsWith('engine:')
+                    const engineDisabled = isEngineOnly && f.value !== 'txt' && f.value !== 'md'
+                    const audioDisabled = f.value === 'audio' && !selectedMeeting.hasAudio
+                    const disabled = engineDisabled || audioDisabled
+                    const active = previewFormat === f.value
                     return (
                       <button
                         key={f.value}
-                        className="export-card"
-                        onClick={() => void onExport(f.value)}
-                        disabled={
-                          exportBusy ||
-                          (f.value === 'audio' && !selectedMeeting.hasAudio) ||
-                          selectedMeeting.id.startsWith('engine:')
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        disabled={disabled}
+                        title={
+                          engineDisabled
+                            ? 'Live recordings only support Plain text and Markdown export.'
+                            : audioDisabled
+                              ? 'This meeting has no audio file.'
+                              : undefined
                         }
+                        className={
+                          'export-preview__chip' +
+                          (active ? ' export-preview__chip--active' : '')
+                        }
+                        onClick={() => setPreviewFormat(f.value)}
                       >
-                        <span className="export-card__icon" aria-hidden="true">
-                          <Icon size={18} strokeWidth={1.75} />
-                        </span>
-                        <div className="export-card__text">
-                          <div className="export-card__label">{f.label}</div>
-                          <div className="export-card__hint">{f.hint}</div>
-                        </div>
+                        <Icon
+                          size={14}
+                          strokeWidth={2}
+                          aria-hidden="true"
+                          className="export-preview__chip-icon"
+                        />
+                        <span>{f.label}</span>
                       </button>
                     )
                   })}
+                </div>
+
+                {/*
+                 * Preview header — section title + the explicit Export
+                 * button. The button is the only thing that opens the
+                 * Save dialog; the chips just change what's previewed.
+                 */}
+                <div className="export-preview__header">
+                  <div className="export-preview__header-text">
+                    <h3 className="export-preview__title">Preview</h3>
+                    <div className="export-preview__subtitle">
+                      {(() => {
+                        const meta = EXPORT_FORMATS.find((x) => x.value === previewFormat)
+                        const cached = previewCache[previewFormat]
+                        const filename =
+                          cached?.status === 'ready' ? cached.payload.filename : null
+                        return filename ? filename : meta?.hint ?? ''
+                      })()}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn--primary"
+                    onClick={() => void onExport(previewFormat)}
+                    disabled={
+                      exportBusy ||
+                      (previewFormat === 'audio' && !selectedMeeting.hasAudio) ||
+                      (selectedMeeting.id.startsWith('engine:') &&
+                        previewFormat !== 'txt' &&
+                        previewFormat !== 'md')
+                    }
+                  >
+                    {exportBusy ? 'Exporting…' : 'Export…'}
+                  </button>
+                </div>
+
+                {/*
+                 * Preview pane. Renders one of:
+                 *   - "Loading preview…" while the IPC roundtrip is in flight
+                 *   - error message in --danger if the fetch failed
+                 *   - audio placeholder card (icon + filename + size) for .wav
+                 *   - pretty-printed JSON / raw text inside a <pre> for the rest
+                 *
+                 * Solid `--surface-base` background per spec (no transparency
+                 * — the cascade-banner sibling rules apply only there).
+                 */}
+                <div className="export-preview__pane-wrap">
+                  {(() => {
+                    const cached = previewCache[previewFormat]
+                    const isEngineOnly = selectedMeeting.id.startsWith('engine:')
+                    const engineUnsupported =
+                      isEngineOnly && previewFormat !== 'txt' && previewFormat !== 'md'
+                    const audioUnavailable =
+                      previewFormat === 'audio' && !selectedMeeting.hasAudio
+
+                    if (engineUnsupported) {
+                      return (
+                        <div className="export-preview__placeholder">
+                          Live-recording meetings only support Plain text and
+                          Markdown export.
+                        </div>
+                      )
+                    }
+                    if (audioUnavailable) {
+                      return (
+                        <div className="export-preview__placeholder">
+                          This meeting has no audio file to export.
+                        </div>
+                      )
+                    }
+                    if (!cached) {
+                      // No entry yet → fetcher is in flight (or about to be).
+                      return (
+                        <div className="export-preview__placeholder">
+                          Loading preview…
+                        </div>
+                      )
+                    }
+                    if (cached.status === 'error') {
+                      return (
+                        <div
+                          className="export-preview__placeholder export-preview__placeholder--error"
+                          role="alert"
+                        >
+                          Failed to load preview: {cached.message}
+                        </div>
+                      )
+                    }
+                    // Ready — branch by format.
+                    if (previewFormat === 'audio') {
+                      return (
+                        <div className="export-preview__audio-card">
+                          <span
+                            className="export-preview__audio-icon"
+                            aria-hidden="true"
+                          >
+                            <FileAudio size={48} strokeWidth={1.5} />
+                          </span>
+                          <div className="export-preview__audio-meta">
+                            <div className="export-preview__audio-filename">
+                              {cached.payload.filename}
+                            </div>
+                            <div className="export-preview__audio-size">
+                              {typeof cached.payload.sizeBytes === 'number'
+                                ? formatBytes(cached.payload.sizeBytes)
+                                : 'Binary file'}
+                            </div>
+                            <div className="export-preview__audio-hint">
+                              Audio files are exported as the original WAV.
+                              Click <strong>Export…</strong> to save a copy.
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    }
+                    const body =
+                      previewFormat === 'json'
+                        ? tryFormatJson(cached.payload.body)
+                        : cached.payload.body
+                    return (
+                      <pre
+                        className="export-preview__pane"
+                        aria-label={`${previewFormat.toUpperCase()} preview`}
+                      >
+                        {body || '(empty)'}
+                      </pre>
+                    )
+                  })()}
                 </div>
               </div>
             )}
