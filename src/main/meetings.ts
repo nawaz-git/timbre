@@ -115,6 +115,71 @@ interface TranscriptJSON {
 }
 
 /**
+ * v0.17+: engine-format sidecar discovery.
+ *
+ * The bundled Swift engine writes its output across TWO subfolders:
+ *
+ *   <root>/protocols/<prefix>.txt                  ← human-readable transcript
+ *   <root>/recordings/<prefix>_mix.wav             ← mixed audio (playback)
+ *   <root>/recordings/<prefix>_app.wav             ← Meet tab audio only
+ *   <root>/recordings/<prefix>_mic.wav             ← user mic only
+ *   <root>/recordings/<prefix><runId>_segments.json ← diarized segments
+ *
+ * v0.12-v0.16 only looked at protocols/<prefix>.txt and hardcoded
+ * durationSeconds=0, speakerCount=0, hasAudio=false. This helper pulls
+ * the rich metadata so the Meetings list shows real duration / speaker
+ * count, the transcript view shows structured + diarized segments, and
+ * the audio player has a playable file.
+ */
+async function findEngineSidecars(
+  root: string,
+  prefix: string
+): Promise<{ segmentsPath: string | null; audioPath: string | null }> {
+  const recordingsDir = join(root, 'recordings')
+  let entries: string[]
+  try {
+    entries = await fs.readdir(recordingsDir)
+  } catch {
+    return { segmentsPath: null, audioPath: null }
+  }
+  let segmentsPath: string | null = null
+  let mixPath: string | null = null
+  let appPath: string | null = null
+  let micPath: string | null = null
+  for (const e of entries) {
+    if (!e.startsWith(prefix)) continue
+    if (e.endsWith('_segments.json')) {
+      segmentsPath = join(recordingsDir, e)
+    } else if (e.endsWith('_mix.wav')) {
+      mixPath = join(recordingsDir, e)
+    } else if (e.endsWith('_app.wav')) {
+      appPath = join(recordingsDir, e)
+    } else if (e.endsWith('_mic.wav')) {
+      micPath = join(recordingsDir, e)
+    }
+  }
+  // Prefer mixed audio (everyone), fall back to app (remote-only), then mic (local-only).
+  return { segmentsPath, audioPath: mixPath ?? appPath ?? micPath }
+}
+
+interface EngineSegmentJSON {
+  text: string
+  start: number
+  end: number
+  speaker: string
+}
+
+/**
+ * Public helper for the mt-audio:// protocol handler to resolve an
+ * engine-format meeting id to its audio file path. Same prefix-match
+ * logic as findEngineSidecars but exposes just the audio path.
+ */
+export async function findEngineAudioForPrefix(prefix: string): Promise<string | null> {
+  const { audioPath } = await findEngineSidecars(ENGINE_DEFAULT_ROOT, prefix)
+  return audioPath
+}
+
+/**
  * `mt-batch`-style: each meeting is its own subfolder containing
  * `transcript.txt` (+ json, speakers.json, audio.wav, optional metadata.json).
  */
@@ -189,14 +254,27 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
     // The "folder" we surface is the engine root; "Show in Finder" reveals
     // both protocols/ and recordings/. Storing the protocols dir gives the
     // most useful Finder context for a live recording.
+    // v0.17+: read the engine's sidecar files to surface real duration,
+    // speaker count, and audio availability instead of hardcoded zeroes.
+    const { segmentsPath, audioPath } = await findEngineSidecars(root, prefix)
+    let durationSeconds = 0
+    let speakerCount = 0
+    if (segmentsPath) {
+      const segs = await safeReadJson<EngineSegmentJSON[]>(segmentsPath)
+      if (Array.isArray(segs) && segs.length > 0) {
+        durationSeconds = Math.ceil(Math.max(...segs.map((s) => s.end ?? 0)))
+        speakerCount = new Set(segs.map((s) => s.speaker)).size
+      }
+    }
+
     results.push({
       id: `engine:${prefix}`,
       title: titleFromEnginePrefix(prefix),
       folderPath: protocolsDir,
       date: stat.mtime.toISOString(),
-      durationSeconds: 0, // engine doesn't write duration sidecar; left as 0
-      speakerCount: 0, // engine doesn't write speakers sidecar; left as 0
-      hasAudio: false, // engine recordings live in ../recordings/ with different naming
+      durationSeconds,
+      speakerCount,
+      hasAudio: audioPath !== null,
       tagIds: [],
       additionalSpeakers: []
     })
@@ -242,6 +320,11 @@ export async function readTranscript(
 
   if (meetingId.startsWith('engine:')) {
     const prefix = meetingId.slice('engine:'.length)
+    // engine: prefixes are derived from filenames the engine controls —
+    // YYYYMMDD_HHmm_<slug> — so they're always safe ASCII. Defence in depth.
+    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
+      throw new Error(`Invalid engine prefix: ${prefix}`)
+    }
     const txtPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.txt`)
     const mdPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.md`)
     let transcript = ''
@@ -255,7 +338,31 @@ export async function readTranscript(
         transcript = ''
       }
     }
-    return { meetingId, transcript, speakers: [] }
+
+    // v0.17+: parse the structured segments.json sidecar so the renderer
+    // can render diarized rows, click-to-seek, and a speaker list — instead
+    // of relying on parseLegacyTranscript regex matching on the .txt
+    // (which is fragile and was failing for the engine's MM:SS format).
+    const { segmentsPath } = await findEngineSidecars(ENGINE_DEFAULT_ROOT, prefix)
+    let segments: Array<{ speaker: string; start: number; end: number; text: string }> | undefined
+    let durationSeconds: number | undefined
+    let speakers: SpeakerRecord[] = []
+    if (segmentsPath) {
+      const segs = await safeReadJson<EngineSegmentJSON[]>(segmentsPath)
+      if (Array.isArray(segs) && segs.length > 0) {
+        segments = segs.map((s) => ({
+          speaker: s.speaker,
+          start: s.start,
+          end: s.end,
+          text: s.text
+        }))
+        durationSeconds = Math.ceil(Math.max(...segs.map((s) => s.end ?? 0)))
+        // Build a SpeakerRecord list from the unique speakers in segments.
+        const unique = Array.from(new Set(segs.map((s) => s.speaker)))
+        speakers = unique.map((name) => ({ id: name, label: name }))
+      }
+    }
+    return { meetingId, transcript, speakers, segments, durationSeconds }
   }
 
   // Default (imported) path — strip optional `imported:` prefix for legacy compatibility.

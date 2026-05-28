@@ -5,7 +5,7 @@ import { Readable } from 'stream'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { registerIpcHandlers } from './ipc'
-import { liveRecordingsRoot } from './meetings'
+import { findEngineAudioForPrefix, liveRecordingsRoot } from './meetings'
 import { readSettings } from './settings'
 import { createTray, setMainWindowFactory } from './tray'
 import { startChromeProbe, stopChromeProbe } from './chromeProbe'
@@ -93,16 +93,32 @@ function registerAudioProtocol(): void {
       if (folderId.includes('..') || folderId.includes('/') || folderId.includes('\\')) {
         return new Response('Bad id', { status: 400 })
       }
-      const settings = await readSettings()
-      const candidates = [
-        join(settings.outputFolder, folderId, 'audio.wav'),
-        join(liveRecordingsRoot, folderId, 'audio.wav')
-      ]
+
+      // v0.17+: route engine-format ids (`engine:<prefix>`) to the
+      // engine's flat-naming layout in recordings/. Engine writes
+      // `<prefix>_mix.wav` etc. rather than `<id>/audio.wav` like
+      // mt-batch does — same protocol, different physical layout.
       let path: string | null = null
-      for (const candidate of candidates) {
-        if (existsSync(candidate) && (await isUnderAllowedRoot(candidate))) {
-          path = candidate
-          break
+      if (folderId.startsWith('engine:')) {
+        const prefix = folderId.slice('engine:'.length)
+        if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
+          return new Response('Bad engine prefix', { status: 400 })
+        }
+        const enginePath = await findEngineAudioForPrefix(prefix)
+        if (enginePath && (await isUnderAllowedRoot(enginePath))) {
+          path = enginePath
+        }
+      } else {
+        const settings = await readSettings()
+        const candidates = [
+          join(settings.outputFolder, folderId, 'audio.wav'),
+          join(liveRecordingsRoot, folderId, 'audio.wav')
+        ]
+        for (const candidate of candidates) {
+          if (existsSync(candidate) && (await isUnderAllowedRoot(candidate))) {
+            path = candidate
+            break
+          }
         }
       }
       if (!path) return new Response('Not found', { status: 404 })

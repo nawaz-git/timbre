@@ -125,13 +125,27 @@ function labelForNumSpeakers(v: NumSpeakersHint): string {
   return v === 'auto' ? 'Auto' : `${v} speakers`
 }
 
+/**
+ * Parse a fallback flat-text transcript when no structured segments are
+ * available. Accepts BOTH formats Mintr might encounter:
+ *
+ *   `[HH:MM:SS] Speaker: text`  — mt-batch flat exports
+ *   `[MM:SS]    Speaker: text`  — engine protocols/*.txt output
+ *
+ * Hours group is optional: when the first colon-separated number is absent
+ * we treat it as zero and the remaining two groups parse as minutes:seconds.
+ * v0.17 fix — engine output uses the shorter MM:SS form, which the old
+ * three-segment regex never matched, so engine transcripts rendered as
+ * empty. (We still prefer the structured `transcript.segments` path when
+ * the backend supplies it — this regex is the legacy fallback.)
+ */
 function parseLegacyTranscript(raw: string): TranscriptSegment[] {
   const segments: TranscriptSegment[] = []
-  const re = /^\[(\d\d):(\d\d):(\d\d)\]\s+([^:]+):\s*(.*)$/gm
+  const re = /^\[(?:(\d{1,2}):)?(\d{1,2}):(\d{1,2})\]\s+([^:]+):\s*(.*)$/gm
   let m: RegExpExecArray | null
   while ((m = re.exec(raw)) !== null) {
     const [, h, mi, s, speaker, text] = m
-    const start = Number(h) * 3600 + Number(mi) * 60 + Number(s)
+    const start = (h ? Number(h) * 3600 : 0) + Number(mi) * 60 + Number(s)
     segments.push({ speaker: speaker.trim(), start, end: start, text: text.trim() })
   }
   for (let i = 0; i < segments.length - 1; i++) segments[i].end = segments[i + 1].start
