@@ -46,6 +46,29 @@ DEV_KEYCHAIN_PASS="mintr-dev"
 log()  { printf '[setup-signing] %s\n' "$*"; }
 fail() { printf '[setup-signing] FAIL: %s\n' "$*" >&2; exit 1; }
 
+# `openssl pkcs12 -legacy` (needed so the macOS keychain accepts the
+# import without "MAC verification failed") is an OpenSSL 3.x flag.
+# macOS ships LibreSSL at /usr/bin/openssl, which does NOT support it.
+# Prefer a real OpenSSL 3 (Homebrew) for the pkcs12 step; fall back to
+# whatever `openssl` resolves to and hope it's OpenSSL 3.
+pick_openssl3() {
+    for cand in /opt/homebrew/bin/openssl /usr/local/bin/openssl \
+                /opt/homebrew/opt/openssl@3/bin/openssl; do
+        if [ -x "$cand" ] && "$cand" version 2>/dev/null | grep -q '^OpenSSL 3'; then
+            printf '%s' "$cand"; return 0
+        fi
+    done
+    # Last resort: PATH `openssl` if it's OpenSSL 3 (not LibreSSL).
+    if command -v openssl >/dev/null 2>&1 && openssl version 2>/dev/null | grep -q '^OpenSSL 3'; then
+        command -v openssl; return 0
+    fi
+    return 1
+}
+OPENSSL3="$(pick_openssl3 || true)"
+# The cert-generation `openssl req` step works fine on LibreSSL too, so
+# only the pkcs12 step strictly needs OpenSSL 3.
+OPENSSL_REQ="${OPENSSL3:-openssl}"
+
 print_export_line() {
     cat <<MSG
 
@@ -95,7 +118,7 @@ trap 'rm -rf "$TMPD"' EXIT
 # found". `keyUsage = digitalSignature` is required by Apple's code-signing
 # policy (CSSMERR_TP_INVALID_CERTIFICATE without it); basicConstraints
 # CA:false marks it a leaf. (Mirrors the engine's setup-self-hosted-runner.sh.)
-openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+"$OPENSSL_REQ" req -x509 -nodes -newkey rsa:2048 -days 3650 \
     -subj "/CN=$CERT_NAME/O=$CERT_ORG" \
     -keyout "$TMPD/cert.key" -out "$TMPD/cert.crt" \
     -addext "keyUsage = critical, digitalSignature" \
@@ -105,7 +128,12 @@ openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
 
 # `-legacy` keeps the PKCS#12 in the older format the macOS keychain
 # accepts; without it, import fails with "MAC verification failed".
-openssl pkcs12 -export -legacy \
+# This flag is OpenSSL-3-only — LibreSSL (/usr/bin/openssl) rejects it,
+# so we require a real OpenSSL 3 here.
+if [ -z "$OPENSSL3" ]; then
+    fail "need OpenSSL 3 for 'pkcs12 -legacy' (LibreSSL won't do). Install: brew install openssl@3"
+fi
+"$OPENSSL3" pkcs12 -export -legacy \
     -inkey "$TMPD/cert.key" -in "$TMPD/cert.crt" \
     -name "$CERT_NAME" -passout pass:"$DEV_KEYCHAIN_PASS" -out "$TMPD/cert.p12" \
     || fail "openssl pkcs12 failed"
