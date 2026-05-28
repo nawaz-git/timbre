@@ -328,28 +328,85 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
 
       {/*
         Helper-permission banner (v0.13+). Mintr bundles a separate Swift
-        helper app, MeetingTranscriber.app, which has its OWN TCC bundle
-        id (`com.meetingtranscriber.app`). Granting Screen Recording to
-        Mintr does NOT grant it to the helper. The capture watchdog fires
-        when Chrome reports a live Meet but the helper hasn't written any
-        files — that's the smoking-gun pattern for "helper needs its own
-        permission". We name the right TCC entry explicitly so the user
-        can find it in the list.
+        helper app, MintrEngine.app, which has its OWN TCC bundle id
+        (`ai.nawaz.mintr-engine`). Granting any TCC permission to Mintr
+        does NOT grant it to the engine. The capture watchdog fires when
+        Chrome reports a live Meet but the engine hasn't written any
+        files — that's the smoking-gun pattern for "engine needs its own
+        permission". TICKET-002 adds a `hint` field classifying WHICH
+        permission is most likely missing (via a unified-log grep on the
+        main side); we switch on it here to name the right TCC entry
+        explicitly so the user can find it in the list.
+
+        For `accessibility`: macOS does NOT auto-prompt — the user must
+        manually drag MintrEngine.app onto the Accessibility list,
+        which is why this needs its own dedicated copy.
+        For `microphone` / `screenRecording`: explicit copy too.
+        For `unknown` (and undefined, e.g. while we're still classifying):
+        fall back to the original Screen Recording copy since that was
+        the original watchdog assumption.
       */}
-      {watchdog.helperPermissionLikely && (
-        <div className="permission-banner permission-banner--danger" role="alert">
-          <span className="permission-banner__icon" aria-hidden="true">
-            <AlertTriangle size={16} strokeWidth={2} />
-          </span>
-          <div className="permission-banner__body">
-            <div className="permission-banner__title">
-              Engine helper isn&apos;t capturing this meeting
-            </div>
-            <div className="permission-banner__desc">
+      {watchdog.helperPermissionLikely && (() => {
+        const hint = watchdog.hint
+        // Per-hint banner content. `accessibility` is the canonical
+        // case TICKET-002 was built for (the engine's PermissionHealthCheck
+        // fails specifically on Accessibility). The other hints share
+        // the same structure but name a different TCC service.
+        let title: string
+        let body: JSX.Element
+        let primaryLabel: string
+        let primaryPane: 'screen-recording' | 'microphone' | 'accessibility'
+        if (hint === 'accessibility') {
+          title = 'Mintr Engine needs Accessibility permission'
+          primaryLabel = 'Open Accessibility'
+          primaryPane = 'accessibility'
+          body = (
+            <>
+              macOS doesn&apos;t prompt for this automatically. Click{' '}
+              <em>Open Accessibility</em>, then drag{' '}
+              <code className="inline-code">MintrEngine.app</code> from the
+              Finder window onto the Accessibility list. Then click{' '}
+              <em>Restart engine</em> — macOS only picks up newly-granted
+              permissions when the process restarts.
+            </>
+          )
+        } else if (hint === 'microphone') {
+          title = 'Mintr Engine needs Microphone access'
+          primaryLabel = 'Open Microphone'
+          primaryPane = 'microphone'
+          body = (
+            <>
+              The bundled capture engine couldn&apos;t open the system
+              microphone. Click <em>Open Microphone</em>, toggle{' '}
+              <code className="inline-code">Mintr Engine</code> on, then
+              click <em>Restart engine</em> below.
+            </>
+          )
+        } else if (hint === 'screenRecording') {
+          title = 'Mintr Engine needs Screen Recording'
+          primaryLabel = 'Open Screen Recording'
+          primaryPane = 'screen-recording'
+          body = (
+            <>
+              The engine reads the active window title to detect Meet
+              calls. Click <em>Open Screen Recording</em>, toggle{' '}
+              <code className="inline-code">Mintr Engine</code> on, then
+              click <em>Restart engine</em>.
+            </>
+          )
+        } else {
+          // 'unknown' or undefined (still classifying). Fall back to the
+          // pre-T002 generic copy, biased toward Screen Recording since
+          // that's the historical watchdog assumption.
+          title = "Engine helper isn't capturing this meeting"
+          primaryLabel = 'Open Screen Recording'
+          primaryPane = 'screen-recording'
+          body = (
+            <>
               Mintr detected your Meet, but the bundled capture engine
               (<code className="inline-code">Mintr Engine</code>) hasn&apos;t
-              recorded any audio yet. The engine has its own Screen Recording
-              entry in System Settings, separate from Mintr&apos;s.
+              recorded any audio yet. The engine has its own permission
+              entries in System Settings, separate from Mintr&apos;s.
               <br />
               <strong>Two-step fix:</strong> (1) Look for{' '}
               <code className="inline-code">Mintr Engine</code> in the
@@ -357,42 +414,53 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
               <em>Restart engine</em> below — macOS doesn&apos;t refresh
               permission for a running process, so a granted permission only
               takes effect after the engine restarts.
+            </>
+          )
+        }
+        return (
+          <div className="permission-banner permission-banner--danger" role="alert">
+            <span className="permission-banner__icon" aria-hidden="true">
+              <AlertTriangle size={16} strokeWidth={2} />
+            </span>
+            <div className="permission-banner__body">
+              <div className="permission-banner__title">{title}</div>
+              <div className="permission-banner__desc">{body}</div>
+              {restartResult && (
+                <div className="permission-banner__result">{restartResult}</div>
+              )}
             </div>
-            {restartResult && (
-              <div className="permission-banner__result">{restartResult}</div>
-            )}
+            <div className="permission-banner__actions">
+              <button
+                className="btn btn--primary btn--small"
+                onClick={() => void openPane(primaryPane)}
+              >
+                <ExternalLink size={14} aria-hidden="true" />
+                <span>{primaryLabel}</span>
+              </button>
+              <button
+                className="btn btn--small"
+                onClick={() => void window.api.system.revealHelper()}
+                title="Reveal MintrEngine.app in Finder so you can drag it onto the privacy pane"
+              >
+                <FolderOpen size={14} aria-hidden="true" />
+                <span>Reveal engine in Finder</span>
+              </button>
+              <button
+                className="btn btn--small"
+                onClick={() => void handleRestartHelper()}
+                disabled={restartingHelper}
+              >
+                <RefreshCcw
+                  size={14}
+                  aria-hidden="true"
+                  className={restartingHelper ? 'home-status-icon--spin' : undefined}
+                />
+                <span>{restartingHelper ? 'Restarting…' : 'Restart engine'}</span>
+              </button>
+            </div>
           </div>
-          <div className="permission-banner__actions">
-            <button
-              className="btn btn--primary btn--small"
-              onClick={() => void openPane('screen-recording')}
-            >
-              <ExternalLink size={14} aria-hidden="true" />
-              <span>Open Screen Recording</span>
-            </button>
-            <button
-              className="btn btn--small"
-              onClick={() => void window.api.system.revealHelper()}
-              title="Reveal Mintr Engine.app in Finder so you can drag it onto the Screen Recording + dialog"
-            >
-              <FolderOpen size={14} aria-hidden="true" />
-              <span>Reveal engine in Finder</span>
-            </button>
-            <button
-              className="btn btn--small"
-              onClick={() => void handleRestartHelper()}
-              disabled={restartingHelper}
-            >
-              <RefreshCcw
-                size={14}
-                aria-hidden="true"
-                className={restartingHelper ? 'home-status-icon--spin' : undefined}
-              />
-              <span>{restartingHelper ? 'Restarting…' : 'Restart engine'}</span>
-            </button>
-          </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/*
         TICKET-003: transitional yellow banner shown after a successful

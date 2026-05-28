@@ -248,3 +248,32 @@ export interface ChromeMeetTab {
   /** Window title we read off the tab, if AppleScript exposed it. */
   title?: string
 }
+
+/**
+ * Best-guess classification of WHICH TCC service the bundled engine
+ * helper is missing when the watchdog fires. Computed in
+ * `captureWatchdog.ts` by grepping the helper's unified-log output for
+ * known failure substrings; surfaced to the renderer so the banner can
+ * name the specific permission (e.g. Accessibility) the user must grant.
+ */
+export type WatchdogPermissionHint =
+  | 'accessibility'
+  | 'microphone'
+  | 'screenRecording'
+  | 'unknown'
+
+/**
+ * Capture-watchdog signal pushed from main → renderer. Flips to
+ * `helperPermissionLikely: true` after the threshold elapses with Chrome
+ * reporting a live Meet but no engine writes. `hint` is the best-guess
+ * classification of which TCC service is missing — used by the renderer
+ * to render permission-specific copy + buttons.
+ */
+export interface CaptureWatchdogSignal {
+  helperPermissionLikely: boolean
+  hint?: WatchdogPermissionHint
+  /** Meeting id we were watching when the watchdog fired (for context in UI). */
+  meetingId?: string
+  /** Wall-clock ms when the signal flipped. UI uses this to render time-since. */
+  firedAt?: number
+}

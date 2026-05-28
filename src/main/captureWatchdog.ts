@@ -36,23 +36,25 @@
  * re-fetch in `useMeetings` / Home's `loadRecent`.
  */
 import { BrowserWindow, Notification } from 'electron'
+import { execFile } from 'child_process'
 import { watch, type FSWatcher } from 'fs'
 import { promises as fsp } from 'fs'
 import { basename } from 'path'
 import { getChromeMeetSnapshot } from './chromeProbe'
 import { liveRecordingsRoot } from './meetings'
 import { readSettings } from './settings'
+import type {
+  CaptureWatchdogSignal,
+  WatchdogPermissionHint
+} from '../shared/types'
 
 const WATCHDOG_THRESHOLD_MS = 25_000 // 25s of "Meet detected, no file" → flag
 const DEBOUNCE_MS = 1500
 
-interface WatchdogSignal {
-  helperPermissionLikely: boolean
-  /** Meeting id we were watching when the watchdog fired (for context in UI). */
-  meetingId?: string
-  /** Wall-clock ms when the signal flipped. UI uses this to render time-since. */
-  firedAt?: number
-}
+/** Bundle id of the bundled MintrEngine.app helper (per Info.plist). */
+const ENGINE_BUNDLE_ID = 'ai.nawaz.mintr-engine'
+/** Per-call timeout for each `log show` invocation in classifyHelperFailure. */
+const LOG_SHOW_TIMEOUT_MS = 2500
 
 const state: {
   /** When did the current Chrome-detected meeting first appear? */
@@ -61,7 +63,7 @@ const state: {
   lastSeenMeetingId: string | null
   /** Last time we observed a new file under liveRecordingsRoot. */
   lastEngineWriteAt: number
-  signal: WatchdogSignal
+  signal: CaptureWatchdogSignal
   watchers: FSWatcher[]
   debounceTimer: NodeJS.Timeout | null
   watchdogTimer: NodeJS.Timeout | null
@@ -75,7 +77,7 @@ const state: {
   watchdogTimer: null
 }
 
-export function getWatchdogSignal(): WatchdogSignal {
+export function getWatchdogSignal(): CaptureWatchdogSignal {
   return state.signal
 }
 
@@ -315,20 +317,125 @@ function checkWatchdog(): void {
     writeAge > WATCHDOG_THRESHOLD_MS
   ) {
     if (!state.signal.helperPermissionLikely) {
+      const firedAt = now
+      // Flip the signal immediately so the renderer can render its banner
+      // without waiting for the log-grep classifier. The hint starts
+      // undefined; we follow up with an updated signal once
+      // classifyHelperFailure resolves (fire-and-forget, so the watchdog
+      // tick doesn't stall on the unified-log shell-out).
       setSignal({
         helperPermissionLikely: true,
         meetingId: currentId,
-        firedAt: now
+        firedAt
       })
+      void classifyHelperFailure()
+        .then((hint) => {
+          // Re-check before pushing — the user may have closed the Meet
+          // (or a fresh meeting may have started) while we were waiting
+          // on `log show`, in which case the alarm has already cleared.
+          if (
+            state.signal.helperPermissionLikely &&
+            state.signal.firedAt === firedAt
+          ) {
+            setSignal({
+              helperPermissionLikely: true,
+              hint,
+              meetingId: currentId,
+              firedAt
+            })
+          }
+        })
+        .catch((err) => {
+          console.warn('[watchdog] classifyHelperFailure threw', err)
+        })
     }
   }
 }
 
-function setSignal(next: WatchdogSignal): void {
+function setSignal(next: CaptureWatchdogSignal): void {
   state.signal = next
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('capture-watchdog:update', next)
     }
   }
+}
+
+/**
+ * Best-effort classification of WHICH TCC service the engine helper is
+ * missing. macOS `os_log` redacts the service name in the engine's own
+ * `Permission health check failed: <private>` line, but un-redacted
+ * attribution lives in two other places we CAN read without
+ * elevated privileges:
+ *
+ *   Pass A — the helper's own process-level log entries (the redacted
+ *     `<private>` from the engine's `os_log` still appears here, BUT
+ *     the surrounding TCC subsystem messages emitted to the same
+ *     process attribution often carry the un-redacted service name).
+ *   Pass B — TCC's own subsystem log, filtered to messages mentioning
+ *     the helper's bundle id (`ai.nawaz.mintr-engine`). This is the
+ *     smoking gun the QA report identified: TCC writes
+ *     `kTCCServiceAccessibility ... ai.nawaz.mintr-engine` un-redacted.
+ *
+ * Both passes are bounded to 2.5s each via `execFile`'s `timeout`
+ * option, capping total wall-clock at ~3s (we await sequentially so
+ * we can short-circuit on the first hit). On any error, empty output,
+ * or no recognised substring, we return `'unknown'` and the renderer
+ * falls back to the generic banner copy.
+ *
+ * NOTE: this is intentionally a heuristic. False negatives (returning
+ * `'unknown'` when Accessibility IS the cause) are fine — the user
+ * gets the existing generic banner. False positives (claiming
+ * Accessibility when Microphone was actually missing) are the bigger
+ * risk, mitigated by ordering the checks Accessibility → Microphone →
+ * Screen Recording, since Accessibility is the one the engine actually
+ * fails on per QA-002 and the unified TCC log consistently names it
+ * as `kTCCServiceAccessibility`.
+ */
+async function classifyHelperFailure(): Promise<WatchdogPermissionHint> {
+  const [passA, passB] = await Promise.all([
+    runLogShow(['show', '--last', '15s', '--predicate', 'process == "MintrEngine"', '--info']),
+    runLogShow([
+      'show',
+      '--last',
+      '15s',
+      '--predicate',
+      `subsystem == "com.apple.TCC" AND eventMessage CONTAINS "${ENGINE_BUNDLE_ID}"`,
+      '--info'
+    ])
+  ])
+  const combined = passA + '\n' + passB
+  if (!combined.trim()) return 'unknown'
+  // Order matters: per QA-002, Accessibility is the actual root cause
+  // and the TCC log line we want to catch is
+  // `kTCCServiceAccessibility ... ai.nawaz.mintr-engine`.
+  if (combined.includes('kTCCServiceAccessibility')) return 'accessibility'
+  if (combined.includes('kTCCServiceMicrophone')) return 'microphone'
+  if (combined.includes('kTCCServiceScreenCapture')) return 'screenRecording'
+  return 'unknown'
+}
+
+/**
+ * Runs `/usr/bin/log` with the supplied args, capped at
+ * `LOG_SHOW_TIMEOUT_MS`. Always resolves (never rejects) — returns the
+ * captured stdout or empty string on any error so the caller can
+ * concatenate both passes' output safely.
+ */
+function runLogShow(args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      '/usr/bin/log',
+      args,
+      { timeout: LOG_SHOW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err) {
+          // Timeout, non-zero exit, or spawn failure — all benign for
+          // classification purposes. Treat as no signal.
+          resolve('')
+          return
+        }
+        resolve(stdout ?? '')
+      }
+    )
+  })
 }
