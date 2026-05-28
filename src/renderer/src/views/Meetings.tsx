@@ -21,6 +21,7 @@ import { formatDate, formatDuration } from '../state/format'
 import { useTags } from '../state/tags'
 import { PencilIcon } from '../components/PencilIcon'
 import { SpeakerPicker } from '../components/SpeakerPicker'
+import { TagPicker } from '../components/TagPicker'
 import type {
   EnrolledSpeaker,
   ExportFormat,
@@ -124,6 +125,13 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // Inline list-row rename — separate from the detail-pane title editor.
   const [rowEditingId, setRowEditingId] = useState<string | null>(null)
   const [rowEditingValue, setRowEditingValue] = useState('')
+
+  // Tag-picker popover on a meeting list row — id of the row whose
+  // popover is currently open, or null when closed. One at a time.
+  // We also stash the anchor button so the popover can pin itself to
+  // viewport coords (it lives outside the list's scroll container).
+  const [tagPickerForRowId, setTagPickerForRowId] = useState<string | null>(null)
+  const [tagPickerAnchor, setTagPickerAnchor] = useState<HTMLElement | null>(null)
 
   // Speaker picker — which cluster name is open?
   const [pickerForCluster, setPickerForCluster] = useState<string | null>(null)
@@ -655,6 +663,30 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     [selectedMeeting, refresh]
   )
 
+  /**
+   * Toggle a tag on a meeting selected from the LIST row (independent of
+   * the detail pane's selected meeting). Pulls the latest tagIds straight
+   * off the meetings array so successive toggles within an open popover
+   * reflect each other without waiting for a re-render of the row.
+   */
+  const onToggleTagForRow = useCallback(
+    async (meetingId: string, tagId: string) => {
+      const target = meetings.find((m) => m.id === meetingId)
+      if (!target) return
+      const next = new Set(target.tagIds)
+      if (next.has(tagId)) next.delete(tagId)
+      else next.add(tagId)
+      try {
+        await window.api.meetings.setTags(meetingId, Array.from(next))
+        await refresh()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setStatusBanner(`Tag update failed: ${msg}`)
+      }
+    },
+    [meetings, refresh]
+  )
+
   // ─── Render ───────────────────────────────────────────────────────────
 
   const filteredMeetings = useMemo(() => {
@@ -770,26 +802,76 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     ) : (
                       <div className="meetings__row-title">{m.title}</div>
                     )}
-                    {!isEditing && canRename && (
-                      <button
-                        type="button"
-                        className="meetings__row-edit"
-                        aria-label="Rename meeting"
-                        title="Rename meeting"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          beginRowRename(m)
-                        }}
-                        onKeyDown={(e) => {
-                          // Stop bubbling so the row's keydown handler
-                          // doesn't also fire "open meeting" on Enter/Space.
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.stopPropagation()
-                          }
-                        }}
-                      >
-                        <PencilIcon size={14} />
-                      </button>
+                    {!isEditing && (
+                      <div className="meetings__row-actions">
+                        <div className="meetings__row-tag-wrap">
+                          <button
+                            type="button"
+                            className={
+                              'meetings__row-action' +
+                              (tagPickerForRowId === m.id
+                                ? ' meetings__row-action--open'
+                                : '')
+                            }
+                            aria-label="Apply tags"
+                            title="Apply tags"
+                            aria-haspopup="dialog"
+                            aria-expanded={tagPickerForRowId === m.id}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (tagPickerForRowId === m.id) {
+                                setTagPickerForRowId(null)
+                                setTagPickerAnchor(null)
+                              } else {
+                                setTagPickerForRowId(m.id)
+                                setTagPickerAnchor(e.currentTarget)
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.stopPropagation()
+                              }
+                            }}
+                          >
+                            <TagIcon size={14} strokeWidth={2} aria-hidden="true" />
+                          </button>
+                          {tagPickerForRowId === m.id && (
+                            <TagPicker
+                              allTags={allTags}
+                              activeTagIds={m.tagIds}
+                              anchorEl={tagPickerAnchor}
+                              onToggle={(tagId) =>
+                                void onToggleTagForRow(m.id, tagId)
+                              }
+                              onClose={() => {
+                                setTagPickerForRowId(null)
+                                setTagPickerAnchor(null)
+                              }}
+                            />
+                          )}
+                        </div>
+                        {canRename && (
+                          <button
+                            type="button"
+                            className="meetings__row-action"
+                            aria-label="Rename meeting"
+                            title="Rename meeting"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              beginRowRename(m)
+                            }}
+                            onKeyDown={(e) => {
+                              // Stop bubbling so the row's keydown handler
+                              // doesn't also fire "open meeting" on Enter/Space.
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.stopPropagation()
+                              }
+                            }}
+                          >
+                            <PencilIcon size={14} />
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                   <div className="meetings__row-meta">
@@ -1001,40 +1083,40 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     />
                   )}
                 </button>
-                <button
-                  className="player-bar__btn-small"
-                  onClick={() => {
-                    if (audioRef.current) {
-                      audioRef.current.currentTime = Math.max(
-                        0,
-                        audioRef.current.currentTime - 5
-                      )
-                    }
-                  }}
-                  aria-label="Back 5 seconds"
-                  title="Back 5 seconds"
-                >
-                  <SkipBack size={16} strokeWidth={2} aria-hidden="true" />
-                  <span className="player-bar__btn-small-label">5s</span>
-                </button>
-                <button
-                  className="player-bar__btn-small"
-                  onClick={() => {
-                    if (audioRef.current) {
-                      audioRef.current.currentTime = Math.min(
-                        audioRef.current.duration || 0,
-                        audioRef.current.currentTime + 5
-                      )
-                    }
-                  }}
-                  aria-label="Forward 5 seconds"
-                  title="Forward 5 seconds"
-                >
-                  <span className="player-bar__btn-small-label">5s</span>
-                  <SkipForward size={16} strokeWidth={2} aria-hidden="true" />
-                </button>
-                <span className="player-bar__time">{formatHHMMSS(currentTime)}</span>
+                <span className="player-bar__time player-bar__time--elapsed">
+                  {formatHHMMSS(currentTime)}
+                </span>
                 <div className="player-bar__seek-wrap" ref={seekWrapRef}>
+                  {/*
+                   * Speaker-colour track — one absolutely-positioned slice per
+                   * segment, sized as a percentage of the total duration so
+                   * the whole strip reads as "who is talking when" at a
+                   * glance. Sits behind the scrubber thumb / progress
+                   * overlay (z-index ordering handled in CSS).
+                   */}
+                  {duration > 0 && segments.length > 0 && (
+                    <div className="player-bar__speaker-track" aria-hidden="true">
+                      {segments.map((seg, i) => {
+                        const startPct = Math.max(0, (seg.start / duration) * 100)
+                        const widthPct = Math.max(
+                          0,
+                          ((Math.min(seg.end, duration) - seg.start) / duration) * 100
+                        )
+                        if (widthPct <= 0) return null
+                        return (
+                          <span
+                            key={i}
+                            className="player-bar__speaker-segment"
+                            style={{
+                              left: `${startPct}%`,
+                              width: `${widthPct}%`,
+                              background: colorForSpeaker(seg.speaker)
+                            }}
+                          />
+                        )
+                      })}
+                    </div>
+                  )}
                   <div
                     className="player-bar__seek-progress"
                     aria-hidden="true"
@@ -1065,7 +1147,17 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       role="tooltip"
                     >
                       {hoverSpeaker && (
-                        <span className="audio-tooltip__speaker">{hoverSpeaker}</span>
+                        <span
+                          className="audio-tooltip__speaker"
+                          style={
+                            {
+                              ['--tooltip-speaker-color' as string]:
+                                colorForSpeaker(hoverSpeaker)
+                            } as React.CSSProperties
+                          }
+                        >
+                          {hoverSpeaker}
+                        </span>
                       )}
                       <span className="audio-tooltip__time">
                         {formatHHMMSS(seekHover.time)}
@@ -1073,9 +1165,43 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     </div>
                   )}
                 </div>
-                <span className="player-bar__time">
+                <span className="player-bar__time player-bar__time--total">
                   {duration > 0 ? formatHHMMSS(duration) : '—'}
                 </span>
+                <div className="player-bar__skip-group" aria-label="Skip controls">
+                  <button
+                    className="player-bar__btn-small"
+                    onClick={() => {
+                      if (audioRef.current) {
+                        audioRef.current.currentTime = Math.max(
+                          0,
+                          audioRef.current.currentTime - 5
+                        )
+                      }
+                    }}
+                    aria-label="Back 5 seconds"
+                    title="Back 5 seconds"
+                  >
+                    <SkipBack size={14} strokeWidth={2} aria-hidden="true" />
+                    <span className="player-bar__btn-small-label">5s</span>
+                  </button>
+                  <button
+                    className="player-bar__btn-small"
+                    onClick={() => {
+                      if (audioRef.current) {
+                        audioRef.current.currentTime = Math.min(
+                          audioRef.current.duration || 0,
+                          audioRef.current.currentTime + 5
+                        )
+                      }
+                    }}
+                    aria-label="Forward 5 seconds"
+                    title="Forward 5 seconds"
+                  >
+                    <span className="player-bar__btn-small-label">5s</span>
+                    <SkipForward size={14} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                </div>
               </div>
             )}
 
