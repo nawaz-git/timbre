@@ -987,8 +987,20 @@
   background: var(--bg-elevated);
 }
 .tag-chip--active {
-  background: var(--bg-elevated);
-  border-color: var(--fg);
+  /* Filled at ~25% alpha using the per-tag color exposed as --chip-color
+     (set inline by the React render). Falls back to elevated bg when no
+     chip color is provided (e.g. the "All" chip). The border keeps the
+     full-strength tag color, set inline via borderColor. */
+  background: color-mix(in srgb, var(--chip-color, var(--fg)) 25%, transparent);
+  border-color: var(--chip-color, var(--fg));
+  color: var(--fg);
+}
+
+.tag-chip__check {
+  margin-left: 4px;
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.9;
 }
 .tag-chip__dot {
   display: inline-block;
@@ -1280,4 +1292,118 @@
 }
 .detail-actions {
   flex-wrap: wrap;
+}
+
+/* ============================================================
+ * v0.5.0 additions (Ticket C)
+ * Audio seek tooltip, active-speaker pulse, click-flash.
+ * ============================================================ */
+
+/* Seek-bar tooltip: absolute inside a relative wrapper so it
+   follows the input without breaking the flex player-bar. */
+.player-bar__seek-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+.player-bar__seek-wrap .player-bar__seek {
+  width: 100%;
+}
+
+.audio-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  /* `left` is set inline to the cursor X (relative to the wrapper).
+     translateX(-50%) centers the bubble above the cursor. */
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--divider-strong);
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+  z-index: 20;
+}
+.audio-tooltip__speaker {
+  font-weight: 600;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.audio-tooltip__time {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/* Active-speaker pulse — gentle outline pulse keyed off the
+   pill's inline borderColor (currentColor reads the text color,
+   which we don't recolor; we use box-shadow on the border color
+   indirectly via outline-color fallback). */
+@keyframes speaker-pill-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.18);
+  }
+}
+[data-theme='light'] .speaker-pill--pulse {
+  animation: speaker-pill-pulse-light 1.6s ease-in-out infinite;
+}
+@keyframes speaker-pill-pulse-light {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.12);
+  }
+}
+.speaker-pill--pulse {
+  animation: speaker-pill-pulse 1.6s ease-in-out infinite;
+}
+
+/* Click-flash on the pill when its segment row is clicked.
+   Fires once via a transient class added on click and removed
+   ~1s later by the React setTimeout. */
+@keyframes speaker-pill-flash {
+  0% {
+    background: var(--bg-elevated, var(--bg-elev));
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+  20% {
+    background: rgba(255, 255, 255, 0.22);
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.22);
+  }
+  100% {
+    background: var(--bg-elevated, var(--bg-elev));
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+}
+[data-theme='light'] .speaker-pill--flash {
+  animation: speaker-pill-flash-light 1s ease-out;
+}
+@keyframes speaker-pill-flash-light {
+  0% {
+    background: var(--bg-elevated, var(--bg-elev));
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+  20% {
+    background: rgba(0, 0, 0, 0.10);
+    box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.10);
+  }
+  100% {
+    background: var(--bg-elevated, var(--bg-elev));
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+.speaker-pill--flash {
+  animation: speaker-pill-flash 1s ease-out;
 }

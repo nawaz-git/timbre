@@ -1,3 +1,4 @@
+import type React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDate, formatDuration } from '../state/format'
 import { useTags } from '../state/tags'
@@ -113,6 +114,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
+
+  // Seek bar hover tooltip
+  const seekWrapRef = useRef<HTMLDivElement | null>(null)
+  const [seekHover, setSeekHover] = useState<{ x: number; time: number } | null>(null)
+
+  // Transient flash on a speaker pill when its segment is clicked
+  const [flashedSpeaker, setFlashedSpeaker] = useState<string | null>(null)
+  const flashTimeoutRef = useRef<number | null>(null)
 
   // Status banner
   const [statusBanner, setStatusBanner] = useState<string | null>(null)
@@ -312,6 +321,56 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     if (play) void audioRef.current.play()
   }, [])
 
+  const flashPillFor = useCallback((speaker: string) => {
+    setFlashedSpeaker(speaker)
+    if (flashTimeoutRef.current !== null) {
+      window.clearTimeout(flashTimeoutRef.current)
+    }
+    flashTimeoutRef.current = window.setTimeout(() => {
+      setFlashedSpeaker(null)
+      flashTimeoutRef.current = null
+    }, 1000)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (flashTimeoutRef.current !== null) {
+        window.clearTimeout(flashTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  // Seek-bar hover: derive time from cursor X over the input's bounding rect.
+  const onSeekMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLInputElement>) => {
+      if (!duration || duration <= 0) return
+      const rect = e.currentTarget.getBoundingClientRect()
+      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+      setSeekHover({ x: e.clientX - rect.left, time: ratio * duration })
+    },
+    [duration]
+  )
+
+  const onSeekMouseLeave = useCallback(() => {
+    setSeekHover(null)
+  }, [])
+
+  const hoverSpeaker = useMemo(() => {
+    if (!seekHover) return null
+    const t = seekHover.time
+    for (const s of segments) {
+      if (t >= s.start && t < s.end) return s.speaker
+    }
+    return null
+  }, [seekHover, segments])
+
+  // Active-speaker name (used for pulsing pills during playback)
+  const activeSpeaker = useMemo(() => {
+    if (!isPlaying) return null
+    if (activeSegmentIndex < 0) return null
+    return segments[activeSegmentIndex]?.speaker ?? null
+  }, [isPlaying, activeSegmentIndex, segments])
+
   const beginTitleEdit = useCallback(() => {
     if (!selectedMeeting) return
     setTitleEditing(true)
@@ -503,17 +562,26 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           >
             All
           </button>
-          {allTags.map((tag) => (
-            <button
-              key={tag.id}
-              className={'tag-chip' + (tagFilter === tag.id ? ' tag-chip--active' : '')}
-              style={{ borderColor: tag.color }}
-              onClick={() => setTagFilter(tag.id)}
-            >
-              <span className="tag-chip__dot" style={{ background: tag.color }} />
-              {tag.name}
-            </button>
-          ))}
+          {allTags.map((tag) => {
+            const active = tagFilter === tag.id
+            return (
+              <button
+                key={tag.id}
+                className={'tag-chip' + (active ? ' tag-chip--active' : '')}
+                style={
+                  {
+                    borderColor: tag.color,
+                    ['--chip-color' as string]: tag.color
+                  } as React.CSSProperties
+                }
+                onClick={() => setTagFilter(tag.id)}
+              >
+                <span className="tag-chip__dot" style={{ background: tag.color }} />
+                {tag.name}
+                {active && <span className="tag-chip__check">✓</span>}
+              </button>
+            )
+          })}
         </div>
 
         <div className="meetings__list">
@@ -713,32 +781,40 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             {speakersInTranscript.length > 0 && (
               <div className="speaker-row">
                 <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>Speakers:</span>
-                {speakersInTranscript.map((name) => (
-                  <div key={name} className="speaker-pill-wrap">
-                    <button
-                      className="speaker-pill"
-                      style={{ borderColor: colorForSpeaker(name) }}
-                      onClick={() => setPickerForCluster(name)}
-                      title="Click to rename or assign an enrolled voice"
-                    >
-                      <span
-                        className="speaker-pill__dot"
-                        style={{ background: colorForSpeaker(name) }}
-                      />
-                      {name}
-                      <span className="speaker-pill__edit">▾</span>
-                    </button>
-                    {pickerForCluster === name && (
-                      <SpeakerPicker
-                        current={name}
-                        inThisMeeting={speakersInTranscript}
-                        enrolled={enrolledSpeakers}
-                        onPick={(newName) => onPickSpeaker(name, newName)}
-                        onClose={() => setPickerForCluster(null)}
-                      />
-                    )}
-                  </div>
-                ))}
+                {speakersInTranscript.map((name) => {
+                  const pulsing = activeSpeaker === name
+                  const flashing = flashedSpeaker === name
+                  return (
+                    <div key={name} className="speaker-pill-wrap">
+                      <button
+                        className={
+                          'speaker-pill' +
+                          (pulsing ? ' speaker-pill--pulse' : '') +
+                          (flashing ? ' speaker-pill--flash' : '')
+                        }
+                        style={{ borderColor: colorForSpeaker(name) }}
+                        onClick={() => setPickerForCluster(name)}
+                        title="Click to rename or assign an enrolled voice"
+                      >
+                        <span
+                          className="speaker-pill__dot"
+                          style={{ background: colorForSpeaker(name) }}
+                        />
+                        {name}
+                        <span className="speaker-pill__edit">▾</span>
+                      </button>
+                      {pickerForCluster === name && (
+                        <SpeakerPicker
+                          current={name}
+                          inThisMeeting={speakersInTranscript}
+                          enrolled={enrolledSpeakers}
+                          onPick={(newName) => onPickSpeaker(name, newName)}
+                          onClose={() => setPickerForCluster(null)}
+                        />
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
 
@@ -800,19 +876,37 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   +5s
                 </button>
                 <span className="player-bar__time">{formatHHMMSS(currentTime)}</span>
-                <input
-                  className="player-bar__seek"
-                  type="range"
-                  min={0}
-                  max={duration || 1}
-                  step={0.1}
-                  value={currentTime}
-                  onChange={(e) => {
-                    const t = Number(e.target.value)
-                    if (audioRef.current) audioRef.current.currentTime = t
-                    setCurrentTime(t)
-                  }}
-                />
+                <div className="player-bar__seek-wrap" ref={seekWrapRef}>
+                  <input
+                    className="player-bar__seek"
+                    type="range"
+                    min={0}
+                    max={duration || 1}
+                    step={0.1}
+                    value={currentTime}
+                    onChange={(e) => {
+                      const t = Number(e.target.value)
+                      if (audioRef.current) audioRef.current.currentTime = t
+                      setCurrentTime(t)
+                    }}
+                    onMouseMove={onSeekMouseMove}
+                    onMouseLeave={onSeekMouseLeave}
+                  />
+                  {seekHover && (
+                    <div
+                      className="audio-tooltip"
+                      style={{ left: seekHover.x }}
+                      role="tooltip"
+                    >
+                      {hoverSpeaker && (
+                        <span className="audio-tooltip__speaker">{hoverSpeaker}</span>
+                      )}
+                      <span className="audio-tooltip__time">
+                        {formatHHMMSS(seekHover.time)}
+                      </span>
+                    </div>
+                  )}
+                </div>
                 <span className="player-bar__time">
                   {duration > 0 ? formatHHMMSS(duration) : '—'}
                 </span>
@@ -876,11 +970,15 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                         }
                         role="button"
                         tabIndex={0}
-                        onClick={() => seekTo(seg.start, true)}
+                        onClick={() => {
+                          seekTo(seg.start, true)
+                          flashPillFor(seg.speaker)
+                        }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault()
                             seekTo(seg.start, true)
+                            flashPillFor(seg.speaker)
                           }
                         }}
                         title="Click to jump to this point"
@@ -935,31 +1033,39 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     (selectedMeeting.additionalSpeakers ?? []).length === 0 && (
                       <div className="empty">No speakers detected yet.</div>
                     )}
-                  {speakersInTranscript.map((name) => (
-                    <div key={name} className="speaker-pill-wrap">
-                      <button
-                        className="speaker-pill"
-                        style={{ borderColor: colorForSpeaker(name) }}
-                        onClick={() => setPickerForCluster(name)}
-                      >
-                        <span
-                          className="speaker-pill__dot"
-                          style={{ background: colorForSpeaker(name) }}
-                        />
-                        {name}
-                        <span className="speaker-pill__edit">▾</span>
-                      </button>
-                      {pickerForCluster === name && (
-                        <SpeakerPicker
-                          current={name}
-                          inThisMeeting={allSpeakersForPicker}
-                          enrolled={enrolledSpeakers}
-                          onPick={(newName) => onPickSpeaker(name, newName)}
-                          onClose={() => setPickerForCluster(null)}
-                        />
-                      )}
-                    </div>
-                  ))}
+                  {speakersInTranscript.map((name) => {
+                    const pulsing = activeSpeaker === name
+                    const flashing = flashedSpeaker === name
+                    return (
+                      <div key={name} className="speaker-pill-wrap">
+                        <button
+                          className={
+                            'speaker-pill' +
+                            (pulsing ? ' speaker-pill--pulse' : '') +
+                            (flashing ? ' speaker-pill--flash' : '')
+                          }
+                          style={{ borderColor: colorForSpeaker(name) }}
+                          onClick={() => setPickerForCluster(name)}
+                        >
+                          <span
+                            className="speaker-pill__dot"
+                            style={{ background: colorForSpeaker(name) }}
+                          />
+                          {name}
+                          <span className="speaker-pill__edit">▾</span>
+                        </button>
+                        {pickerForCluster === name && (
+                          <SpeakerPicker
+                            current={name}
+                            inThisMeeting={allSpeakersForPicker}
+                            enrolled={enrolledSpeakers}
+                            onPick={(newName) => onPickSpeaker(name, newName)}
+                            onClose={() => setPickerForCluster(null)}
+                          />
+                        )}
+                      </div>
+                    )
+                  })}
                   {(selectedMeeting.additionalSpeakers ?? [])
                     .filter((n) => !speakersInTranscript.includes(n))
                     .map((name) => (
@@ -1074,12 +1180,17 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                         <button
                           key={tag.id}
                           className={'tag-chip' + (active ? ' tag-chip--active' : '')}
-                          style={{ borderColor: tag.color }}
+                          style={
+                            {
+                              borderColor: tag.color,
+                              ['--chip-color' as string]: tag.color
+                            } as React.CSSProperties
+                          }
                           onClick={() => void onToggleTag(tag.id)}
                         >
                           <span className="tag-chip__dot" style={{ background: tag.color }} />
                           {tag.name}
-                          {active && <span style={{ marginLeft: 6 }}>✓</span>}
+                          {active && <span className="tag-chip__check">✓</span>}
                         </button>
                       )
                     })}
