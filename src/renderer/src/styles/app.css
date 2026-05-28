@@ -599,18 +599,33 @@
 }
 
 /*
- * Rename affordance on each meeting row.
+ * Row hover affordances — Tag + Rename.
  *
- * The inner SVG is 14px on a 24×24 button — a generous hit target that
- * still feels light at row scale. Hidden by default; revealed only on row
- * hover/focus-within (`opacity: 0 → 1`, 120ms fade). When the row is the
- * currently selected meeting we keep it visible so the user can rename
- * without losing the selection.
+ * `.meetings__row-actions` is a small inline-flex cluster pinned to the
+ * right end of the row. Each `.meetings__row-action` is a 24×24 ghost
+ * icon button — generous hit target, light visual weight. Hidden by
+ * default; revealed on row hover / focus-within (120ms fade). On the
+ * currently-selected row we keep them visible so the user can tag or
+ * rename without losing the selection. The Tag-picker popover stays
+ * visible regardless via `.meetings__row-action--open` so the icon
+ * doesn't fade out from under an open popover.
  *
  * Color uses `var(--fg-muted)` (not opacity dimming) so the SVG strokes
  * stay crisp on both themes; brightens to `var(--fg)` on icon hover.
  */
-.meetings__row-edit {
+.meetings__row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1, 4px);
+  margin-right: -4px; /* visual nudge: align with row right padding */
+  flex-shrink: 0;
+}
+.meetings__row-tag-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.meetings__row-action {
   -webkit-appearance: none;
   appearance: none;
   display: inline-flex;
@@ -618,7 +633,6 @@
   justify-content: center;
   width: 24px;
   height: 24px;
-  margin-right: -4px; /* visual nudge: align with row right padding */
   padding: 0;
   background: transparent;
   color: var(--fg-muted);
@@ -633,19 +647,27 @@
     color 80ms ease,
     border-color 80ms ease;
 }
-.meetings__row-edit:hover {
+.meetings__row-action:hover {
   background: var(--surface-raised, var(--bg-elev));
   color: var(--fg);
   border-color: var(--divider);
 }
-.meetings__row-edit:focus-visible {
+.meetings__row-action:focus-visible {
   outline: none;
   border-color: var(--fg);
   opacity: 1;
 }
-.meetings__row:hover .meetings__row-edit,
-.meetings__row:focus-within .meetings__row-edit,
-.meetings__row--active .meetings__row-edit {
+.meetings__row-action--open {
+  /* Once the tag-picker is open, lock the icon visible regardless of
+     hover state so the popover doesn't appear to "float" alone. */
+  opacity: 1;
+  background: var(--surface-raised, var(--bg-elev));
+  color: var(--fg);
+  border-color: var(--divider);
+}
+.meetings__row:hover .meetings__row-action,
+.meetings__row:focus-within .meetings__row-action,
+.meetings__row--active .meetings__row-action {
   opacity: 1;
 }
 
@@ -1289,15 +1311,23 @@
   font-family: inherit;
 }
 
-/* ── Audio player (v0.7.0 overhaul) ────────────────────────────
+/* ── Audio player (v0.8.0 overhaul) ────────────────────────────
    Solid raised surface, larger play button, lucide icons,
    themed scrubber with thumb-on-hover and a filled progress
-   indicator. NOT transparent. */
+   indicator. NOT transparent.
+
+   Layout (left → right):
+     [Play 40px] [1:12 elapsed] [────●──────  speaker-tinted track]
+     [27:06 total] [⏮ 5s] [5s ⏭]
+
+   The skip buttons are ghost-styled secondaries pulled to the
+   far right so the scrubber gets room to breathe — the v0.7
+   crowded "[Play][−5s][+5s][time]…" arrangement is gone. */
 
 .player-bar {
   display: flex;
   align-items: center;
-  gap: var(--space-3, 10px);
+  gap: var(--space-3, 12px);
   padding: var(--space-3, 12px) var(--space-4, 16px);
   background: var(--surface-raised, var(--bg-elevated, var(--bg-elev)));
   border: 1px solid var(--divider);
@@ -1330,18 +1360,29 @@
   box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
 }
 
+/* Skip-back / skip-forward — secondary ghost buttons. Smaller,
+   tighter padding than `.btn` so they read as auxiliary controls
+   alongside the primary play button. */
+.player-bar__skip-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1, 4px);
+  flex-shrink: 0;
+}
+
 .player-bar__btn-small {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-1, 4px);
-  height: 32px;
-  padding: 0 var(--space-3, 10px);
+  gap: 3px;
+  height: 28px;
+  padding: 0 var(--space-2, 8px);
   background: transparent;
-  color: var(--fg);
+  color: var(--fg-muted);
   border: 1px solid var(--divider-strong);
   border-radius: var(--radius-md, 6px);
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 500;
   font-family: inherit;
   cursor: pointer;
   flex-shrink: 0;
@@ -1353,10 +1394,12 @@
 .player-bar__btn-small:hover {
   background: var(--surface-hover, var(--bg-hover));
   border-color: var(--fg);
+  color: var(--fg);
 }
 .player-bar__btn-small:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
+  color: var(--fg);
 }
 .player-bar__btn-small-label {
   font-variant-numeric: tabular-nums;
@@ -1366,11 +1409,16 @@
 .player-bar__time {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace);
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: var(--text-caption-size, 12px);
   color: var(--fg-muted, var(--fg-dim));
   min-width: 56px;
-  text-align: center;
   flex-shrink: 0;
+}
+.player-bar__time--elapsed {
+  text-align: right;
+}
+.player-bar__time--total {
+  text-align: left;
 }
 
 /* Themed scrubber. The track is 6px tall; we render a separate
@@ -1405,7 +1453,10 @@
   border-radius: 50%;
   background: var(--fg);
   cursor: pointer;
-  border: none;
+  /* Outlined against the coloured speaker track for readability —
+     contrasts on both light and dark themes. */
+  border: 2px solid var(--surface-raised, var(--bg-elev));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   margin-top: -4px; /* center on 6px track */
   opacity: 0;
   transition: opacity 80ms ease;
@@ -2293,23 +2344,39 @@
  * Audio seek tooltip, active-speaker pulse, click-flash.
  * ============================================================ */
 
-/* Seek-bar wrapper: a 6px track is drawn via a CSS background on
-   the wrapper itself. The `.player-bar__seek-progress` element
-   overlays a filled portion at the same height. The native input
-   sits on top (transparent track, see above), so the thumb
-   reveals on hover/focus over the visual track. */
+/* Seek-bar wrapper.
+ *
+ * Visual stack (bottom → top):
+ *   z = 0  `.player-bar__speaker-track` — per-speaker coloured strip
+ *          spanning the duration. The user can read "who is talking
+ *          when" at a glance.
+ *   z = 1  `.player-bar__seek-progress` — solid foreground mask on the
+ *          left side covering whatever has been played so far. Reads as
+ *          "this is where we are" without occluding the speaker map to
+ *          the right of the playhead.
+ *   z = 2  `.player-bar__seek` — native <input type=range>, transparent
+ *          track, thumb on hover/focus.
+ *
+ * The whole stack is 6px tall and rounded. The wrapper itself takes
+ * `flex: 1` so the scrubber claims all remaining space between the
+ * elapsed-time and total-duration counters. */
 .player-bar__seek-wrap {
   position: relative;
   flex: 1;
   display: flex;
   align-items: center;
   height: 14px; /* room for thumb */
+  min-width: 200px;
+  padding: 0 var(--space-1, 4px);
 }
 .player-bar__seek-wrap::before {
+  /* Fallback unfilled-track tint shown only when there's no speaker map
+     yet (legacy meetings with empty segments). Once `.speaker-track`
+     paints over this, it covers ::before completely. */
   content: '';
   position: absolute;
-  left: 0;
-  right: 0;
+  left: var(--space-1, 4px);
+  right: var(--space-1, 4px);
   top: 50%;
   height: 6px;
   margin-top: -3px;
@@ -2317,14 +2384,40 @@
   border-radius: 999px;
   pointer-events: none;
 }
-.player-bar__seek-progress {
+.player-bar__speaker-track {
   position: absolute;
-  left: 0;
+  left: var(--space-1, 4px);
+  right: var(--space-1, 4px);
   top: 50%;
   height: 6px;
   margin-top: -3px;
-  background: var(--fg);
   border-radius: 999px;
+  overflow: hidden;
+  pointer-events: none;
+  /* Sit above ::before fallback but below progress + thumb. */
+  z-index: 0;
+}
+.player-bar__speaker-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* `left` and `width` set inline as percentages. A 1px overlap to the
+     right erases sub-pixel rounding seams between adjacent slices on
+     non-Retina displays. */
+  margin-right: -1px;
+  opacity: 0.85;
+}
+.player-bar__seek-progress {
+  position: absolute;
+  left: var(--space-1, 4px);
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  /* A tinted veil over the played portion so the speaker-coloured track
+     stays readable underneath but reads as "already played". Solid
+     surface-base mask at low opacity dims rather than overwrites. */
+  background: color-mix(in srgb, var(--surface-base) 55%, transparent);
+  border-radius: 999px 0 0 999px;
   pointer-events: none;
   z-index: 1;
   transition: width 80ms linear;
@@ -2334,7 +2427,9 @@
 }
 
 /* Hover tooltip on the seek bar — uses the new overlay surface
-   token with a layered shadow + caption typography. */
+   token with a layered shadow + caption typography. The speaker
+   name is tinted with the per-speaker colour passed via the inline
+   `--tooltip-speaker-color` custom property. */
 .audio-tooltip {
   position: absolute;
   bottom: calc(100% + var(--space-2, 8px));
@@ -2363,6 +2458,7 @@
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--tooltip-speaker-color, var(--fg));
 }
 .audio-tooltip__time {
   font-variant-numeric: tabular-nums;
@@ -2604,4 +2700,130 @@
 .empty-state--in-list {
   border: none;
   padding: var(--space-6) var(--space-4);
+}
+
+/* ============================================================
+ * v0.8.0 — Tag picker popover (meeting list row affordance)
+ * ============================================================
+ *
+ * A compact, solid-surface popover anchored under each meeting row's
+ * Tag icon. Unlike the speaker picker — which floats above dense
+ * transcript text and uses Apple-glass — this one floats above the
+ * sidebar list, where a flat surface gives the colour dots more
+ * contrast and the rows underneath stay calm. Borrows the same
+ * shadow / border / radius tokens so the two popovers feel like
+ * siblings.
+ *
+ * Anchor: `.meetings__row-tag-wrap` (position: relative).
+ * Width: ≈ 220px to fit names like "Project Aurora — internal".
+ * Item list uses the same chevron-less single-line pattern as the
+ * speaker picker for visual unity. */
+
+.tag-picker {
+  /* Positioned with `position: fixed` against the trigger icon's
+     viewport-space getBoundingClientRect, so the popover escapes the
+     `overflow: hidden` of `.meetings__list`. `top` and `right` are
+     written inline by the component on mount + on scroll/resize. */
+  position: fixed;
+  min-width: 220px;
+  background: var(--surface-overlay, var(--bg-elevated, var(--bg-elev)));
+  border: 1px solid var(--divider-strong);
+  border-radius: var(--radius-lg, 10px);
+  box-shadow:
+    var(--shadow-lg, 0 12px 36px rgba(0, 0, 0, 0.32)),
+    0 0 0 1px rgba(0, 0, 0, 0.04);
+  padding: var(--space-2, 8px) 0;
+  z-index: 1000;
+  /* Tiny entrance — drop in from a few px above so the popover feels
+     attached to the icon. */
+  animation: tag-picker-in 120ms ease-out;
+}
+@keyframes tag-picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tag-picker__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-1, 4px) var(--space-3, 12px) var(--space-2, 8px);
+  color: var(--fg-muted);
+}
+.tag-picker__title {
+  font: 600 var(--text-label-size, 11px) / 1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+.tag-picker__divider {
+  height: 1px;
+  background: var(--divider);
+  margin: 0 var(--space-2, 8px) var(--space-1, 4px);
+}
+
+.tag-picker__list {
+  display: flex;
+  flex-direction: column;
+}
+
+.tag-picker__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body-size, 13px);
+  text-align: left;
+  cursor: pointer;
+  transition: background 80ms ease, color 80ms ease;
+}
+.tag-picker__item:hover {
+  background: var(--surface-hover, var(--bg-hover));
+}
+.tag-picker__item:focus-visible {
+  outline: none;
+  background: var(--surface-hover, var(--bg-hover));
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.tag-picker__item--active {
+  color: var(--fg);
+}
+.tag-picker__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  /* Subtle outline so a near-white tag colour stays visible on the
+     light theme's white surface. */
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 18%, transparent);
+}
+.tag-picker__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tag-picker__check {
+  color: var(--accent, var(--fg));
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.tag-picker__empty {
+  padding: var(--space-2, 8px) var(--space-3, 12px) var(--space-3, 12px);
+  font-size: var(--text-caption-size, 12px);
+  color: var(--fg-muted);
+  line-height: 1.5;
 }
