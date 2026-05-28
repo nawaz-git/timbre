@@ -15,7 +15,7 @@ import {
 import { useRecordingStatus } from '../state/recording'
 import { useSettings } from '../state/settings'
 import { useTags } from '../state/tags'
-import { usePermissions, useChromeMeet } from '../state/permissions'
+import { usePermissions, useChromeMeet, useCaptureWatchdog } from '../state/permissions'
 import { formatDate, formatDuration } from '../state/format'
 import type {
   BackendEvent,
@@ -72,6 +72,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
   const { status, start, stop } = useRecordingStatus()
   const { status: perms, openPane } = usePermissions()
   const chromeMeet = useChromeMeet()
+  const watchdog = useCaptureWatchdog()
   const [banner, setBanner] = useState<JobBanner | null>(null)
   const [recent, setRecent] = useState<MeetingSummary[]>([])
   const [recentLoading, setRecentLoading] = useState(true)
@@ -89,6 +90,17 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
 
   useEffect(() => {
     void loadRecent()
+  }, [loadRecent])
+
+  // v0.13+: subscribe to the main process's push channel that fires
+  // whenever new files land in liveRecordingsRoot OR the user's import
+  // folder. Without this the user had to manually leave + re-enter the
+  // Home tab to see a freshly-captured meeting.
+  useEffect(() => {
+    const unsub = window.api.system.onMeetingsChanged(() => {
+      void loadRecent()
+    })
+    return unsub
   }, [loadRecent])
 
   useEffect(() => {
@@ -210,6 +222,44 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
           >
             <ExternalLink size={14} aria-hidden="true" />
             <span>Open System Settings</span>
+          </button>
+        </div>
+      )}
+
+      {/*
+        Helper-permission banner (v0.13+). Mintr bundles a separate Swift
+        helper app, MeetingTranscriber.app, which has its OWN TCC bundle
+        id (`com.meetingtranscriber.app`). Granting Screen Recording to
+        Mintr does NOT grant it to the helper. The capture watchdog fires
+        when Chrome reports a live Meet but the helper hasn't written any
+        files — that's the smoking-gun pattern for "helper needs its own
+        permission". We name the right TCC entry explicitly so the user
+        can find it in the list.
+      */}
+      {watchdog.helperPermissionLikely && (
+        <div className="permission-banner permission-banner--danger" role="alert">
+          <span className="permission-banner__icon" aria-hidden="true">
+            <AlertTriangle size={16} strokeWidth={2} />
+          </span>
+          <div className="permission-banner__body">
+            <div className="permission-banner__title">
+              Engine helper isn&apos;t capturing this meeting
+            </div>
+            <div className="permission-banner__desc">
+              Mintr detected your Meet, but the bundled capture engine
+              (<code className="inline-code">MeetingTranscriber</code>) hasn&apos;t
+              recorded any audio yet. The helper has its own Screen Recording
+              entry in System Settings, separate from Mintr&apos;s. Look for
+              <code className="inline-code">MeetingTranscriber</code> in the
+              Screen Recording list and toggle it on, then quit + reopen Mintr.
+            </div>
+          </div>
+          <button
+            className="btn btn--primary btn--small"
+            onClick={() => void openPane('screen-recording')}
+          >
+            <ExternalLink size={14} aria-hidden="true" />
+            <span>Open Screen Recording</span>
           </button>
         </div>
       )}

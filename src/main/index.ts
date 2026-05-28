@@ -10,6 +10,7 @@ import { readSettings } from './settings'
 import { createTray, setMainWindowFactory } from './tray'
 import { startChromeProbe, stopChromeProbe } from './chromeProbe'
 import { onStatusChange, startWatching } from './recording'
+import { startCaptureWatchdog, stopCaptureWatchdog } from './captureWatchdog'
 
 // `mt-audio://` MUST be registered as privileged before app.whenReady().
 // Without this, the renderer's <audio src="mt-audio://..."> gets blocked by
@@ -234,6 +235,14 @@ app.whenReady().then(async () => {
     }
   })
 
+  // Capture watchdog + folder watcher — fires for the lifetime of the
+  // app (not just while watching). The folder watcher needs to be live
+  // even while paused so the user sees new file imports show up; the
+  // watchdog itself only flips when the Chrome probe is also active.
+  await startCaptureWatchdog().catch((err) =>
+    console.warn('[main] startCaptureWatchdog failed', err)
+  )
+
   // Auto-start watching on launch unless the user opted out. The tray
   // exists at this point so the user has a way to pause if they want.
   try {
@@ -271,4 +280,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopChromeProbe()
+  stopCaptureWatchdog()
 })

@@ -143,7 +143,38 @@ const api = {
       }
     },
     showWindow: (): Promise<void> => ipcRenderer.invoke(IPC.systemShowWindow),
-    quit: (): Promise<void> => ipcRenderer.invoke(IPC.systemQuit)
+    quit: (): Promise<void> => ipcRenderer.invoke(IPC.systemQuit),
+    /**
+     * Subscribe to capture-watchdog signals (v0.13+). Fires when the
+     * Chrome probe reports a live Meet for >25s but the bundled engine
+     * helper hasn't written anything — i.e. the helper is silently
+     * failing, almost certainly because its own TCC entry
+     * (`com.meetingtranscriber.app`) hasn't been granted Screen Recording.
+     */
+    onWatchdogUpdate: (
+      handler: (signal: { helperPermissionLikely: boolean; meetingId?: string; firedAt?: number }) => void
+    ): (() => void) => {
+      const listener = (
+        _: Electron.IpcRendererEvent,
+        signal: { helperPermissionLikely: boolean; meetingId?: string; firedAt?: number }
+      ): void => handler(signal)
+      ipcRenderer.on('capture-watchdog:update', listener)
+      return () => {
+        ipcRenderer.removeListener('capture-watchdog:update', listener)
+      }
+    },
+    /**
+     * Push channel — fires when a new meeting folder appears (or a
+     * sub-file inside one changes) so the Home view + Meetings tab can
+     * auto-refresh without polling. Debounced 1.5s on the main side.
+     */
+    onMeetingsChanged: (handler: () => void): (() => void) => {
+      const listener = (): void => handler()
+      ipcRenderer.on('meetings:changed', listener)
+      return () => {
+        ipcRenderer.removeListener('meetings:changed', listener)
+      }
+    }
   }
 }
 

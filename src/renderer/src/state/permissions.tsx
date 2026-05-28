@@ -49,6 +49,32 @@ export function usePermissions(): {
 }
 
 /**
+ * Capture-watchdog signal from the main process. Flips to
+ * `helperPermissionLikely: true` after 25s of Chrome-detected Meet with
+ * no engine file writes — almost certainly the bundled MeetingTranscriber
+ * helper missing Screen Recording permission (it has a separate TCC
+ * bundle id from Mintr's, `com.meetingtranscriber.app`).
+ */
+export interface CaptureWatchdogSignal {
+  helperPermissionLikely: boolean
+  meetingId?: string
+  firedAt?: number
+}
+
+export function useCaptureWatchdog(): CaptureWatchdogSignal {
+  const [signal, setSignal] = useState<CaptureWatchdogSignal>({
+    helperPermissionLikely: false
+  })
+
+  useEffect(() => {
+    const unsub = window.api.system.onWatchdogUpdate((next) => setSignal(next))
+    return unsub
+  }, [])
+
+  return signal
+}
+
+/**
  * Live snapshot of the Chrome AppleScript probe. Subscribes to the push
  * channel for instant updates AND pulls the initial state on mount so
  * the card renders without waiting for the first poll cycle.

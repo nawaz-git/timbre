@@ -1,7 +1,7 @@
 {
   "name": "mintr",
   "productName": "Mintr",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Mintr — Mac desktop app for on-device meeting transcription.",
   "main": "./out/main/index.js",
   "author": "contact@nawaz.ai",
@@ -24,7 +24,8 @@
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "electron-store": "^10.0.0",
-    "lucide-react": "^1.16.0"
+    "lucide-react": "^1.16.0",
+    "react-force-graph-2d": "^1.29.1"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

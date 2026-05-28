@@ -263,6 +263,17 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     void refresh()
   }, [refresh])
 
+  // v0.13+: auto-refresh when new files land in the live-recordings or
+  // import folder. Without this the Meetings list went stale immediately
+  // after a meeting finished — the user had to switch tabs (or restart
+  // the app) to see it.
+  useEffect(() => {
+    const unsub = window.api.system.onMeetingsChanged(() => {
+      void refresh()
+    })
+    return unsub
+  }, [refresh])
+
   const loadTranscript = useCallback(async (meetingId: string) => {
     setTranscriptLoading(true)
     try {

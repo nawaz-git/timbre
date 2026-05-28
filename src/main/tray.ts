@@ -40,6 +40,7 @@ import type { RecordingStatus, ChromeMeetSnapshot, PermissionStatus } from '../s
 import { onStatusChange, getStatus, startWatching, stopWatching } from './recording'
 import { getPermissionStatus, openPrivacyPane } from './permissions'
 import { getChromeMeetSnapshot } from './chromeProbe'
+import { getWatchdogSignal } from './captureWatchdog'
 
 let tray: Tray | null = null
 /**
@@ -170,31 +171,29 @@ function refreshTitle(): void {
   const chrome = getChromeMeetSnapshot()
   const perms = getPermissionStatus()
 
-  // Title text shown next to the icon in the menubar. Keep it terse so it
-  // doesn't crowd out the user's other tray items. Use "·" (middle-dot)
-  // for separators — looks lighter than a hyphen.
+  // Title text shown NEXT to the icon. On a crowded menubar, every extra
+  // pixel can push us off-screen — v0.12 shipped "Meeting · 4:23" type
+  // titles and the user reported the icon vanishing entirely during a
+  // live meeting (macOS hides menubar items when they don't fit).
+  //
+  // Policy now: NEVER more than 1 character of title text. The icon
+  // alone carries the brand; states are conveyed via a single-glyph
+  // indicator. Full state text lives in the menu + tooltip.
   let title = ''
   if (perms.screenRecording === 'denied') {
-    title = ' Permission needed'
-  } else if (status.state === 'recording' && typeof status.elapsedSeconds === 'number') {
-    title = ` Meeting · ${formatMMSS(status.elapsedSeconds)}`
-  } else if (chrome.tab) {
-    // Chrome probe found a Meet tab even though the engine hasn't moved to
-    // 'recording' yet. Surface this — it tells the user we *see* the
-    // meeting and are tracking the right window.
-    title = ' In Meet'
-  } else if (status.state === 'watching') {
-    title = ' Watching'
-  } else if (status.state === 'transcribing') {
-    title = ` Transcribing · ${status.progressPercent ?? 0}%`
+    title = '⚠'
+  } else if (status.state === 'recording' || (chrome.tab && status.state === 'watching')) {
+    title = '●'
   }
-  // Empty string clears the title — necessary or the previous value
-  // sticks. Electron treats null as "leave it alone", not as "clear".
   tray.setTitle(title)
 
+  // Tooltip — long-form status, only visible on hover so it never costs
+  // menubar width. macOS shows tooltips with a ~500ms hover delay.
+  tray.setToolTip(buildTooltip(status, chrome, perms))
+
   // Manage the per-second tick. We only run the timer when there's a
-  // changing value to display (mm:ss meeting timer). Saves a wakeup-per-
-  // second when nothing's happening.
+  // changing value to display (mm:ss meeting timer in the tooltip).
+  // Saves a wakeup-per-second when nothing's happening.
   const needsTick = status.state === 'recording' || status.state === 'transcribing'
   if (needsTick && !titleTimer) {
     titleTimer = setInterval(() => refreshTitle(), 1000)
@@ -202,6 +201,29 @@ function refreshTitle(): void {
     clearInterval(titleTimer)
     titleTimer = null
   }
+}
+
+function buildTooltip(
+  status: RecordingStatus,
+  chrome: ChromeMeetSnapshot,
+  perms: PermissionStatus
+): string {
+  if (perms.screenRecording === 'denied') {
+    return 'Mintr — Screen Recording permission required'
+  }
+  if (status.state === 'recording' && typeof status.elapsedSeconds === 'number') {
+    return `Mintr — recording meeting · ${formatMMSS(status.elapsedSeconds)}`
+  }
+  if (status.state === 'transcribing') {
+    return `Mintr — transcribing · ${status.progressPercent ?? 0}%`
+  }
+  if (chrome.tab) {
+    return `Mintr — Google Meet detected (${chrome.tab.meetingId})`
+  }
+  if (status.state === 'watching') {
+    return 'Mintr — watching for meetings'
+  }
+  return 'Mintr — paused'
 }
 
 function formatMMSS(totalSec: number): string {
@@ -239,6 +261,26 @@ function buildMenu(): Menu {
       click: () => {
         void openPrivacyPane('screen-recording')
       }
+    })
+    items.push({ type: 'separator' })
+  }
+
+  // v0.13+: helper-permission alarm. The bundled MeetingTranscriber.app
+  // has its own bundle id and needs Screen Recording granted separately —
+  // the watchdog catches this when Chrome reports a Meet but the helper
+  // isn't writing any files. Surface it loudly in the tray so users
+  // notice even when the main window is closed.
+  const watchdog = getWatchdogSignal()
+  if (watchdog.helperPermissionLikely) {
+    items.push({
+      label: '⚠︎  Engine helper not capturing — fix permission…',
+      click: () => {
+        void openPrivacyPane('screen-recording')
+      }
+    })
+    items.push({
+      label: '   Look for "MeetingTranscriber" in the list',
+      enabled: false
     })
     items.push({ type: 'separator' })
   }
