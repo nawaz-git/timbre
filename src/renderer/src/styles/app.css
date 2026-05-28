@@ -825,47 +825,89 @@
 .reanalyze-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 8px 0 12px;
-  padding: 10px;
-  background: var(--bg-elevated);
+  gap: var(--space-2, 8px);
+  margin: var(--space-2, 8px) 0 var(--space-3, 12px);
+  padding: var(--space-3, 10px);
+  background: var(--surface-raised, var(--bg-elevated, var(--bg-elev)));
   border: 1px solid var(--divider);
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
+}
+.reanalyze-bar__label {
+  font: var(--text-label, 500 11px/1.2 inherit);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted, var(--fg-dim));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .speaker-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 4px 0 14px;
+  gap: var(--space-2, 6px);
+  margin: 4px 0 var(--space-4, 14px);
   align-items: center;
 }
+.speaker-row__label {
+  font: var(--text-label, 500 11px/1.2 inherit);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted, var(--fg-dim));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-right: var(--space-1, 4px);
+}
 
+/* ── Speaker pill ───────────────────────────────────────────────
+   Per-speaker color is plumbed in via the `--pill-color` CSS
+   variable (set inline by React). The pill uses an 8% alpha fill
+   of that color, with the full-strength color on the border. */
 .speaker-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px 3px 8px;
+  gap: var(--space-2, 6px);
+  height: 26px;
+  padding: 0 var(--space-3, 12px);
   font-size: 12px;
-  background: var(--bg-elevated);
+  background: color-mix(in srgb, var(--pill-color, var(--fg)) 8%, transparent);
   color: var(--fg);
-  border: 1px solid var(--divider);
-  border-radius: 999px;
+  border: 1px solid var(--pill-color, var(--divider-strong));
+  border-radius: var(--radius-full, 999px);
   cursor: pointer;
   font-family: inherit;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease,
+    box-shadow 80ms ease;
 }
 .speaker-pill:hover {
-  background: var(--bg);
+  background: color-mix(in srgb, var(--pill-color, var(--fg)) 14%, transparent);
+}
+.speaker-pill:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
 }
 .speaker-pill__dot {
   display: inline-block;
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  background: var(--pill-color, var(--fg));
+  flex-shrink: 0;
+}
+.speaker-pill__name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
 }
 .speaker-pill__edit {
-  opacity: 0.5;
-  font-size: 10px;
+  color: var(--fg-muted, var(--fg-dim));
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
 .speaker-rename-group {
@@ -900,116 +942,190 @@
   font-family: inherit;
 }
 
-/* ── Audio player ─────────────────────────────────────────────── */
+/* ── Audio player (v0.7.0 overhaul) ────────────────────────────
+   Solid raised surface, larger play button, lucide icons,
+   themed scrubber with thumb-on-hover and a filled progress
+   indicator. NOT transparent. */
 
 .player-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  background: var(--bg-elevated);
+  gap: var(--space-3, 10px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--surface-raised, var(--bg-elevated, var(--bg-elev)));
   border: 1px solid var(--divider);
-  border-radius: 8px;
-  margin-bottom: 14px;
+  border-radius: var(--radius-lg, 10px);
+  margin-bottom: var(--space-4, 14px);
 }
 
 .player-bar__btn {
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: var(--fg);
-  color: var(--bg);
+  color: var(--surface-base, var(--bg));
   border: none;
-  font-size: 11px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  transition: transform 80ms ease, opacity 80ms ease;
 }
 .player-bar__btn:hover {
-  opacity: 0.85;
+  opacity: 0.88;
 }
+.player-bar__btn:active {
+  transform: scale(0.96);
+}
+.player-bar__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
+}
+
 .player-bar__btn-small {
-  background: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1, 4px);
+  height: 32px;
+  padding: 0 var(--space-3, 10px);
+  background: transparent;
   color: var(--fg);
-  border: 1px solid var(--divider);
-  border-radius: 6px;
-  padding: 4px 10px;
+  border: 1px solid var(--divider-strong);
+  border-radius: var(--radius-md, 6px);
   font-size: 12px;
+  font-family: inherit;
   cursor: pointer;
   flex-shrink: 0;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease,
+    color 80ms ease;
 }
 .player-bar__btn-small:hover {
-  background: var(--bg);
+  background: var(--surface-hover, var(--bg-hover));
+  border-color: var(--fg);
 }
+.player-bar__btn-small:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
+}
+.player-bar__btn-small-label {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
 .player-bar__time {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace);
   font-variant-numeric: tabular-nums;
   font-size: 12px;
-  color: var(--fg-dim);
-  min-width: 50px;
+  color: var(--fg-muted, var(--fg-dim));
+  min-width: 56px;
   text-align: center;
   flex-shrink: 0;
 }
+
+/* Themed scrubber. The track is 6px tall; we render a separate
+   `.player-bar__seek-progress` div underneath (positioned via
+   the wrapper) for the filled portion. The native input sits on
+   top, transparent track, with a thumb that only appears on
+   hover/focus. */
 .player-bar__seek {
   flex: 1;
+  width: 100%;
+  -webkit-appearance: none;
   appearance: none;
-  height: 4px;
-  background: var(--divider);
-  border-radius: 2px;
+  height: 6px;
+  background: transparent;
+  border-radius: 999px;
   outline: none;
   cursor: pointer;
+  margin: 0;
+  position: relative;
+  z-index: 2;
+}
+.player-bar__seek::-webkit-slider-runnable-track {
+  height: 6px;
+  background: transparent;
+  border-radius: 999px;
 }
 .player-bar__seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
   appearance: none;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--fg);
   cursor: pointer;
   border: none;
+  margin-top: -4px; /* center on 6px track */
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+.player-bar__seek:hover::-webkit-slider-thumb,
+.player-bar__seek:focus-visible::-webkit-slider-thumb {
+  opacity: 1;
+}
+.player-bar__seek:focus-visible {
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
+  border-radius: 999px;
 }
 
-/* ── Structured transcript ─────────────────────────────────────── */
+/* ── Structured transcript (v0.7.0 typography rhythm) ──────────
+   3-column grid with monospace timestamps, color-coded speaker
+   names, and 14px/1.55 body text. Subtle bottom borders between
+   rows for legibility. */
 
 .transcript-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   overflow-y: auto;
-  padding-right: 4px;
+  padding-right: var(--space-1, 4px);
   flex: 1;
   min-height: 0;
 }
 
 .segment-row {
   display: grid;
-  grid-template-columns: 60px 100px 1fr;
-  gap: 12px;
-  padding: 8px 10px;
+  grid-template-columns: 56px auto 1fr;
+  gap: var(--space-4, 16px);
+  padding: var(--space-3, 12px) var(--space-3, 12px);
   background: none;
   border: none;
-  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--divider);
+  border-left: 3px solid transparent;
   color: var(--fg);
   text-align: left;
   font: inherit;
   cursor: pointer;
-  border-radius: 4px;
-  line-height: 1.45;
+  border-radius: 0;
+  transition:
+    background 80ms ease,
+    border-left-color 80ms ease;
 }
 .segment-row:hover {
-  background: var(--bg-elevated);
+  background: var(--surface-hover, var(--bg-hover, var(--bg-elevated)));
 }
 .segment-row--active {
-  background: var(--bg-elevated);
-  border-left-color: var(--fg);
+  background: color-mix(in srgb, var(--accent, var(--fg)) 6%, transparent);
+  border-left-color: var(--accent, var(--fg));
+}
+.segment-row:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, inset 0 0 0 2px var(--fg));
 }
 
 .segment-row__time {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace);
+  font: var(--text-caption, 400 12px/1.4 inherit);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace);
   font-variant-numeric: tabular-nums;
-  color: var(--fg-dim);
+  color: var(--fg-subtle);
   font-size: 12px;
-  padding-top: 2px;
+  padding-top: 3px;
+  white-space: nowrap;
 }
 .segment-row__speaker-wrap {
   position: relative;
@@ -1025,32 +1141,33 @@
  * button). Hover affordance: subtle underline + pointer cursor.
  */
 .segment-row__speaker {
+  font: var(--text-body, 600 13px/1.5 inherit);
   font-weight: 600;
   font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-top: 1px;
+  padding: 1px 0 0 0;
   background: none;
   border: none;
   font-family: inherit;
   cursor: pointer;
   text-align: left;
-  padding-left: 0;
-  padding-right: 0;
-  border-radius: 3px;
-  transition: text-decoration-color 80ms ease, background 80ms ease;
+  border-radius: var(--radius-sm, 3px);
+  transition:
+    text-decoration-color 80ms ease,
+    background 80ms ease;
   text-decoration: underline dotted transparent;
   text-underline-offset: 3px;
   max-width: 100%;
 }
 .segment-row__speaker:hover {
   text-decoration-color: currentColor;
-  background: var(--bg);
+  background: transparent;
 }
 .segment-row__speaker:focus-visible {
-  outline: 1px solid var(--fg);
-  outline-offset: 1px;
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
 }
 
 /*
@@ -1068,7 +1185,9 @@
   z-index: 1000;
 }
 .segment-row__text {
+  font: var(--text-body-lg, 400 14px/1.55 inherit);
   font-size: 14px;
+  line-height: 1.55;
   color: var(--fg);
   white-space: pre-wrap;
   word-break: break-word;
@@ -1168,92 +1287,184 @@
   text-transform: uppercase;
 }
 
-/* ── Tab strip ─────────────────────────────────────────────── */
+/* ── Tab strip with animated indicator ─────────────────────────
+   The active tab's underline is a single sliding `<span>` that
+   translates between buttons. JS measures each button's
+   offsetLeft + offsetWidth in a useLayoutEffect and pushes the
+   numbers into inline style. */
 
 .tab-strip {
+  position: relative;
   display: flex;
   gap: 4px;
   border-bottom: 1px solid var(--divider);
-  margin: 4px 0 14px;
+  margin: var(--space-1, 4px) 0 var(--space-4, 14px);
 }
 .tab-strip__btn {
+  position: relative;
   background: none;
-  color: var(--fg-dim);
+  color: var(--fg-muted, var(--fg-dim));
   border: none;
   font: inherit;
   font-size: 13px;
-  padding: 8px 14px;
+  padding: var(--space-2, 8px) var(--space-3, 14px);
   cursor: pointer;
-  border-bottom: 2px solid transparent;
   margin-bottom: -1px;
+  border-radius: var(--radius-sm, 4px) var(--radius-sm, 4px) 0 0;
+  transition: color 120ms ease;
 }
 .tab-strip__btn:hover {
   color: var(--fg);
 }
+.tab-strip__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
+}
 .tab-strip__btn--active {
   color: var(--fg);
-  border-bottom-color: var(--fg);
   font-weight: 500;
+}
+
+.tab-strip__indicator {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--fg);
+  border-radius: 2px 2px 0 0;
+  transition:
+    transform 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    width 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 120ms ease;
+  pointer-events: none;
+  will-change: transform, width;
 }
 
 .tab-pane {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 0 16px;
+  /* Horizontal overflow is intentionally visible so the SpeakerPicker
+     popping out of the Speakers tab isn't clipped at the tab edge. */
+  overflow-x: visible;
+  padding: var(--space-1, 4px) 0 var(--space-4, 16px);
+}
+.tab-pane__intro {
+  color: var(--fg-muted, var(--fg-dim));
+  font-size: 13px;
+  margin-top: 0;
+  line-height: 1.5;
 }
 
-/* ── Speaker picker dropdown (v0.6.0 redesign) ─────────────── */
+/* ── Speaker picker dropdown (v0.7.0 — Apple frosted glass) ───
 
-/*
- * Trigger wrappers must establish a positioned context so the dropdown
- * can absolute-position relative to them. The pill row uses this; the
- * per-segment anchor (.segment-row__picker-anchor above) uses its own
- * absolute positioning to peg under the speaker label.
- */
+   Trigger wrappers must establish a positioned context so the
+   dropdown can absolute-position relative to them. We also bump
+   z-index on the wrappers to 50 so the trapped stacking context
+   doesn't cap the dropdown's own z-index. */
 .speaker-pill-wrap {
   position: relative;
   display: inline-block;
+  z-index: 50;
+}
+/* The per-segment anchor (declared earlier in this file) also
+   sits at z-index 1000 — we bump its wrapper context here in the
+   transcript so the popup floats above sibling segment rows. */
+.segment-row__speaker-wrap {
+  z-index: 50;
 }
 
 /*
- * The dropdown itself. Fully OPAQUE — never transparent, no
- * backdrop-filter, no container opacity. Background uses --bg-elevated
- * so the transcript / pill row beneath cannot bleed through.
+ * Apple-style frosted glass dropdown. Instead of a solid surface
+ * token the popup blends with whatever is behind it — rgba background
+ * + `backdrop-filter: saturate(180%) blur(24px)` produces the same
+ * macOS-toolbar feel. The hairline border (rgba over light bg, rgba
+ * white over dark bg) catches the edge, and a three-stop shadow stack
+ * lifts the popup convincingly off the surface. A solid-background
+ * `@supports not` fallback covers engines without backdrop-filter so
+ * the popup is never see-through there.
+ *
+ * NO `opacity` on this container — glass is achieved purely via the
+ * rgba background and backdrop-filter. NO `position: fixed`.
  */
 .speaker-picker {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
+  z-index: 1000;
   min-width: 280px;
   max-width: 360px;
   max-height: 400px;
   overflow-y: auto;
-  background: var(--bg-elevated);
-  border: 1px solid var(--divider);
-  border-radius: 8px;
-  padding: 4px;
-  z-index: 1000;
-  /* Dark theme shadow — strong, neutral black for legibility on dark bg. */
+  padding: var(--space-1, 4px);
+  border-radius: var(--radius-lg, 12px);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  backdrop-filter: saturate(180%) blur(24px);
   box-shadow:
-    0 12px 36px rgba(0, 0, 0, 0.45),
-    0 2px 8px rgba(0, 0, 0, 0.3);
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 8px 24px rgba(15, 23, 42, 0.10),
+    0 16px 48px rgba(15, 23, 42, 0.16);
   font-family: inherit;
+  animation: picker-in 140ms cubic-bezier(0.32, 0.72, 0, 1);
+  transform-origin: top left;
 }
-[data-theme='light'] .speaker-picker {
-  /* Light theme shadow — softer, cool-slate tinted so the popup
-     lifts off the page without screaming. */
+/* Solid fallback for browsers without backdrop-filter — guarantees
+   the popup is never transparent on engines that drop the blur. */
+@supports not ((backdrop-filter: blur(24px)) or (-webkit-backdrop-filter: blur(24px))) {
+  .speaker-picker {
+    background: rgba(255, 255, 255, 1);
+  }
+}
+
+[data-theme='dark'] .speaker-picker {
+  background: rgba(28, 28, 30, 0.72);
+  border-color: rgba(255, 255, 255, 0.10);
   box-shadow:
-    0 12px 36px rgba(15, 23, 42, 0.18),
-    0 2px 8px rgba(15, 23, 42, 0.08);
+    0 1px 2px rgba(0, 0, 0, 0.18),
+    0 8px 24px rgba(0, 0, 0, 0.35),
+    0 16px 48px rgba(0, 0, 0, 0.50);
+}
+@supports not ((backdrop-filter: blur(24px)) or (-webkit-backdrop-filter: blur(24px))) {
+  [data-theme='dark'] .speaker-picker {
+    background: rgba(28, 28, 30, 1);
+  }
+}
+
+@keyframes picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Ancestor scroll/clipping fix — the dropdown must escape these
+   wrappers vertically. `.tab-pane` keeps overflow on the y-axis so
+   the transcript can scroll, but the picker, which lives in the
+   first row, is allowed to overflow horizontally. We also let the
+   detail pane and transcript list keep their scroll on the outer
+   layer only — the immediate row wrappers must not clip the popup. */
+.transcript-list {
+  overflow-x: visible;
+}
+.segment-row {
+  overflow: visible;
+}
+.speaker-row {
+  overflow: visible;
 }
 
 /* ── Header (title row OR inline-add row, depending on state) ── */
 .speaker-picker__header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 8px 8px 12px;
+  gap: var(--space-2, 6px);
+  padding: var(--space-2, 8px) var(--space-2, 8px) var(--space-2, 8px) var(--space-3, 12px);
   min-height: 36px;
 }
 .speaker-picker__title {
@@ -1269,18 +1480,28 @@
   height: 24px;
   padding: 0 10px;
   background: transparent;
-  color: var(--fg-dim);
+  color: var(--fg-muted, var(--fg-dim));
   border: 1px solid var(--divider-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
-  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+  transition:
+    background 80ms ease,
+    color 80ms ease,
+    border-color 80ms ease;
 }
 .speaker-picker__add-btn:hover:not(:disabled) {
-  background: var(--bg);
+  background: rgba(0, 0, 0, 0.04);
   color: var(--fg);
   border-color: var(--fg);
+}
+[data-theme='dark'] .speaker-picker__add-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+.speaker-picker__add-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
 }
 .speaker-picker__add-btn:disabled {
   opacity: 0.5;
@@ -1293,17 +1514,23 @@
   min-width: 0;
   height: 28px;
   padding: 0 10px;
-  background: var(--bg);
+  background: rgba(255, 255, 255, 0.65);
   color: var(--fg);
   border: 1px solid var(--divider-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
   font-size: 13px;
   font-family: inherit;
   outline: none;
-  transition: border-color 80ms ease;
+  transition:
+    border-color 80ms ease,
+    box-shadow 80ms ease;
+}
+[data-theme='dark'] .speaker-picker__input {
+  background: rgba(0, 0, 0, 0.30);
 }
 .speaker-picker__input:focus {
   border-color: var(--fg);
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
 }
 .speaker-picker__icon-btn {
   display: inline-flex;
@@ -1313,18 +1540,28 @@
   min-width: 28px;
   padding: 0 8px;
   background: transparent;
-  color: var(--fg-dim);
+  color: var(--fg-muted, var(--fg-dim));
   border: 1px solid var(--divider-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
   font-size: 13px;
   font-family: inherit;
   cursor: pointer;
-  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+  transition:
+    background 80ms ease,
+    color 80ms ease,
+    border-color 80ms ease;
 }
 .speaker-picker__icon-btn:hover:not(:disabled) {
-  background: var(--bg);
+  background: rgba(0, 0, 0, 0.04);
   color: var(--fg);
   border-color: var(--fg);
+}
+[data-theme='dark'] .speaker-picker__icon-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+.speaker-picker__icon-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
 }
 .speaker-picker__icon-btn--primary {
   background: var(--accent);
@@ -1343,14 +1580,18 @@
 /* ── Section dividers (between header / current / groups) ──── */
 .speaker-picker__divider {
   height: 1px;
-  background: var(--divider);
+  background: rgba(0, 0, 0, 0.06);
   margin: 4px 0;
+}
+[data-theme='dark'] .speaker-picker__divider {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* ── Group labels ("ALSO IN THIS MEETING", "ENROLLED VOICES") ── */
 .speaker-picker__group-label {
+  font: var(--text-label, 500 10px/1.2 inherit);
   font-size: 10px;
-  color: var(--fg-dim);
+  color: var(--fg-muted, var(--fg-dim));
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-weight: 500;
@@ -1361,10 +1602,10 @@
 .speaker-picker__item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2, 8px);
   width: 100%;
   height: 32px;
-  padding: 0 12px 0 8px;
+  padding: 0 var(--space-3, 12px) 0 var(--space-2, 8px);
   background: none;
   border: none;
   color: var(--fg);
@@ -1372,11 +1613,18 @@
   font-size: 13px;
   text-align: left;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm, 4px);
   transition: background 80ms ease;
 }
 .speaker-picker__item:hover:not(:disabled) {
-  background: var(--bg);
+  background: rgba(0, 0, 0, 0.06);
+}
+[data-theme='dark'] .speaker-picker__item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+.speaker-picker__item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, inset 0 0 0 2px var(--fg));
 }
 .speaker-picker__item:disabled {
   cursor: default;
@@ -1389,16 +1637,17 @@
 .speaker-picker__item--current:hover {
   background: transparent;
 }
+[data-theme='dark'] .speaker-picker__item--current:hover {
+  background: transparent;
+}
 .speaker-picker__check {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
   margin: 0 3px;
-  font-size: 12px;
   color: var(--fg);
-  font-weight: 600;
   flex-shrink: 0;
 }
 .speaker-picker__dot {
@@ -1417,15 +1666,16 @@
 }
 .speaker-picker__meta {
   font-size: 11px;
-  color: var(--fg-dim);
+  color: var(--fg-muted, var(--fg-dim));
+  font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 
 /* ── Empty state (no other speakers anywhere) ──────────────── */
 .speaker-picker__empty {
-  padding: 12px;
+  padding: var(--space-3, 12px);
   font-size: 12px;
-  color: var(--fg-dim);
+  color: var(--fg-muted, var(--fg-dim));
   text-align: center;
   font-style: italic;
 }
@@ -1437,21 +1687,30 @@
 .add-speaker-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 12px;
+  gap: var(--space-2, 6px);
+  height: 26px;
+  padding: 0 var(--space-3, 12px);
   font-size: 12px;
   background: transparent;
-  color: var(--fg-dim);
+  color: var(--fg-muted, var(--fg-dim));
   border: 1px dashed var(--divider-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-full, 999px);
   cursor: pointer;
   font-family: inherit;
-  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+  line-height: 1;
+  transition:
+    background 80ms ease,
+    color 80ms ease,
+    border-color 80ms ease;
 }
 .add-speaker-btn:hover {
-  background: var(--bg-elevated);
+  background: var(--surface-hover, var(--bg-hover, var(--bg-elevated)));
   color: var(--fg);
   border-color: var(--fg);
+}
+.add-speaker-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
 }
 
 /*
@@ -1464,42 +1723,77 @@
   cursor: default;
 }
 
-/* ── Export grid ───────────────────────────────────────────── */
+/* ── Export grid (v0.7.0) ──────────────────────────────────────
+   Each card pairs a lucide icon with its label + hint. Layout
+   is `icon | text` via flex. Hover lifts the card with the
+   accent border. */
 
 .export-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 10px;
-  margin-top: 8px;
+  gap: var(--space-3, 10px);
+  margin-top: var(--space-2, 8px);
 }
 .export-card {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
+  gap: var(--space-3, 12px);
   text-align: left;
-  padding: 14px 16px;
-  background: var(--bg-elevated);
+  padding: var(--space-4, 16px);
+  background: var(--surface-raised, var(--bg-elevated, var(--bg-elev)));
   color: var(--fg);
   border: 1px solid var(--divider);
-  border-radius: 8px;
+  border-radius: var(--radius-lg, 8px);
   cursor: pointer;
   font-family: inherit;
+  transition:
+    border-color 80ms ease,
+    background 80ms ease,
+    transform 80ms ease;
 }
 .export-card:hover:not(:disabled) {
   border-color: var(--fg);
+  background: var(--surface-hover, var(--bg-hover, var(--bg-elevated)));
+}
+.export-card:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.export-card:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px var(--fg));
 }
 .export-card:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.export-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md, 6px);
+  background: var(--surface-base, var(--bg));
+  color: var(--fg);
+  flex-shrink: 0;
+}
+.export-card__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
 .export-card__label {
   font-size: 14px;
   font-weight: 600;
-  margin-bottom: 4px;
+  margin-bottom: 0;
 }
 .export-card__hint {
   font-size: 11px;
-  color: var(--fg-dim);
+  color: var(--fg-muted, var(--fg-dim));
+  line-height: 1.4;
 }
 
 /* ── Recent meetings on Home ───────────────────────────────── */
@@ -1581,37 +1875,69 @@
  * Audio seek tooltip, active-speaker pulse, click-flash.
  * ============================================================ */
 
-/* Seek-bar tooltip: absolute inside a relative wrapper so it
-   follows the input without breaking the flex player-bar. */
+/* Seek-bar wrapper: a 6px track is drawn via a CSS background on
+   the wrapper itself. The `.player-bar__seek-progress` element
+   overlays a filled portion at the same height. The native input
+   sits on top (transparent track, see above), so the thumb
+   reveals on hover/focus over the visual track. */
 .player-bar__seek-wrap {
   position: relative;
   flex: 1;
   display: flex;
   align-items: center;
+  height: 14px; /* room for thumb */
+}
+.player-bar__seek-wrap::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  background: var(--divider);
+  border-radius: 999px;
+  pointer-events: none;
+}
+.player-bar__seek-progress {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  background: var(--fg);
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 1;
+  transition: width 80ms linear;
 }
 .player-bar__seek-wrap .player-bar__seek {
   width: 100%;
 }
 
+/* Hover tooltip on the seek bar — uses the new overlay surface
+   token with a layered shadow + caption typography. */
 .audio-tooltip {
   position: absolute;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + var(--space-2, 8px));
   /* `left` is set inline to the cursor X (relative to the wrapper).
      translateX(-50%) centers the bubble above the cursor. */
   transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  background: var(--bg-elev);
+  gap: var(--space-2, 6px);
+  padding: var(--space-1, 4px) var(--space-2, 8px);
+  background: var(--surface-overlay, var(--bg-elevated, var(--bg-elev)));
   color: var(--fg);
   border: 1px solid var(--divider-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
+  font: var(--text-caption, 400 11px/1.3 inherit);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   line-height: 1.2;
   white-space: nowrap;
   pointer-events: none;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.22));
   z-index: 20;
 }
 .audio-tooltip__speaker {
@@ -1625,27 +1951,15 @@
   color: var(--fg-muted);
 }
 
-/* Active-speaker pulse — gentle outline pulse keyed off the
-   pill's inline borderColor (currentColor reads the text color,
-   which we don't recolor; we use box-shadow on the border color
-   indirectly via outline-color fallback). */
+/* Active-speaker pulse — gentle halo pulse keyed off the pill's
+   own --pill-color so the active speaker glows in their voice
+   colour during playback. */
 @keyframes speaker-pill-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
   50% {
-    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.18);
-  }
-}
-[data-theme='light'] .speaker-pill--pulse {
-  animation: speaker-pill-pulse-light 1.6s ease-in-out infinite;
-}
-@keyframes speaker-pill-pulse-light {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
-  }
-  50% {
-    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.12);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--pill-color, var(--fg)) 22%, transparent);
   }
 }
 .speaker-pill--pulse {
@@ -1654,63 +1968,47 @@
 
 /* Click-flash on the pill when its segment row is clicked.
    Fires once via a transient class added on click and removed
-   ~1s later by the React setTimeout. */
+   ~1s later by the React setTimeout. The halo uses the pill's
+   own colour (via --pill-color) so the cue feels tied to the
+   speaker the user just landed on. */
 @keyframes speaker-pill-flash {
   0% {
-    background: var(--bg-elevated, var(--bg-elev));
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
   20% {
-    background: rgba(255, 255, 255, 0.22);
-    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.22);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--pill-color, var(--fg)) 30%, transparent);
   }
   100% {
-    background: var(--bg-elevated, var(--bg-elev));
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
-  }
-}
-[data-theme='light'] .speaker-pill--flash {
-  animation: speaker-pill-flash-light 1s ease-out;
-}
-@keyframes speaker-pill-flash-light {
-  0% {
-    background: var(--bg-elevated, var(--bg-elev));
-    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
-  }
-  20% {
-    background: rgba(0, 0, 0, 0.10);
-    box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.10);
-  }
-  100% {
-    background: var(--bg-elevated, var(--bg-elev));
-    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 .speaker-pill--flash {
   animation: speaker-pill-flash 1s ease-out;
 }
 
-/* ── Cascade banner ───────────────────────────────────────────
+/* ── Cascade banner (v0.7.0) ───────────────────────────────────
    Non-blocking nudge anchored between the speaker pills row and
-   the tab strip. Solid background — NOT transparent. The 3px
-   left accent stripe is coloured by the renamed speaker via an
-   inline style on borderLeftColor. */
+   the tab strip. Solid raised surface — NEVER transparent. The
+   3px left accent stripe is coloured by the renamed speaker via
+   an inline style on borderLeftColor. */
 .cascade-banner {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 8px 0;
-  padding: 12px 16px;
-  background: var(--bg-elevated, var(--bg-elev));
+  gap: var(--space-3, 12px);
+  margin: var(--space-2, 8px) 0;
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--surface-raised, var(--bg-elevated, var(--bg-elev)));
   border: 1px solid var(--divider);
   border-left: 3px solid var(--divider);
-  border-radius: 8px;
+  border-radius: var(--radius-lg, 8px);
   color: var(--fg);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.04));
 }
 .cascade-banner__icon {
-  font-size: 14px;
-  line-height: 1;
-  color: var(--fg-dim, var(--fg-muted));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted, var(--fg-dim));
   flex-shrink: 0;
 }
 .cascade-banner__body {
@@ -1729,13 +2027,81 @@
   font-weight: 600;
 }
 .cascade-banner__line--dim {
-  color: var(--fg-dim, var(--fg-muted));
+  color: var(--fg-muted, var(--fg-dim));
 }
 .cascade-banner__line--dim strong {
   color: var(--fg);
 }
 .cascade-banner__actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2, 6px);
   flex-shrink: 0;
+}
+
+/* ============================================================
+ * v0.7.0 — additional surfaces inside the detail pane
+ * ============================================================ */
+
+/* Speakers tab — wraps the pill grid + add button. Overflow
+   visible so the SpeakerPicker can pop out cleanly. */
+.speakers-tab__pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px);
+  align-items: center;
+  overflow: visible;
+}
+
+/* Enrolled-voices list under the Speakers tab. */
+.enrolled-list__heading {
+  margin-top: var(--space-6, 24px);
+  margin-bottom: var(--space-2, 8px);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.enrolled-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.enrolled-list__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding: var(--space-2, 6px) 0;
+  font-size: 13px;
+}
+.enrolled-list__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.enrolled-list__name {
+  flex: 1;
+}
+.enrolled-list__count {
+  color: var(--fg-muted, var(--fg-dim));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tags tab — chip row. The chip themselves reuse the global
+   .tag-chip styles (defined for the filter strip earlier), but
+   the check glyph slot needs to lay out a lucide SVG, not a
+   text character. */
+.tag-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px);
+}
+.tag-chip__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: var(--space-1, 4px);
+  line-height: 1;
+  color: var(--fg);
 }

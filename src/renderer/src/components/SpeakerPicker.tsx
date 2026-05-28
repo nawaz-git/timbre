@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Check, X } from 'lucide-react'
 import type { EnrolledSpeaker } from '../../../shared/types'
 
 interface SpeakerPickerProps {
@@ -43,18 +44,22 @@ function dotColor(name: string): string {
 }
 
 /**
- * Speaker-assignment dropdown — Linear-grade redesign for v0.6.0.
+ * Speaker-assignment dropdown — Apple-glass redesign for v0.7.0.
  *
  * Anchored absolutely under its trigger (the parent must establish a
  * positioned context — both `.speaker-pill-wrap` and
- * `.segment-row__picker-anchor` do). The popup is fully opaque
- * (`--bg-elevated`) and floats above the transcript via z-index 1000 so
- * the text below NEVER bleeds through.
+ * `.segment-row__picker-anchor` do). The popup uses a translucent
+ * rgba surface + `backdrop-filter: saturate(180%) blur(24px)` for true
+ * Apple-style frosted glass, with a layered shadow stack and hairline
+ * border. A solid-background `@supports` fallback ensures the popup
+ * never reads as transparent on engines without backdrop-filter.
+ * Floats above the transcript via z-index 1000 — the text below
+ * still reads softly through the blur, never sharply through gaps.
  *
  * Layout:
  *   ┌──────────────────────────────────────────┐
  *   │ Change speaker         [+ Add new]       │  header
- *   │ ✓ {current}                  (current)   │  (hidden in add-mode)
+ *   │ Check {current}              (current)   │  (hidden in add-mode)
  *   │ ALSO IN THIS MEETING                     │  group label
  *   │ ● Pratik                                 │
  *   │ ● Bhaskar               (added)          │
@@ -63,10 +68,10 @@ function dotColor(name: string): string {
  *   └──────────────────────────────────────────┘
  *
  * Clicking "+ Add new" morphs the header (only the header — list stays
- * intact) into an inline input with Save / × buttons. Enter commits,
- * Escape reverts to the title row. When `hideInMeetingGroup` is true
- * the picker opens directly in add-mode (there's no current to switch
- * away from).
+ * intact) into an inline input with Save + lucide-X buttons. Enter
+ * commits, Escape reverts to the title row. When `hideInMeetingGroup`
+ * is true the picker opens directly in add-mode (there's no current
+ * to switch away from).
  */
 export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
   const {
@@ -191,7 +196,7 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
                 title="Cancel"
                 aria-label="Cancel"
               >
-                ×
+                <X size={14} strokeWidth={2} aria-hidden="true" />
               </button>
             )}
           </>
@@ -221,7 +226,7 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element {
             aria-current="true"
           >
             <span className="speaker-picker__check" aria-hidden="true">
-              ✓
+              <Check size={14} strokeWidth={2.5} />
             </span>
             <span className="speaker-picker__name">{current}</span>
             <span className="speaker-picker__meta">(current)</span>

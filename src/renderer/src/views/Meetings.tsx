@@ -1,5 +1,19 @@
 import type React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  Braces,
+  Check,
+  ChevronDown,
+  FileAudio,
+  FileCode,
+  FileText,
+  Pause,
+  Play,
+  RefreshCw,
+  SkipBack,
+  SkipForward,
+  Subtitles
+} from 'lucide-react'
 import { formatDate, formatDuration } from '../state/format'
 import { useTags } from '../state/tags'
 import { PencilIcon } from '../components/PencilIcon'
@@ -13,13 +27,29 @@ import type {
   TranscriptSegment
 } from '../../../shared/types'
 
+type TabKey = 'transcript' | 'speakers' | 'export' | 'tags'
+
 const NUM_SPEAKERS_OPTIONS: NumSpeakersHint[] = ['auto', 2, 3, 4, 5, 6]
-const EXPORT_FORMATS: { value: ExportFormat; label: string; hint: string }[] = [
-  { value: 'txt', label: 'Plain text', hint: 'Speaker-tagged lines (.txt)' },
-  { value: 'md', label: 'Markdown', hint: 'Speakers bolded with timestamps (.md)' },
-  { value: 'json', label: 'JSON', hint: 'Structured timeline (.json)' },
-  { value: 'srt', label: 'Subtitles', hint: 'SubRip format (.srt)' },
-  { value: 'audio', label: 'Audio', hint: 'Original WAV recording (.wav)' }
+
+type ExportFormatMeta = {
+  value: ExportFormat
+  label: string
+  hint: string
+  Icon: typeof FileText
+}
+const EXPORT_FORMATS: ExportFormatMeta[] = [
+  { value: 'txt', label: 'Plain text', hint: 'Speaker-tagged lines (.txt)', Icon: FileText },
+  { value: 'md', label: 'Markdown', hint: 'Speakers bolded with timestamps (.md)', Icon: FileCode },
+  { value: 'json', label: 'JSON', hint: 'Structured timeline (.json)', Icon: Braces },
+  { value: 'srt', label: 'Subtitles', hint: 'SubRip format (.srt)', Icon: Subtitles },
+  { value: 'audio', label: 'Audio', hint: 'Original WAV recording (.wav)', Icon: FileAudio }
+]
+
+const TAB_DEFS: { key: TabKey; label: string }[] = [
+  { key: 'transcript', label: 'Transcript' },
+  { key: 'speakers', label: 'Speakers' },
+  { key: 'export', label: 'Export' },
+  { key: 'tags', label: 'Tags' }
 ]
 
 const SPEAKER_PALETTE = ['#8ab4f8', '#fdd663', '#a1e3a1', '#f28b82', '#c58af9', '#79d5ff']
@@ -66,8 +96,6 @@ function uniqueSpeakers(segments: TranscriptSegment[]): string[] {
   for (const s of segments) seen.add(s.speaker)
   return Array.from(seen)
 }
-
-type TabKey = 'transcript' | 'speakers' | 'export' | 'tags'
 
 interface MeetingsViewProps {
   initialMeetingId: string | null
@@ -126,6 +154,18 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
   // Status banner
   const [statusBanner, setStatusBanner] = useState<string | null>(null)
+
+  // Animated tab indicator. We measure the currently-active tab button's
+  // offsetLeft + offsetWidth and slide a single underline pseudo-element to
+  // its position via a CSS transform. Re-measures on tab change, layout
+  // change (window resize), and when a meeting is selected (since the strip
+  // mounts at that point).
+  const tabStripRef = useRef<HTMLDivElement | null>(null)
+  const tabBtnRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const [tabIndicator, setTabIndicator] = useState<{ left: number; width: number }>({
+    left: 0,
+    width: 0
+  })
 
   // Cascade banner — non-blocking nudge shown after a successful rename or
   // per-segment reassign. Tracks the LAST speaker the user just touched so
@@ -308,6 +348,32 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     if (currentTime >= segments[segments.length - 1].end) return segments.length - 1
     return -1
   }, [segments, currentTime])
+
+  // Measure + reposition the tab-strip's sliding indicator whenever the
+  // active tab, the strip's existence, or window size changes. useLayoutEffect
+  // so the indicator is positioned in the same paint as the new active tab.
+  useLayoutEffect(() => {
+    const idx = TAB_DEFS.findIndex((t) => t.key === tab)
+    const btn = tabBtnRefs.current[idx]
+    if (!btn) {
+      // Tab strip not mounted (no meeting selected) — keep indicator hidden.
+      setTabIndicator({ left: 0, width: 0 })
+      return
+    }
+    setTabIndicator({ left: btn.offsetLeft, width: btn.offsetWidth })
+  }, [tab, selectedId])
+
+  // Re-measure on window resize so the indicator follows reflow.
+  useEffect(() => {
+    function onResize(): void {
+      const idx = TAB_DEFS.findIndex((t) => t.key === tab)
+      const btn = tabBtnRefs.current[idx]
+      if (!btn) return
+      setTabIndicator({ left: btn.offsetLeft, width: btn.offsetWidth })
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [tab])
 
   const transcriptListRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
@@ -788,7 +854,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
             {reanalyzePending && (
               <div className="reanalyze-bar">
-                <span style={{ color: 'var(--fg-dim)', fontSize: 13 }}>Speakers:</span>
+                <span className="reanalyze-bar__label">Speakers</span>
                 <select
                   value={String(reanalyzeSpeakers)}
                   onChange={(e) => {
@@ -821,10 +887,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             {/* ── Speaker pills with picker ────────────────────────────── */}
             {speakersInTranscript.length > 0 && (
               <div className="speaker-row">
-                <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>Speakers:</span>
+                <span className="speaker-row__label">Speakers</span>
                 {speakersInTranscript.map((name) => {
                   const pulsing = activeSpeaker === name
                   const flashing = flashedSpeaker === name
+                  const color = colorForSpeaker(name)
                   return (
                     <div key={name} className="speaker-pill-wrap">
                       <button
@@ -833,16 +900,22 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                           (pulsing ? ' speaker-pill--pulse' : '') +
                           (flashing ? ' speaker-pill--flash' : '')
                         }
-                        style={{ borderColor: colorForSpeaker(name) }}
+                        style={
+                          {
+                            ['--pill-color' as string]: color
+                          } as React.CSSProperties
+                        }
                         onClick={() => setPickerForCluster(name)}
                         title="Click to rename or assign an enrolled voice"
                       >
-                        <span
-                          className="speaker-pill__dot"
-                          style={{ background: colorForSpeaker(name) }}
+                        <span className="speaker-pill__dot" />
+                        <span className="speaker-pill__name">{name}</span>
+                        <ChevronDown
+                          className="speaker-pill__edit"
+                          size={12}
+                          strokeWidth={2}
+                          aria-hidden="true"
                         />
-                        {name}
-                        <span className="speaker-pill__edit">▾</span>
                       </button>
                       {pickerForCluster === name && (
                         <SpeakerPicker
@@ -888,7 +961,16 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   }}
                   aria-label={isPlaying ? 'Pause' : 'Play'}
                 >
-                  {isPlaying ? '❚❚' : '▶'}
+                  {isPlaying ? (
+                    <Pause size={18} strokeWidth={2.25} aria-hidden="true" />
+                  ) : (
+                    <Play
+                      size={18}
+                      strokeWidth={2.25}
+                      aria-hidden="true"
+                      style={{ marginLeft: 2 }}
+                    />
+                  )}
                 </button>
                 <button
                   className="player-bar__btn-small"
@@ -900,8 +982,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       )
                     }
                   }}
+                  aria-label="Back 5 seconds"
+                  title="Back 5 seconds"
                 >
-                  −5s
+                  <SkipBack size={16} strokeWidth={2} aria-hidden="true" />
+                  <span className="player-bar__btn-small-label">5s</span>
                 </button>
                 <button
                   className="player-bar__btn-small"
@@ -913,11 +998,21 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       )
                     }
                   }}
+                  aria-label="Forward 5 seconds"
+                  title="Forward 5 seconds"
                 >
-                  +5s
+                  <span className="player-bar__btn-small-label">5s</span>
+                  <SkipForward size={16} strokeWidth={2} aria-hidden="true" />
                 </button>
                 <span className="player-bar__time">{formatHHMMSS(currentTime)}</span>
                 <div className="player-bar__seek-wrap" ref={seekWrapRef}>
+                  <div
+                    className="player-bar__seek-progress"
+                    aria-hidden="true"
+                    style={{
+                      width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%'
+                    }}
+                  />
                   <input
                     className="player-bar__seek"
                     type="range"
@@ -932,6 +1027,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     }}
                     onMouseMove={onSeekMouseMove}
                     onMouseLeave={onSeekMouseLeave}
+                    aria-label="Seek"
                   />
                   {seekHover && (
                     <div
@@ -966,7 +1062,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 role="status"
               >
                 <span className="cascade-banner__icon" aria-hidden="true">
-                  ⟳
+                  <RefreshCw size={14} strokeWidth={2} />
                 </span>
                 <div className="cascade-banner__body">
                   <div className="cascade-banner__line">
@@ -1000,24 +1096,31 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
               </div>
             )}
 
-            {/* ── Tab strip ────────────────────────────────────────────── */}
-            <div className="tab-strip">
-              {(
-                [
-                  ['transcript', 'Transcript'],
-                  ['speakers', 'Speakers'],
-                  ['export', 'Export'],
-                  ['tags', 'Tags']
-                ] as [TabKey, string][]
-              ).map(([k, label]) => (
+            {/* ── Tab strip with animated indicator ─────────────────────── */}
+            <div className="tab-strip" ref={tabStripRef} role="tablist">
+              {TAB_DEFS.map((t, i) => (
                 <button
-                  key={k}
-                  className={'tab-strip__btn' + (tab === k ? ' tab-strip__btn--active' : '')}
-                  onClick={() => setTab(k)}
+                  key={t.key}
+                  ref={(el) => {
+                    tabBtnRefs.current[i] = el
+                  }}
+                  role="tab"
+                  aria-selected={tab === t.key}
+                  className={'tab-strip__btn' + (tab === t.key ? ' tab-strip__btn--active' : '')}
+                  onClick={() => setTab(t.key)}
                 >
-                  {label}
+                  {t.label}
                 </button>
               ))}
+              <span
+                className="tab-strip__indicator"
+                aria-hidden="true"
+                style={{
+                  width: tabIndicator.width,
+                  transform: `translateX(${tabIndicator.left}px)`,
+                  opacity: tabIndicator.width === 0 ? 0 : 1
+                }}
+              />
             </div>
 
             {statusBanner && (
@@ -1111,12 +1214,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
             {tab === 'speakers' && (
               <div className="tab-pane">
-                <p style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 0 }}>
+                <p className="tab-pane__intro">
                   Speakers detected in this meeting. Click a name to rename it or assign an
                   already-enrolled voice. Enrolled voices are matched automatically in future
                   imports.
                 </p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <div className="speakers-tab__pills">
                   {speakersInTranscript.length === 0 &&
                     (selectedMeeting.additionalSpeakers ?? []).length === 0 && (
                       <div className="empty">No speakers detected yet.</div>
@@ -1124,6 +1227,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   {speakersInTranscript.map((name) => {
                     const pulsing = activeSpeaker === name
                     const flashing = flashedSpeaker === name
+                    const color = colorForSpeaker(name)
                     return (
                       <div key={name} className="speaker-pill-wrap">
                         <button
@@ -1132,15 +1236,21 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                             (pulsing ? ' speaker-pill--pulse' : '') +
                             (flashing ? ' speaker-pill--flash' : '')
                           }
-                          style={{ borderColor: colorForSpeaker(name) }}
+                          style={
+                            {
+                              ['--pill-color' as string]: color
+                            } as React.CSSProperties
+                          }
                           onClick={() => setPickerForCluster(name)}
                         >
-                          <span
-                            className="speaker-pill__dot"
-                            style={{ background: colorForSpeaker(name) }}
+                          <span className="speaker-pill__dot" />
+                          <span className="speaker-pill__name">{name}</span>
+                          <ChevronDown
+                            className="speaker-pill__edit"
+                            size={12}
+                            strokeWidth={2}
+                            aria-hidden="true"
                           />
-                          {name}
-                          <span className="speaker-pill__edit">▾</span>
                         </button>
                         {pickerForCluster === name && (
                           <SpeakerPicker
@@ -1157,20 +1267,24 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   })}
                   {(selectedMeeting.additionalSpeakers ?? [])
                     .filter((n) => !speakersInTranscript.includes(n))
-                    .map((name) => (
-                      <span
-                        key={`add-${name}`}
-                        className="speaker-pill speaker-pill--added"
-                        style={{ borderColor: colorForSpeaker(name) }}
-                        title="Added manually — assign segments to this person from the Transcript tab."
-                      >
+                    .map((name) => {
+                      const color = colorForSpeaker(name)
+                      return (
                         <span
-                          className="speaker-pill__dot"
-                          style={{ background: colorForSpeaker(name) }}
-                        />
-                        {name}
-                      </span>
-                    ))}
+                          key={`add-${name}`}
+                          className="speaker-pill speaker-pill--added"
+                          style={
+                            {
+                              ['--pill-color' as string]: color
+                            } as React.CSSProperties
+                          }
+                          title="Added manually — assign segments to this person from the Transcript tab."
+                        >
+                          <span className="speaker-pill__dot" />
+                          <span className="speaker-pill__name">{name}</span>
+                        </span>
+                      )
+                    })}
                   <div className="speaker-pill-wrap">
                     <button
                       className="add-speaker-btn"
@@ -1194,28 +1308,20 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 </div>
                 {enrolledSpeakers.length > 0 && (
                   <>
-                    <h4 style={{ marginTop: 24, marginBottom: 8 }}>All enrolled voices</h4>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <h4 className="enrolled-list__heading">All enrolled voices</h4>
+                    <div className="enrolled-list">
                       {enrolledSpeakers
                         .slice()
                         .sort((a, b) => b.useCount - a.useCount)
                         .map((s) => (
-                          <div
-                            key={s.name}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 12,
-                              padding: '6px 0',
-                              fontSize: 13
-                            }}
-                          >
+                          <div key={s.name} className="enrolled-list__row">
                             <span
-                              className="speaker-pill__dot"
+                              className="enrolled-list__dot"
                               style={{ background: colorForSpeaker(s.name) }}
+                              aria-hidden="true"
                             />
-                            <span style={{ flex: 1 }}>{s.name}</span>
-                            <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>
+                            <span className="enrolled-list__name">{s.name}</span>
+                            <span className="enrolled-list__count">
                               {s.useCount} meeting{s.useCount === 1 ? '' : 's'}
                             </span>
                           </div>
@@ -1228,32 +1334,40 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
             {tab === 'export' && (
               <div className="tab-pane">
-                <p style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 0 }}>
+                <p className="tab-pane__intro">
                   Export this meeting in different formats. Audio export is the original WAV.
                 </p>
                 <div className="export-grid">
-                  {EXPORT_FORMATS.map((f) => (
-                    <button
-                      key={f.value}
-                      className="export-card"
-                      onClick={() => void onExport(f.value)}
-                      disabled={
-                        exportBusy ||
-                        (f.value === 'audio' && !selectedMeeting.hasAudio) ||
-                        selectedMeeting.id.startsWith('engine:')
-                      }
-                    >
-                      <div className="export-card__label">{f.label}</div>
-                      <div className="export-card__hint">{f.hint}</div>
-                    </button>
-                  ))}
+                  {EXPORT_FORMATS.map((f) => {
+                    const Icon = f.Icon
+                    return (
+                      <button
+                        key={f.value}
+                        className="export-card"
+                        onClick={() => void onExport(f.value)}
+                        disabled={
+                          exportBusy ||
+                          (f.value === 'audio' && !selectedMeeting.hasAudio) ||
+                          selectedMeeting.id.startsWith('engine:')
+                        }
+                      >
+                        <span className="export-card__icon" aria-hidden="true">
+                          <Icon size={18} strokeWidth={1.75} />
+                        </span>
+                        <div className="export-card__text">
+                          <div className="export-card__label">{f.label}</div>
+                          <div className="export-card__hint">{f.hint}</div>
+                        </div>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
             )}
 
             {tab === 'tags' && (
               <div className="tab-pane">
-                <p style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 0 }}>
+                <p className="tab-pane__intro">
                   Apply tags so you can filter meetings by project or type. Manage the tag list in
                   Settings.
                 </p>
@@ -1262,7 +1376,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     No tags defined yet. Open Settings → Tags to create some.
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <div className="tag-chip-row">
                     {allTags.map((tag) => {
                       const active = selectedMeeting.tagIds.includes(tag.id)
                       return (
@@ -1279,7 +1393,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                         >
                           <span className="tag-chip__dot" style={{ background: tag.color }} />
                           {tag.name}
-                          {active && <span className="tag-chip__check">✓</span>}
+                          {active && (
+                            <span className="tag-chip__check" aria-hidden="true">
+                              <Check size={12} strokeWidth={2.5} />
+                            </span>
+                          )}
                         </button>
                       )
                     })}
