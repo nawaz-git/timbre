@@ -2569,6 +2569,32 @@
   gap: var(--space-2, 6px);
   flex-shrink: 0;
 }
+/* Multi-rename layout (v0.9.0): the first line of the banner body
+   becomes a wrapping flex row that hosts the prefix ("Updated voices:")
+   followed by one inline pill per renamed speaker. Wrap so a long
+   queue can grow vertically instead of pushing the action buttons
+   off-screen. */
+.cascade-banner__pills-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+/* Compact, non-interactive pill variant used INSIDE the cascade banner.
+   The base .speaker-pill is a 26px clickable chip; the inline modifier
+   tightens it to caption-text proportions and removes the interactive
+   affordances so it reads as a label. */
+.speaker-pill.speaker-pill--inline {
+  height: auto;
+  padding: 2px 8px;
+  font-size: var(--text-caption-size, 12px);
+  border-radius: var(--radius-full, 999px);
+  cursor: default;
+  gap: 5px;
+}
+.speaker-pill.speaker-pill--inline:hover {
+  background: color-mix(in srgb, var(--pill-color, var(--fg)) 8%, transparent);
+}
 
 /* ============================================================
  * v0.7.0 — Speakers/Tags detail-pane surfaces (Ticket B)
