@@ -159,15 +159,39 @@ exports.default = async function afterPack(context) {
   // name in Finder and the path that Mintr's backend.ts spawns.
   fs.renameSync(oldAppPath, newAppPath)
 
-  // Step 4: re-sign. The original signature is invalidated by both the
-  // binary rename and the plist edits. Without re-signing, macOS would
-  // refuse to launch the helper (-67062 / errSecCSInfoPlistFailed or
-  // similar). Uses MINTR_SIGN_IDENTITY when set, else ad-hoc; preserves
-  // existing entitlements either way.
+  // Step 4: re-sign the helper. The original signature is invalidated by
+  // both the binary rename and the plist edits. Without re-signing, macOS
+  // would refuse to launch the helper. Uses MINTR_SIGN_IDENTITY when set,
+  // else ad-hoc; preserves existing entitlements either way.
   resignEngine(newAppPath)
 
   console.log(`[afterPack] rebrand complete: ${newAppPath}`)
   console.log(`            bundle id: ${NEW_BUNDLE_ID}`)
   console.log(`            display name: ${NEW_DISPLAY_NAME}`)
+
+  // Step 5: sign the OUTER Mintr.app with the stable identity too.
+  //
+  // electron-builder won't do this — it rejects self-signed identities and
+  // we've set `identity: null` in electron-builder.js. So we sign the outer
+  // app ourselves, HERE, because afterPack runs after the app is fully
+  // packed (asar + helpers + the just-rebranded MintrEngine all in place)
+  // but before the DMG is built. Signing top-level (no --deep — the inner
+  // MintrEngine + Electron framework keep their own signatures) is enough
+  // for TCC: the principal is the main executable's Designated Requirement,
+  // which becomes stable across rebuilds under MINTR_SIGN_IDENTITY → Mintr's
+  // OWN grants (Screen Recording probe, Chrome Automation) also persist.
+  // Skipped when MINTR_SIGN_IDENTITY is unset (ad-hoc build keeps Electron's
+  // default ad-hoc signature).
+  const identity = process.env.MINTR_SIGN_IDENTITY
+  if (identity) {
+    const outerApp = path.join(appOutDir, `${productName}.app`)
+    console.log(`[afterPack] signing outer ${productName}.app with "${identity}"`)
+    execFileSync(
+      '/usr/bin/codesign',
+      ['--force', '--sign', identity, outerApp],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    )
+    console.log(`[afterPack] outer app signed: ${outerApp}`)
+  }
   console.log(`            executable: ${path.join(newAppPath, 'Contents/MacOS', NEW_EXEC_NAME)}`)
 }

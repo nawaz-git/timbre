@@ -1,24 +1,24 @@
-// Mintr — v0.7.0
+// Mintr — JS config (filename MUST be `electron-builder.js` — electron-builder
+// 25 auto-detects that, NOT `electron-builder.config.js`).
 //
-// JS config (converted from electron-builder.yml) so `mac.identity` can be
-// read from the environment at config-eval time. Set MINTR_SIGN_IDENTITY to a
-// stable signing identity (see dev/scripts/setup-signing.sh) to break the TCC
-// re-grant loop; leave it unset for the default ad-hoc build (CI / other devs).
+// Signing strategy: electron-builder REFUSES to sign with a self-signed
+// (untrusted) identity — it filters `mac.identity` to "valid" Developer ID
+// certs and silently skips otherwise ("0 valid identities found"). So we set
+// `identity: null` here (no electron-builder signing) and do ALL code signing
+// ourselves in `scripts/afterPack.js`, which signs BOTH the bundled
+// MintrEngine helper AND the outer Mintr.app with MINTR_SIGN_IDENTITY when
+// it's set. That stable identity makes the cdhash-independent Designated
+// Requirement constant across rebuilds → TCC grants persist (the v0.12→v0.22
+// re-grant-loop fix). When MINTR_SIGN_IDENTITY is unset, afterPack falls back
+// to ad-hoc — preserving CI / other-dev behaviour.
 //
-// electron-builder auto-detects `electron-builder.config.js`, so the
-// `dist:mac` / `build:mac` scripts (which call `electron-builder --mac`) pick
-// this up automatically — no `--config` flag needed.
-
-// When MINTR_SIGN_IDENTITY is set, electron-builder signs Mintr.app with that
-// identity; otherwise null → ad-hoc signing (the previous behaviour).
-const signIdentity = process.env.MINTR_SIGN_IDENTITY || null
+// Real Developer ID + notarization (prod tier) is a separate ticket; when
+// that lands, set identity to the Developer ID here and flip hardenedRuntime.
 
 // Hardened runtime + a self-signed identity + the engine's JIT /
-// unsigned-executable-memory entitlements = launch failure. Only enable
-// hardened runtime for a real Developer ID identity (which implies
-// notarization). Self-signed dev tier → false. ad-hoc (null) → false.
-const hardenedRuntime =
-  typeof signIdentity === 'string' && signIdentity.startsWith('Developer ID')
+// unsigned-executable-memory entitlements = launch failure. Self-signed dev
+// tier and ad-hoc both → false. (Only a real Developer ID build flips this on.)
+const hardenedRuntime = false
 
 /**
  * @type {import('electron-builder').Configuration}
@@ -76,7 +76,7 @@ module.exports = {
       }
     ],
     // Read from MINTR_SIGN_IDENTITY (see top of file). null → ad-hoc.
-    identity: signIdentity,
+    identity: null,
     // false for ad-hoc + self-signed (dev tier); true only for Developer ID.
     hardenedRuntime: hardenedRuntime,
     gatekeeperAssess: false,
