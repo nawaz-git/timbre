@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Home as HomeIcon,
   Mic,
+  Network as NetworkIcon,
   PanelLeftClose,
   PanelLeftOpen,
   Settings as SettingsIcon
@@ -11,9 +12,10 @@ import { SettingsProvider, useSettings } from './state/settings'
 import { TagsProvider } from './state/tags'
 import { HomeView } from './views/Home'
 import { MeetingsView } from './views/Meetings'
+import { NetworkView } from './views/Network'
 import { SettingsView } from './views/Settings'
 
-type ViewKey = 'home' | 'meetings' | 'settings'
+type ViewKey = 'home' | 'meetings' | 'network' | 'settings'
 
 interface NavItem {
   key: ViewKey
@@ -25,7 +27,7 @@ interface NavItem {
   /** Human-readable keyboard shortcut shown on the right of the nav row. */
   shortcut: string
   /** Bare key portion of the shortcut, matched against `e.key`. */
-  shortcutKey: '1' | '2' | '3'
+  shortcutKey: '1' | '2' | '3' | '4'
 }
 
 const NAV: NavItem[] = [
@@ -48,13 +50,22 @@ const NAV: NavItem[] = [
     shortcutKey: '2'
   },
   {
+    key: 'network',
+    label: 'Network',
+    title: 'Network',
+    subtitle: 'People + meetings, mapped — on your Mac, never uploaded',
+    Icon: NetworkIcon,
+    shortcut: '⌘3',
+    shortcutKey: '3'
+  },
+  {
     key: 'settings',
     label: 'Settings',
     title: 'Settings',
     subtitle: 'Preferences and about',
     Icon: SettingsIcon,
-    shortcut: '⌘3',
-    shortcutKey: '3'
+    shortcut: '⌘4',
+    shortcutKey: '4'
   }
 ]
 
@@ -76,8 +87,8 @@ function AppShell(): JSX.Element {
   }, [collapsed, setSettings])
 
   // Global keyboard shortcuts:
-  //   ⌘\         — toggle the sidebar
-  //   ⌘1 / 2 / 3 — switch to Home / Meetings / Settings
+  //   ⌘\             — toggle the sidebar
+  //   ⌘1 / 2 / 3 / 4 — switch to Home / Meetings / Network / Settings
   //
   // Bound at the document level so they work regardless of which pane has
   // focus. We early-out when an INPUT/TEXTAREA owns focus so we don't
@@ -178,6 +189,7 @@ function AppShell(): JSX.Element {
               onInitialMeetingConsumed={() => setInitialMeetingId(null)}
             />
           )}
+          {view === 'network' && <NetworkView onOpenMeeting={openMeeting} />}
           {view === 'settings' && <SettingsView />}
         </div>
       </main>

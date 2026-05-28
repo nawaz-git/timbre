@@ -3327,3 +3327,405 @@
   line-height: 1.5;
   margin-top: 2px;
 }
+
+/* ──────────────────────────────────────────────────────────────────
+ * Network view (v0.13+)
+ *
+ * Layout: full-bleed canvas with an inset toolbar at the top and an
+ * optional right-rail detail panel that slides in when a node is
+ * selected. Designed to fill the entire content-body so the user gets
+ * maximum graph real estate — anything less and the force-directed
+ * layout feels cramped.
+ *
+ * Spacing system: all gaps and pads reference the v0.7 `--space-N`
+ * scale; colours pull from theme.css tokens. No literal hex values
+ * here except the rare canvas-specific overlay alpha.
+ * ────────────────────────────────────────────────────────────────── */
+
+.network {
+  display: flex;
+  flex-direction: column;
+  /* Fill the content-body even though that container has padding. The
+   * negative margin on top/right/bottom/left cancels the padding so the
+   * canvas extends to the chrome edges. Padding values mirror the
+   * `.content__body` spec at line ~280 of this file. */
+  height: calc(100% + var(--space-6, 24px) + var(--space-8, 32px));
+  width: calc(100% + var(--space-8, 32px) * 2);
+  min-height: 0;
+  margin: calc(-1 * var(--space-6, 24px)) calc(-1 * var(--space-8, 32px))
+    calc(-1 * var(--space-8, 32px));
+}
+
+.network__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding: var(--space-4, 14px) var(--space-5, 18px);
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface-base);
+  z-index: 2;
+}
+
+.network__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font: 600 var(--text-body-size, 14px) / 1 var(--font-sans);
+  color: var(--fg);
+  margin-right: var(--space-3, 10px);
+}
+
+.network__stat {
+  color: var(--fg-muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  margin-left: var(--space-2, 8px);
+}
+
+.network__time-range,
+.network__tag-filter {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.network__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--divider-strong);
+  background: var(--surface-base);
+  color: var(--fg-muted);
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.network__chip:hover {
+  background: var(--surface-hover);
+  color: var(--fg);
+}
+.network__chip--active {
+  background: var(--surface-raised);
+  color: var(--fg);
+  border-color: var(--divider-strong);
+}
+.network__chip--tag.network__chip--active {
+  color: #0f172a;
+}
+.network__chip-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.network__search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--divider-strong);
+  background: var(--surface-base);
+  color: var(--fg-muted);
+  min-width: 180px;
+}
+.network__search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: 400 13px/1 var(--font-sans);
+  min-width: 0;
+}
+.network__search input::placeholder {
+  color: var(--fg-subtle);
+}
+.network__search-clear {
+  background: transparent;
+  border: none;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+}
+.network__search-clear:hover {
+  background: var(--surface-hover);
+  color: var(--fg);
+}
+
+.network__reset {
+  background: transparent;
+  border: 1px dashed var(--divider-strong);
+  color: var(--fg-muted);
+  padding: 5px 10px;
+  border-radius: 8px;
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+.network__reset:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.network__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.network__canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-base);
+  /* Subtle dotted grid background — gives the graph a "graph paper"
+   * vibe without dominating. Uses radial-gradient for a single dot
+   * pattern repeated. */
+  background-image: radial-gradient(
+    rgba(127, 127, 127, 0.12) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+  background-position: 0 0;
+}
+[data-theme='dark'] .network__canvas {
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.06) 1px,
+    transparent 1px
+  );
+}
+
+.network__loading,
+.network__error,
+.network__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6, 24px);
+  text-align: center;
+  color: var(--fg-muted);
+  gap: var(--space-3, 12px);
+}
+.network__empty-title {
+  font: 600 15px/1.3 var(--font-sans);
+  color: var(--fg);
+}
+.network__empty-hint {
+  font: 400 13px/1.5 var(--font-sans);
+  color: var(--fg-muted);
+  max-width: 380px;
+}
+.network__error {
+  color: var(--danger, #f87171);
+}
+.link-btn {
+  background: transparent;
+  border: none;
+  color: var(--accent, #10b981);
+  cursor: pointer;
+  text-decoration: underline;
+  font: inherit;
+  padding: 0;
+}
+
+/* Bottom-left privacy reassurance — sits over the canvas. */
+.network__privacy {
+  position: absolute;
+  bottom: var(--space-3, 12px);
+  left: var(--space-3, 12px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--surface-overlay);
+  border: 1px solid var(--divider);
+  color: var(--fg-subtle);
+  font: 500 11px/1 var(--font-sans);
+  pointer-events: none;
+  user-select: none;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── Right-rail detail panel ──────────────────────────────────── */
+
+.network__detail {
+  position: relative;
+  flex-shrink: 0;
+  width: 320px;
+  border-left: 1px solid var(--divider);
+  background: var(--surface-base);
+  padding: var(--space-5, 20px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  /* Soft enter — fades + slides in from the right edge. */
+  animation: network-detail-in 160ms ease-out;
+}
+@keyframes network-detail-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.network__detail-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: transparent;
+  border: none;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: inline-flex;
+}
+.network__detail-close:hover {
+  background: var(--surface-hover);
+  color: var(--fg);
+}
+
+.network__detail-kind {
+  font: 500 11px/1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-subtle);
+}
+.network__detail-title {
+  font: 600 17px/1.25 var(--font-sans);
+  color: var(--fg);
+  word-wrap: break-word;
+}
+.network__detail-meta {
+  font: 400 12.5px/1.4 var(--font-sans);
+  color: var(--fg-muted);
+}
+
+.network__detail-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.network__detail-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font: 500 11px/1 var(--font-sans);
+  color: #0f172a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.network__detail-section {
+  font: 600 11px/1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-subtle);
+  margin-top: var(--space-3, 10px);
+}
+
+.network__speakers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.network__speakers-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+.network__speakers-row:hover {
+  background: var(--surface-hover);
+}
+.network__speakers-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.network__speakers-name {
+  font: 500 13px/1.2 var(--font-sans);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.network__speakers-time {
+  font: 400 11.5px/1 var(--font-mono, ui-monospace);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.network__speakers-empty {
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--fg-subtle);
+  padding: 6px 8px;
+}
+
+.network__person-meetings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.network__person-meeting {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+.network__person-meeting:hover {
+  background: var(--surface-hover);
+}
+.network__person-meeting-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.network__person-meeting-title {
+  font: 500 13px/1.3 var(--font-sans);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.network__person-meeting-meta {
+  font: 400 11.5px/1 var(--font-mono, ui-monospace);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.network__detail-cta {
+  margin-top: var(--space-3, 10px);
+  width: 100%;
+  justify-content: center;
+}
