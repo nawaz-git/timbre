@@ -438,6 +438,12 @@ final class AppState { // swiftlint:disable:this type_body_length
 
                 var subDetectors: [any MeetingDetecting] = [PowerAssertionDetector()]
                 if settings.watchGoogleMeet {
+                    // Reliable browser-meeting trigger first: Mintr (Electron) writes a
+                    // signal file when its all-tabs Chrome probe sees a live Meet, which
+                    // works no matter which tab/window is frontmost. The window-title
+                    // detector below only sees the frontmost Chrome tab, so it stays as a
+                    // fallback for when the Meet happens to be foregrounded.
+                    subDetectors.append(ElectronSignalDetector())
                     subDetectors.append(MeetingDetector(patterns: [.googleMeet]))
                 }
                 let detector: any MeetingDetecting = CompositeMeetingDetector(subDetectors)
