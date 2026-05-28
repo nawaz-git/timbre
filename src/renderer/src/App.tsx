@@ -12,7 +12,6 @@ import { TagsProvider } from './state/tags'
 import { HomeView } from './views/Home'
 import { MeetingsView } from './views/Meetings'
 import { SettingsView } from './views/Settings'
-import mintrMark from './assets/mintr-mark.png'
 
 type ViewKey = 'home' | 'meetings' | 'settings'
 
@@ -21,8 +20,12 @@ interface NavItem {
   label: string
   subtitle: string
   title: string
-  /** Lucide component rendered at 18px inside the nav-item icon slot. */
+  /** Lucide component rendered at 16px inside the nav-item icon slot. */
   Icon: LucideIcon
+  /** Human-readable keyboard shortcut shown on the right of the nav row. */
+  shortcut: string
+  /** Bare key portion of the shortcut, matched against `e.key`. */
+  shortcutKey: '1' | '2' | '3'
 }
 
 const NAV: NavItem[] = [
@@ -31,21 +34,27 @@ const NAV: NavItem[] = [
     label: 'Home',
     title: 'Home',
     subtitle: 'Record and import audio',
-    Icon: HomeIcon
+    Icon: HomeIcon,
+    shortcut: '⌘1',
+    shortcutKey: '1'
   },
   {
     key: 'meetings',
     label: 'Meetings',
     title: 'Meetings',
     subtitle: 'Past transcripts',
-    Icon: Mic
+    Icon: Mic,
+    shortcut: '⌘2',
+    shortcutKey: '2'
   },
   {
     key: 'settings',
     label: 'Settings',
     title: 'Settings',
     subtitle: 'Preferences and about',
-    Icon: SettingsIcon
+    Icon: SettingsIcon,
+    shortcut: '⌘3',
+    shortcutKey: '3'
   }
 ]
 
@@ -66,19 +75,29 @@ function AppShell(): JSX.Element {
     void setSettings({ sidebarCollapsed: !collapsed })
   }, [collapsed, setSettings])
 
-  // ⌘\ — global recovery shortcut so users can re-expand the sidebar even
-  // if the toggle button is somehow obscured (e.g. behind macOS chrome on an
-  // older build). Bound at the document level so it works regardless of
-  // which pane has focus. We ignore the event when an input/textarea has
-  // focus to avoid hijacking text entry on non-US layouts where the
-  // backslash key may be used as a normal character.
+  // Global keyboard shortcuts:
+  //   ⌘\         — toggle the sidebar
+  //   ⌘1 / 2 / 3 — switch to Home / Meetings / Settings
+  //
+  // Bound at the document level so they work regardless of which pane has
+  // focus. We early-out when an INPUT/TEXTAREA owns focus so we don't
+  // hijack normal text entry (e.g. typing "1" in a tag-rename field).
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
-      if (!e.metaKey || e.key !== '\\') return
+      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return
       const target = e.target as HTMLElement | null
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return
-      e.preventDefault()
-      toggleSidebar()
+
+      if (e.key === '\\') {
+        e.preventDefault()
+        toggleSidebar()
+        return
+      }
+      const hit = NAV.find((n) => n.shortcutKey === e.key)
+      if (hit) {
+        e.preventDefault()
+        setView(hit.key)
+      }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
@@ -87,17 +106,19 @@ function AppShell(): JSX.Element {
   return (
     <div className={'app' + (collapsed ? ' app--sidebar-collapsed' : '')}>
       <aside className={'sidebar' + (collapsed ? ' sidebar--collapsed' : '')}>
-        <div className="sidebar__brand">
-          <span className="sidebar__brand-mark" aria-hidden="true">
-            <img src={mintrMark} alt="" width={20} height={20} draggable={false} />
-          </span>
-          <span className="sidebar__brand-label">Mintr</span>
+        {/*
+          Top row — just the collapse toggle. No brand mark / wordmark
+          (the macOS menubar already shows "Mintr"). Sits just below the
+          44px-tall reserved strip that clears the traffic lights.
+        */}
+        <div className="sidebar__top">
           <button
             type="button"
             className="sidebar__toggle"
             onClick={toggleSidebar}
             aria-label={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
             title={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
+            aria-keyshortcuts="Meta+\\"
           >
             {collapsed ? (
               <PanelLeftOpen size={16} strokeWidth={1.75} aria-hidden="true" />
@@ -106,6 +127,7 @@ function AppShell(): JSX.Element {
             )}
           </button>
         </div>
+
         <nav className="sidebar__nav" aria-label="Primary">
           {NAV.map((item) => {
             const { Icon } = item
@@ -118,22 +140,26 @@ function AppShell(): JSX.Element {
                   'sidebar__nav-item' + (active ? ' sidebar__nav-item--active' : '')
                 }
                 onClick={() => setView(item.key)}
-                title={collapsed ? item.label : undefined}
+                title={collapsed ? `${item.label} (${item.shortcut})` : undefined}
                 aria-label={item.label}
+                aria-keyshortcuts={`Meta+${item.shortcutKey}`}
                 aria-current={active ? 'page' : undefined}
               >
                 <span className="sidebar__nav-icon" aria-hidden="true">
-                  <Icon size={18} strokeWidth={1.75} />
+                  <Icon size={16} strokeWidth={1.75} />
                 </span>
                 <span className="sidebar__nav-label">{item.label}</span>
+                <span className="sidebar__nav-shortcut" aria-hidden="true">
+                  {item.shortcut}
+                </span>
               </button>
             )
           })}
         </nav>
+
         <div className="sidebar__footer">
-          On-device transcription.
-          <br />
-          Audio never leaves your Mac.
+          <span className="sidebar__footer-line">On-device transcription.</span>
+          <span className="sidebar__footer-line">Audio never leaves your Mac.</span>
         </div>
       </aside>
 

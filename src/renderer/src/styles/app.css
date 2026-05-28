@@ -21,87 +21,70 @@
 }
 
 .app--sidebar-collapsed {
-  grid-template-columns: 60px 1fr;
+  /* Narrow icon-only rail. 56px = 16px icon + 20px horizontal breathing
+     room either side. Wide enough to centre the lucide glyph at 16px
+     without crowding the rounded hover pill behind it. */
+  grid-template-columns: 56px 1fr;
 }
 
 /* ---------- Sidebar ---------- */
 
+/*
+ * Sidebar redesign — v0.11 (Codex-style).
+ *
+ * Previously the sidebar had a heavy brand row (leaf icon + "Mintr"
+ * wordmark) at the top and a vertical divider separating it from the
+ * content. The brand row duplicated information the macOS menubar
+ * already shows, and the hard divider broke the chrome into two
+ * visual surfaces.
+ *
+ * The new sidebar:
+ *   - shares `--surface-base` with the content area (no divider)
+ *   - reserves 44px at the top for the traffic lights
+ *   - shows only a panel toggle in its top row (no brand)
+ *   - collapses to a 56px icon-only rail (no labels, no shortcuts)
+ *   - surfaces ⌘1 / ⌘2 / ⌘3 shortcut chips on each nav row when open
+ *
+ * The whole sidebar is a `-webkit-app-region: drag` zone (so the user
+ * can pick the window up from anywhere on it) except for the buttons,
+ * which mark themselves `no-drag` to remain clickable.
+ */
 .sidebar {
   position: relative;
   display: flex;
   flex-direction: column;
   background: var(--surface-base);
-  border-right: 1px solid var(--divider);
   -webkit-app-region: drag;
   user-select: none;
   overflow: hidden;
+  /* Reserve room for macOS traffic lights (drawn at fixed top:12px,
+     ~14px tall). 44px gives the toggle + lights matching vertical
+     alignment without colliding. */
+  padding-top: 44px;
   transition: width 160ms ease;
 }
 
 /*
- * Brand + toggle row.
- *
- * Single row, top-anchored below the macOS traffic-light strip
- * (lights occupy ~12-40px from the top-left). 56px top padding
- * guarantees an 8-16px gap below the lights even on the densest
- * layouts. The brand mark + wordmark sit on the left; the chevron
- * toggle is pushed to the right via `justify-content: space-between`.
- *
- * In the collapsed state the wordmark is hidden, the chevron drops
- * onto its own row directly below the mark, and both are centered —
- * this keeps the brand mark from drifting around or shrinking when
- * the sidebar narrows to 60px.
+ * Top row — just the collapse toggle. Inset from the left by
+ * `space-2` so the toggle visually lines up with the nav-item
+ * icons below it (same horizontal column).
  */
-.sidebar__brand {
-  padding: 56px var(--space-4) var(--space-5);
+.sidebar__top {
+  -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  white-space: nowrap;
-  overflow: hidden;
-  color: var(--fg);
+  justify-content: flex-start;
+  padding: 0 var(--space-2) var(--space-2);
 }
-
-.sidebar__brand-mark {
-  /* Holds the actual Mintr mint-leaf app icon (rounded-square PNG with
-     its own mint-green gradient). The container clips to a 5px radius
-     so the icon's squircle silhouette matches the macOS Dock style at
-     this scale. No background colour — the PNG provides its own. */
-  display: inline-flex;
-  align-items: center;
+.sidebar--collapsed .sidebar__top {
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.sidebar__brand-mark img {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-}
-
-.sidebar__brand-label {
-  font: 600 var(--text-h1-size) / 1 var(--font-sans);
-  letter-spacing: -0.005em;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: opacity 120ms ease;
+  padding: 0 0 var(--space-2);
 }
 
 /*
  * Inline collapse toggle. 28x28 hit target with a 16px lucide chevron
- * inside (4px implicit padding on each side). Lives inside the brand
- * row, anchored to the right edge by the parent's space-between.
- * Lucide icons render as currentColor SVG so the colour token controls
- * them via `color: ...`. `no-drag` lets it accept clicks despite the
- * sidebar being a window-drag region.
+ * (Panel-Left-Open / Panel-Left-Close). Lucide icons render as
+ * currentColor SVG so the colour token controls them via `color: ...`.
  */
 .sidebar__toggle {
   -webkit-app-region: no-drag;
@@ -132,26 +115,13 @@
 }
 
 /*
- * Collapsed sidebar — wordmark hides, brand row stacks the mark on
- * top and the toggle directly underneath. Both centered horizontally
- * within the 60px column. We drop the row gap so the two glyphs read
- * as a tight column rather than two unrelated items.
+ * Nav list. Inline padding matches the toggle row so icons stack
+ * vertically with the toggle and read as a single column.
  */
-.sidebar--collapsed .sidebar__brand {
-  padding: 56px 0 var(--space-5);
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: var(--space-2);
-}
-.sidebar--collapsed .sidebar__brand-label {
-  display: none;
-}
-
 .sidebar__nav {
   display: flex;
   flex-direction: column;
-  padding: var(--space-2);
+  padding: 0 var(--space-2);
   gap: 2px;
   -webkit-app-region: no-drag;
 }
@@ -161,7 +131,7 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: var(--space-2) 10px;
+  padding: 7px var(--space-2);
   border-radius: var(--radius-md);
   color: var(--fg-muted);
   text-align: left;
@@ -180,6 +150,13 @@
   color: var(--fg);
 }
 
+/*
+ * Active row — subtle raised pill, NOT a heavy accent fill. We lean
+ * on `--surface-raised` (#131313 dark / #f8f8f7 light) plus a foreground
+ * tint, so the active state reads as a "you are here" hint instead of
+ * a button. The accent colour is reserved for the primary record/CTA
+ * affordances elsewhere in the app.
+ */
 .sidebar__nav-item--active {
   background: var(--surface-raised);
   color: var(--fg);
@@ -195,36 +172,72 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   line-height: 1;
   flex-shrink: 0;
   color: inherit;
 }
 
 .sidebar__nav-label {
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/*
+ * ⌘N shortcut chip — pushed to the right edge of the row, muted.
+ * Tabular-nums keeps the glyph width consistent so the chips line
+ * up vertically across rows. Hidden in collapsed mode.
+ */
+.sidebar__nav-shortcut {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  margin-left: var(--space-2);
+}
+
+/* ── Collapsed sidebar (56px icon-only rail) ──────────────────────
+ *
+ * Hide labels and shortcut chips; centre the icon in the row so the
+ * hover/active pill is a square centred on the icon. The list keeps
+ * its 2px row gap so a stack of three icons reads as three discrete
+ * targets, not a strip.
+ */
 .sidebar--collapsed .sidebar__nav {
-  padding: var(--space-2) var(--space-1);
+  padding: 0;
 }
 .sidebar--collapsed .sidebar__nav-item {
   justify-content: center;
-  padding: var(--space-2) 0;
+  padding: 7px 0;
 }
-.sidebar--collapsed .sidebar__nav-label {
+.sidebar--collapsed .sidebar__nav-label,
+.sidebar--collapsed .sidebar__nav-shortcut {
   display: none;
 }
 
+/*
+ * Footer tagline. Two stacked lines so the line-height stays
+ * controlled and the second line can be a slightly different weight
+ * if we ever want to add a version pill alongside. Hidden when
+ * collapsed — the 56px rail is icon-only.
+ */
 .sidebar__footer {
   margin-top: auto;
-  padding: var(--space-4) var(--space-5);
-  border-top: 1px solid var(--divider);
-  font: 500 var(--text-caption-size) / 1.4 var(--font-sans);
+  padding: var(--space-4) var(--space-4);
+  font: 500 var(--text-caption-size) / 1.5 var(--font-sans);
   color: var(--fg-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sidebar__footer-line {
+  display: block;
 }
 
 .sidebar--collapsed .sidebar__footer {
