@@ -145,6 +145,22 @@ struct MeetingTranscriberApp: App {
             .task {
                 await appState.checkPermissions()
             }
+            .task {
+                // Proactively request Microphone access on first launch so
+                // macOS shows the consent prompt. macOS 26 (Tahoe) removed the
+                // "+" button from System Settings → Privacy → Microphone — the
+                // ONLY way this app enters the Microphone list is by calling
+                // AVCaptureDevice.requestAccess(for: .audio), which this helper
+                // does. `checkPermissions()` above is passive (authorizationStatus
+                // only) and never prompts, so without this task the engine could
+                // never obtain mic access and live capture silently failed.
+                // `ensureMicrophoneAccess()` is idempotent: it short-circuits to
+                // `true` once the status is `.authorized`, so re-running on every
+                // launch is harmless. Runs on MainActor in parallel with the
+                // +3 s auto-watch timer, so the prompt appears immediately at
+                // launch rather than waiting for the first meeting.
+                _ = await Permissions.ensureMicrophoneAccess()
+            }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 // Re-check permissions when the user returns to the app (e.g. from System
                 // Settings after toggling a permission). Debounced so rapid Cmd-Tab cycles
