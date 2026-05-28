@@ -2721,6 +2721,103 @@
   line-height: 1;
 }
 
+/*
+ * TICKET-001 — live placeholder card treatment.
+ *
+ * Reuses the same accent-green border and `meet-live-pulse` keyframes as
+ * `.meet-live-card` / `.capture-live-card` so the user reads "this is the
+ * same live signal" across all three surfaces. The pulsing red dot lives
+ * inside a small inline pill next to the title — distinct from the bigger
+ * dot on the capture cards because Recent Meetings rows are dense.
+ */
+.recent-card--live {
+  border-color: var(--accent, #10b981);
+  background: rgba(16, 185, 129, 0.06);
+}
+[data-theme='dark'] .recent-card--live {
+  background: rgba(16, 185, 129, 0.08);
+}
+.recent-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.recent-card__title-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.recent-card__live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-full, 999px);
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--status-recording, #ef4444);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.recent-card__live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--status-recording, #ef4444);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+  animation: meet-live-pulse 1.6s ease-in-out infinite;
+}
+.recent-card__meta--live {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/*
+ * TICKET-001 — Meetings tab list-row live treatment. The row already has
+ * a stable layout; here we only add the pulsing dot before the title and
+ * tweak the meta line so it reads as a status sentence instead of stats.
+ */
+.meetings__row--live .meetings__row-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.meetings__row-live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--status-recording, #ef4444);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+  animation: meet-live-pulse 1.6s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.meetings__row-meta--live {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.meetings__detail-live-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3, 12px);
+}
+.meetings__detail-live-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font: 600 16px/1.3 var(--font-sans);
+  color: var(--fg);
+}
+.meetings__detail-live-body {
+  font: 400 13px/1.5 var(--font-sans);
+  color: var(--fg-muted);
+  max-width: 48ch;
+}
+
 /* ── Tighten action row when overflow risk ─────────────────── */
 
 .detail-header {

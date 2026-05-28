@@ -50,11 +50,40 @@ import type {
 
 const WATCHDOG_THRESHOLD_MS = 25_000 // 25s of "Meet detected, no file" → flag
 const DEBOUNCE_MS = 1500
+/**
+ * How long a Chrome `meet.google.com` tab must be visible before we
+ * surface a synthesised "Live · <id>" row in the meetings list
+ * (TICKET-001). Short enough that the user sees feedback well before
+ * the helper-permission watchdog fires at 25s, long enough to skip
+ * tab-flicker / accidental open-and-close.
+ * TODO: when the Settings UI lands, replace the constant read with
+ *       `settings.livePlaceholderDelayMs ?? LIVE_PLACEHOLDER_DELAY_MS`.
+ */
+const LIVE_PLACEHOLDER_DELAY_MS = 10_000
 
 /** Bundle id of the bundled MintrEngine.app helper (per Info.plist). */
 const ENGINE_BUNDLE_ID = 'ai.nawaz.mintr-engine'
 /** Per-call timeout for each `log show` invocation in classifyHelperFailure. */
 const LOG_SHOW_TIMEOUT_MS = 2500
+
+/**
+ * In-memory live-meeting placeholder. Owned by this module — `meetings.ts`
+ * reads it via `getLivePlaceholder()` and prepends a synthesised
+ * `MeetingSummary` so the renderer's existing `meetings:list` / push flow
+ * surfaces a "Live · <id>" row at the top of both lists.
+ *
+ * Lifecycle:
+ *   create  — chrome tab visible AND `meetSeenAt` is older than
+ *             `LIVE_PLACEHOLDER_DELAY_MS` AND no placeholder yet
+ *   clear   — chrome tab disappears (user left the Meet)
+ *           — OR a new engine file lands whose basename contains the
+ *             placeholder's `meetingId` substring (file took over)
+ */
+interface LivePlaceholder {
+  meetingId: string
+  startedAt: number
+  title: string
+}
 
 const state: {
   /** When did the current Chrome-detected meeting first appear? */
@@ -64,6 +93,9 @@ const state: {
   /** Last time we observed a new file under liveRecordingsRoot. */
   lastEngineWriteAt: number
   signal: CaptureWatchdogSignal
+  /** Synthesised placeholder for a Meet that's been detected but not yet
+   *  written by the engine. Read by `meetings.ts` via getLivePlaceholder. */
+  livePlaceholder: LivePlaceholder | null
   watchers: FSWatcher[]
   debounceTimer: NodeJS.Timeout | null
   watchdogTimer: NodeJS.Timeout | null
@@ -72,6 +104,7 @@ const state: {
   lastSeenMeetingId: null,
   lastEngineWriteAt: 0,
   signal: { helperPermissionLikely: false },
+  livePlaceholder: null,
   watchers: [],
   debounceTimer: null,
   watchdogTimer: null
@@ -101,6 +134,16 @@ export function resetCaptureWatchdog(): void {
   if (state.signal.helperPermissionLikely) {
     setSignal({ helperPermissionLikely: false })
   }
+}
+
+/**
+ * Current live-meeting placeholder, or null if none. `meetings.ts` reads
+ * this and prepends a synthesised `MeetingSummary` to its list — keeping
+ * the lifecycle (create/replace/clear) in this module avoids an import
+ * cycle and keeps watchdog-owned state in one file.
+ */
+export function getLivePlaceholder(): LivePlaceholder | null {
+  return state.livePlaceholder
 }
 
 /**
@@ -164,6 +207,11 @@ function makeWatcher(path: string, kind: 'live' | 'imported'): FSWatcher {
     // Any change at all bumps the engine-write timestamp — this is the
     // signal that the helper IS doing work (which clears the watchdog).
     state.lastEngineWriteAt = Date.now()
+    // TICKET-001: if a freshly-written engine file's name carries the
+    // chrome meeting id we'd been holding a placeholder for, the real
+    // entry is about to show up via `listMeetings` — drop the
+    // placeholder so the list shows one row, not two.
+    if (kind === 'live' && filename) maybeClearPlaceholderForFile(filename)
     queueMeetingsChange(kind, filename ?? null, eventType)
 
     // v0.14+: emit macOS notifications on capture lifecycle events so
@@ -293,6 +341,11 @@ function checkWatchdog(): void {
     if (state.signal.helperPermissionLikely) {
       setSignal({ helperPermissionLikely: false })
     }
+    // Meeting identity changed → any placeholder we were holding is for
+    // a now-stale id. Drop it; if the new tab survives past the
+    // detection threshold a fresh one will be created below on the next
+    // tick.
+    if (state.livePlaceholder) setLivePlaceholder(null)
     return
   }
 
@@ -300,11 +353,33 @@ function checkWatchdog(): void {
     if (state.signal.helperPermissionLikely) {
       setSignal({ helperPermissionLikely: false })
     }
+    // No Meet visible → drop the placeholder. This satisfies the
+    // "placeholder disappears within 5s when the user leaves the Meet"
+    // acceptance criterion, since checkWatchdog ticks every 2s.
+    if (state.livePlaceholder) setLivePlaceholder(null)
     return
   }
 
   const elapsed = now - state.meetSeenAt
   const writeAge = now - state.lastEngineWriteAt
+
+  // TICKET-001: once the Meet has been visible for the detection
+  // threshold and we haven't yet surfaced a placeholder for it,
+  // create one. We don't gate on engine-quiet here — the placeholder
+  // is purely a "UI saw the meeting" affordance; the existing
+  // helper-permission watchdog below handles the "engine fell over"
+  // case independently.
+  if (
+    elapsed > LIVE_PLACEHOLDER_DELAY_MS &&
+    state.livePlaceholder === null
+  ) {
+    setLivePlaceholder({
+      meetingId: currentId,
+      startedAt: state.meetSeenAt,
+      title: `Live · ${currentId}`
+    })
+  }
+
   // The watchdog fires when:
   //   1. A Chrome Meet has been visible for at least the threshold, AND
   //   2. The engine hasn't written anything since the Meet appeared.
@@ -348,6 +423,50 @@ function checkWatchdog(): void {
         .catch((err) => {
           console.warn('[watchdog] classifyHelperFailure threw', err)
         })
+    }
+  }
+}
+
+/**
+ * If the fs.watch handler just saw a new file whose basename contains
+ * the current placeholder's chrome meeting id, the engine has taken
+ * over — drop the placeholder so the renderer's next `meetings:list`
+ * shows the real entry instead of both.
+ *
+ * Matching rule (from the QA-001 investigation): the engine writes
+ * `YYYYMMDD_HHmm_meet__<chromeId>_.txt` — the chrome id appears as a
+ * substring (surrounded by `__` and `_`), so `filename.includes(id)`
+ * is the right test. See the existing protocols file
+ * `20260528_1938_meet__ifh-kkfh-dzg_.txt` for shape.
+ */
+function maybeClearPlaceholderForFile(filename: string): void {
+  const ph = state.livePlaceholder
+  if (!ph) return
+  const base = basename(filename)
+  if (base.includes(ph.meetingId)) {
+    setLivePlaceholder(null)
+  }
+}
+
+function setLivePlaceholder(next: LivePlaceholder | null): void {
+  state.livePlaceholder = next
+  pushPlaceholderChange()
+}
+
+/**
+ * Broadcast a `meetings:changed` push so any open renderer window
+ * re-runs `meetings.list()` and picks up the placeholder
+ * create/clear. We intentionally reuse the existing channel rather
+ * than adding a new one — `listMeetings` already merges the placeholder
+ * into its response so the renderer's existing handler is enough.
+ */
+function pushPlaceholderChange(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('meetings:changed', {
+        kind: 'live-placeholder',
+        filename: null
+      })
     }
   }
 }

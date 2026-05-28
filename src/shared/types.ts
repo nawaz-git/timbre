@@ -53,7 +53,26 @@ export interface MeetingSummary {
    * without an extra round-trip. Stored on `metadata.json → additionalSpeakers`.
    */
   additionalSpeakers: string[]
+  /**
+   * Set on synthesised placeholder rows the main process injects while a
+   * Meet is detected but the engine hasn't written a file yet (TICKET-001).
+   * Real, filesystem-backed entries leave this `undefined` (falsy). The
+   * renderer keys the LIVE badge + "Recording in progress…" copy off this.
+   */
+  isLive?: boolean
 }
+
+/**
+ * Default threshold for surfacing a live-meeting placeholder row once a
+ * Chrome `meet.google.com/...` tab has been visible for this many ms.
+ * The capture watchdog (`captureWatchdog.ts`) holds its own
+ * `LIVE_PLACEHOLDER_DELAY_MS` constant so it can run without importing
+ * shared types; this export exists for any future code (Settings UI,
+ * tests, docs) that needs to reference the same default.
+ * TODO: replace with a `livePlaceholderDelayMs` field on `Settings` once
+ *       the Settings UI control lands.
+ */
+export const LIVE_PLACEHOLDER_DEFAULT_MS = 10_000
 
 /** A category label that can be applied to one or more meetings. */
 export interface TagDef {

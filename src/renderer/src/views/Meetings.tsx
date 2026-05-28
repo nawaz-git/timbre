@@ -327,6 +327,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       // meeting's cached previews belong to different transcript files.
       setPreviewFormat('txt')
       setPreviewCache({})
+      // TICKET-001: `live:<id>` rows are in-memory placeholders with no
+      // file on disk yet — skip transcript load (would 404) and skip
+      // enrolled-speakers load (irrelevant). The detail pane shows a
+      // dedicated "Recording in progress…" empty state for these.
+      if (m.id.startsWith('live:')) {
+        setTranscript(null)
+        return
+      }
       await loadTranscript(m.id)
       await loadEnrolled()
     },
@@ -910,7 +918,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           {!loading &&
             filteredMeetings.map((m) => {
               const isEditing = rowEditingId === m.id
-              const canRename = !m.id.startsWith('engine:')
+              // TICKET-001: live placeholder rows are in-memory and
+              // can't be renamed (no metadata.json yet) or tagged.
+              const canRename = !m.id.startsWith('engine:') && !m.isLive
               return (
                 <div
                   key={m.id}
@@ -919,7 +929,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   className={
                     'meetings__row' +
                     (m.id === selectedId ? ' meetings__row--active' : '') +
-                    (isEditing ? ' meetings__row--editing' : '')
+                    (isEditing ? ' meetings__row--editing' : '') +
+                    (m.isLive ? ' meetings__row--live' : '')
                   }
                   onClick={() => {
                     if (isEditing) return
@@ -954,9 +965,17 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                         onBlur={() => void commitRowRename()}
                       />
                     ) : (
-                      <div className="meetings__row-title">{m.title}</div>
+                      <div className="meetings__row-title">
+                        {m.isLive && (
+                          <span
+                            className="meetings__row-live-dot"
+                            aria-label="Recording in progress"
+                          />
+                        )}
+                        <span>{m.title}</span>
+                      </div>
                     )}
-                    {!isEditing && (
+                    {!isEditing && !m.isLive && (
                       <div className="meetings__row-actions">
                         <div className="meetings__row-tag-wrap">
                           <button
@@ -1028,17 +1047,23 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       </div>
                     )}
                   </div>
-                  <div className="meetings__row-meta">
-                    <span>{formatDate(m.date)}</span>
-                    <span aria-hidden="true">·</span>
-                    <span className="meetings__row-meta-duration">
-                      {formatDuration(m.durationSeconds)}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span>
-                      {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
-                    </span>
-                  </div>
+                  {m.isLive ? (
+                    <div className="meetings__row-meta meetings__row-meta--live">
+                      Recording in progress — full transcript when meeting ends.
+                    </div>
+                  ) : (
+                    <div className="meetings__row-meta">
+                      <span>{formatDate(m.date)}</span>
+                      <span aria-hidden="true">·</span>
+                      <span className="meetings__row-meta-duration">
+                        {formatDuration(m.durationSeconds)}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
+                      </span>
+                    </div>
+                  )}
                   {m.tagIds.length > 0 && (
                     <div className="meetings__row-tags">
                       {m.tagIds.map((id) => {
@@ -1069,7 +1094,22 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
       <div className="meetings__detail">
         {!selectedMeeting && <div className="empty">Select a meeting to view its transcript.</div>}
-        {selectedMeeting && (
+        {selectedMeeting && selectedMeeting.isLive && (
+          /* TICKET-001: live placeholders have no transcript on disk yet —
+             show a dedicated empty state instead of the full editor stack,
+             which would try to render an empty transcript + speaker pills. */
+          <div className="empty meetings__detail-live-empty">
+            <div className="meetings__detail-live-title">
+              <span className="meetings__row-live-dot" aria-hidden="true" />
+              <span>{selectedMeeting.title}</span>
+            </div>
+            <div className="meetings__detail-live-body">
+              Recording in progress. The transcript will appear here when
+              the meeting ends.
+            </div>
+          </div>
+        )}
+        {selectedMeeting && !selectedMeeting.isLive && (
           <>
             {/* ── Title row ────────────────────────────────────────────── */}
             <div className="detail-header">

@@ -14,6 +14,7 @@ import {
   writeMeetingSpeakers,
   type BatchEvent
 } from './backend'
+import { getLivePlaceholder } from './captureWatchdog'
 
 /**
  * The Swift live-recording engine (`MeetingTranscriber.app`, bundled inside
@@ -302,6 +303,33 @@ export async function listMeetings(outputFolder: string): Promise<MeetingSummary
     seen.add(key)
     merged.push(m)
   }
+
+  // TICKET-001: if the watchdog is holding a live placeholder for a
+  // Meet that hasn't been written to disk yet, prepend it. We drop the
+  // placeholder if any merged entry's id already contains the
+  // placeholder's chrome meeting id as a substring — that means the
+  // engine has produced the real file (e.g. `engine:20260528_1938_meet__ifh-kkfh-dzg_`
+  // contains `ifh-kkfh-dzg`) and the placeholder would otherwise
+  // double-show. Matching rule: `engineMeetingId.includes(placeholderMeetingId)`.
+  const placeholder = getLivePlaceholder()
+  if (placeholder) {
+    const alreadyOnDisk = merged.some((m) => m.id.includes(placeholder.meetingId))
+    if (!alreadyOnDisk) {
+      merged.push({
+        id: `live:${placeholder.meetingId}`,
+        title: placeholder.title,
+        folderPath: ENGINE_DEFAULT_ROOT,
+        date: new Date(placeholder.startedAt).toISOString(),
+        durationSeconds: 0,
+        speakerCount: 0,
+        hasAudio: false,
+        tagIds: [],
+        additionalSpeakers: [],
+        isLive: true
+      })
+    }
+  }
+
   merged.sort((a, b) => (a.date < b.date ? 1 : -1))
   return merged
 }
