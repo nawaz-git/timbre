@@ -2,6 +2,7 @@ import type React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDate, formatDuration } from '../state/format'
 import { useTags } from '../state/tags'
+import { PencilIcon } from '../components/PencilIcon'
 import { SpeakerPicker } from '../components/SpeakerPicker'
 import type {
   EnrolledSpeaker,
@@ -641,9 +642,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       <div className="meetings__row-title">{m.title}</div>
                     )}
                     {!isEditing && canRename && (
-                      <span
-                        role="button"
-                        tabIndex={0}
+                      <button
+                        type="button"
                         className="meetings__row-edit"
                         aria-label="Rename meeting"
                         title="Rename meeting"
@@ -652,15 +652,15 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                           beginRowRename(m)
                         }}
                         onKeyDown={(e) => {
+                          // Stop bubbling so the row's keydown handler
+                          // doesn't also fire "open meeting" on Enter/Space.
                           if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault()
                             e.stopPropagation()
-                            beginRowRename(m)
                           }
                         }}
                       >
-                        ✎
-                      </span>
+                        <PencilIcon size={14} />
+                      </button>
                     )}
                   </div>
                   <div className="meetings__row-meta">

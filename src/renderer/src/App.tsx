@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { SettingsProvider, useSettings } from './state/settings'
 import { TagsProvider } from './state/tags'
 import { HomeView } from './views/Home'
@@ -57,6 +57,24 @@ function AppShell(): JSX.Element {
     void setSettings({ sidebarCollapsed: !collapsed })
   }, [collapsed, setSettings])
 
+  // ⌘\ — global recovery shortcut so users can re-expand the sidebar even
+  // if the toggle button is somehow obscured (e.g. behind macOS chrome on an
+  // older build). Bound at the document level so it works regardless of
+  // which pane has focus. We ignore the event when an input/textarea has
+  // focus to avoid hijacking text entry on non-US layouts where the
+  // backslash key may be used as a normal character.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent): void => {
+      if (!e.metaKey || e.key !== '\\') return
+      const target = e.target as HTMLElement | null
+      if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return
+      e.preventDefault()
+      toggleSidebar()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [toggleSidebar])
+
   return (
     <div className={'app' + (collapsed ? ' app--sidebar-collapsed' : '')}>
       <aside className={'sidebar' + (collapsed ? ' sidebar--collapsed' : '')}>
@@ -64,10 +82,10 @@ function AppShell(): JSX.Element {
           type="button"
           className="sidebar__toggle"
           onClick={toggleSidebar}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
+          title={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
         >
-          {collapsed ? '▸' : '◂'}
+          <span aria-hidden="true">{collapsed ? '›' : '‹'}</span>
         </button>
         <div className="sidebar__brand">
           <span className="sidebar__brand-mark" />
