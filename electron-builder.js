@@ -66,8 +66,8 @@ module.exports = {
   mac: {
     category: 'public.app-category.productivity',
     // `electron-builder` auto-detects `build/icon.icns` but we declare it
-    // explicitly so the production icon (mint leaf + sound wave) wires up
-    // regardless of buildResources discovery order.
+    // explicitly so the production icon (minimal monochrome Timbre waveform
+    // mark) wires up regardless of buildResources discovery order.
     icon: 'build/icon.icns',
     target: [
       {
