@@ -21,6 +21,15 @@ final class SpeakerMatcherRealRecordingBacktest: XCTestCase {
     }
 
     private func loadConfigOrSkip() throws -> Config {
+        // Opt-in only. This benchmark runs real CoreML diarization/matching over
+        // whatever `_mix.wav` files happen to sit in the developer's recordings
+        // folder. On a dev machine that folder accumulates ad-hoc captures —
+        // including tiny/silent test clips — which can crash the ML stack and
+        // make `swift test` non-deterministic. It's a measurement tool, not a
+        // correctness gate, so require an explicit env flag to run it.
+        guard ProcessInfo.processInfo.environment["RUN_SPEAKER_BACKTEST"] != nil else {
+            throw XCTSkip("opt-in benchmark — set RUN_SPEAKER_BACKTEST=1 to run")
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let recordings = home.appending(path: "Downloads/MeetingTranscriber/recordings")
         let speakersDB = home.appending(path:
