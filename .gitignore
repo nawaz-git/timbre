@@ -7,3 +7,6 @@ dist/
 .vscode/
 .idea/
 
+
+# ESLint cache
+.eslintcache
