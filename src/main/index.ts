@@ -12,7 +12,7 @@ import { Readable } from 'stream'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { registerIpcHandlers } from './ipc'
-import { findEngineAudioForPrefix, liveRecordingsRoot } from './meetings'
+import { findEngineAudioForPrefix, findEngineVideoForPrefix, liveRecordingsRoot } from './meetings'
 import { readSettings } from './settings'
 import { createTray, setMainWindowFactory } from './tray'
 import { startChromeProbe, stopChromeProbe } from './chromeProbe'
@@ -93,9 +93,13 @@ function registerAudioProtocol(): void {
         return new Response('Bad request', { status: 400 })
       }
       const segments = url.pathname.split('/').filter(Boolean)
-      if (segments.length !== 2 || segments[1] !== 'audio.wav') {
+      const tail = segments[1]
+      const isVideo = tail === 'screen.mp4'
+      const isAudio = tail === 'audio.wav'
+      if (segments.length !== 2 || (!isAudio && !isVideo)) {
         return new Response('Not found', { status: 404 })
       }
+      const contentType = isVideo ? 'video/mp4' : 'audio/wav'
       const folderId = decodeURIComponent(segments[0])
       if (folderId.includes('..') || folderId.includes('/') || folderId.includes('\\')) {
         return new Response('Bad id', { status: 400 })
@@ -103,23 +107,27 @@ function registerAudioProtocol(): void {
 
       // v0.17+: route engine-format ids (`engine:<prefix>`) to the
       // engine's flat-naming layout in recordings/. Engine writes
-      // `<prefix>_mix.wav` etc. rather than `<id>/audio.wav` like
-      // mt-batch does — same protocol, different physical layout.
+      // `<prefix>_mix.wav` / `<prefix>_screen.mp4` etc. rather than
+      // `<id>/audio.wav` like mt-batch does — same protocol, different
+      // physical layout. The same privileged scheme serves both media kinds.
       let path: string | null = null
       if (folderId.startsWith('engine:')) {
         const prefix = folderId.slice('engine:'.length)
         if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
           return new Response('Bad engine prefix', { status: 400 })
         }
-        const enginePath = await findEngineAudioForPrefix(prefix)
+        const enginePath = isVideo
+          ? await findEngineVideoForPrefix(prefix)
+          : await findEngineAudioForPrefix(prefix)
         if (enginePath && (await isUnderAllowedRoot(enginePath))) {
           path = enginePath
         }
       } else {
         const settings = await readSettings()
+        const fileName = isVideo ? 'screen.mp4' : 'audio.wav'
         const candidates = [
-          join(settings.outputFolder, folderId, 'audio.wav'),
-          join(liveRecordingsRoot, folderId, 'audio.wav')
+          join(settings.outputFolder, folderId, fileName),
+          join(liveRecordingsRoot, folderId, fileName)
         ]
         for (const candidate of candidates) {
           if (existsSync(candidate) && (await isUnderAllowedRoot(candidate))) {
@@ -135,12 +143,12 @@ function registerAudioProtocol(): void {
       const range = parseRangeHeader(req.headers.get('Range'), fileSize)
 
       if (!range) {
-        // Whole-file response — must include Content-Length for `<audio>`
-        // to compute duration from the WAV header without buffering.
+        // Whole-file response — must include Content-Length for `<audio>`/
+        // `<video>` to compute duration without buffering the whole file.
         return new Response(nodeStreamToWeb(createReadStream(path)), {
           status: 200,
           headers: {
-            'Content-Type': 'audio/wav',
+            'Content-Type': contentType,
             'Content-Length': String(fileSize),
             'Accept-Ranges': 'bytes',
             'Cache-Control': 'no-store'
@@ -155,7 +163,7 @@ function registerAudioProtocol(): void {
         {
           status: 206,
           headers: {
-            'Content-Type': 'audio/wav',
+            'Content-Type': contentType,
             'Content-Length': String(chunkSize),
             'Content-Range': `bytes ${start}-${end}/${fileSize}`,
             'Accept-Ranges': 'bytes',

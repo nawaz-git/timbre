@@ -7,6 +7,7 @@ import {
   FileAudio,
   FileCode,
   FileText,
+  FileVideo,
   Filter,
   Inbox,
   MoreVertical,
@@ -34,7 +35,7 @@ import type {
   TranscriptSegment
 } from '../../../shared/types'
 
-type TabKey = 'transcript' | 'speakers' | 'export' | 'tags'
+type TabKey = 'transcript' | 'speakers' | 'video' | 'export' | 'tags'
 
 const NUM_SPEAKERS_OPTIONS: NumSpeakersHint[] = ['auto', 2, 3, 4, 5, 6]
 
@@ -49,7 +50,13 @@ const EXPORT_FORMATS: ExportFormatMeta[] = [
   { value: 'md', label: 'Markdown', hint: 'Speakers bolded with timestamps (.md)', Icon: FileCode },
   { value: 'json', label: 'JSON', hint: 'Structured timeline (.json)', Icon: Braces },
   { value: 'srt', label: 'Subtitles', hint: 'SubRip format (.srt)', Icon: Subtitles },
-  { value: 'audio', label: 'Audio', hint: 'Original WAV recording (.wav)', Icon: FileAudio }
+  { value: 'audio', label: 'Audio', hint: 'Original WAV recording (.wav)', Icon: FileAudio },
+  {
+    value: 'video',
+    label: 'Screen video',
+    hint: 'Whole-screen recording (.mp4)',
+    Icon: FileVideo
+  }
 ]
 
 /** Payload returned by `meetings:exportPreview` (mirrors preload type). */
@@ -100,6 +107,7 @@ function tryFormatJson(raw: string): string {
 const TAB_DEFS: { key: TabKey; label: string }[] = [
   { key: 'transcript', label: 'Transcript' },
   { key: 'speakers', label: 'Speakers' },
+  { key: 'video', label: 'Video' },
   { key: 'export', label: 'Export' },
   { key: 'tags', label: 'Tags' }
 ]
@@ -234,6 +242,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
   // Audio playback
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  // Whole-screen video playback (only mounted on the Video tab).
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -396,6 +406,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     [meetings, selectedId]
   )
 
+  // The Video tab only exists when this meeting has a whole-screen recording.
+  // The same filtered list drives BOTH the tab-strip render and the sliding
+  // tab-indicator measurement so the underline stays aligned.
+  const visibleTabs = useMemo(
+    () => TAB_DEFS.filter((t) => t.key !== 'video' || !!selectedMeeting?.hasVideo),
+    [selectedMeeting]
+  )
+
   const segments: TranscriptSegment[] = useMemo(() => {
     if (!transcript) return []
     if (transcript.segments && transcript.segments.length > 0) return transcript.segments
@@ -430,6 +448,22 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     return `mt-audio://meeting/${encodeURIComponent(id)}/audio.wav`
   }, [selectedMeeting])
 
+  const videoSrc = useMemo(() => {
+    if (!selectedMeeting?.hasVideo) return null
+    const id = selectedMeeting.id.startsWith('imported:')
+      ? selectedMeeting.id.slice('imported:'.length)
+      : selectedMeeting.id
+    return `mt-audio://meeting/${encodeURIComponent(id)}/screen.mp4`
+  }, [selectedMeeting])
+
+  // The media element that currently owns playback: the <video> on the Video
+  // tab, otherwise the <audio> player-bar. Centralised so transcript
+  // click-to-seek + Space/Arrow keys drive whichever player is mounted.
+  const activeMediaEl = useCallback(
+    (): HTMLMediaElement | null => (tab === 'video' ? videoRef.current : audioRef.current),
+    [tab]
+  )
+
   // Keyboard shortcuts
   useEffect(() => {
     if (!selectedMeeting) return
@@ -437,28 +471,26 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       const target = e.target as HTMLElement | null
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return
       if (titleEditing || pickerForCluster || pickerForSegment !== null || addSpeakerOpen) return
+      const el = activeMediaEl()
       if (e.code === 'Space') {
         e.preventDefault()
-        if (audioRef.current) {
-          if (audioRef.current.paused) void audioRef.current.play()
-          else audioRef.current.pause()
+        if (el) {
+          if (el.paused) void el.play()
+          else el.pause()
         }
       } else if (e.code === 'ArrowLeft') {
-        if (audioRef.current) {
-          audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 5)
+        if (el) {
+          el.currentTime = Math.max(0, el.currentTime - 5)
         }
       } else if (e.code === 'ArrowRight') {
-        if (audioRef.current) {
-          audioRef.current.currentTime = Math.min(
-            audioRef.current.duration || 0,
-            audioRef.current.currentTime + 5
-          )
+        if (el) {
+          el.currentTime = Math.min(el.duration || 0, el.currentTime + 5)
         }
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [selectedMeeting, titleEditing, pickerForCluster, pickerForSegment, addSpeakerOpen])
+  }, [selectedMeeting, titleEditing, pickerForCluster, pickerForSegment, addSpeakerOpen, activeMediaEl])
 
   const activeSegmentIndex = useMemo(() => {
     if (segments.length === 0) return -1
@@ -474,7 +506,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // active tab, the strip's existence, or window size changes. useLayoutEffect
   // so the indicator is positioned in the same paint as the new active tab.
   useLayoutEffect(() => {
-    const idx = TAB_DEFS.findIndex((t) => t.key === tab)
+    const idx = visibleTabs.findIndex((t) => t.key === tab)
     const btn = tabBtnRefs.current[idx]
     if (!btn) {
       // Tab strip not mounted (no meeting selected) — keep indicator hidden.
@@ -482,19 +514,19 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       return
     }
     setTabIndicator({ left: btn.offsetLeft, width: btn.offsetWidth })
-  }, [tab, selectedId])
+  }, [tab, selectedId, visibleTabs])
 
   // Re-measure on window resize so the indicator follows reflow.
   useEffect(() => {
     function onResize(): void {
-      const idx = TAB_DEFS.findIndex((t) => t.key === tab)
+      const idx = visibleTabs.findIndex((t) => t.key === tab)
       const btn = tabBtnRefs.current[idx]
       if (!btn) return
       setTabIndicator({ left: btn.offsetLeft, width: btn.offsetWidth })
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [tab])
+  }, [tab, visibleTabs])
 
   const transcriptListRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
@@ -526,13 +558,16 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     if (tab !== 'export') return
     if (!selectedId || !selectedMeeting) return
     const fmt = previewFormat
-    // Don't fetch audio preview when there's no audio file.
+    // Don't fetch audio/video preview when the file isn't present.
     if (fmt === 'audio' && !selectedMeeting.hasAudio) return
-    // Engine meetings only support txt/md — don't ask the backend for the rest.
+    if (fmt === 'video' && !selectedMeeting.hasVideo) return
+    // Engine meetings only support txt/md/video — don't ask the backend for
+    // the rest (json/srt/audio).
     if (
       selectedMeeting.id.startsWith('engine:') &&
       fmt !== 'txt' &&
-      fmt !== 'md'
+      fmt !== 'md' &&
+      fmt !== 'video'
     ) {
       return
     }
@@ -571,12 +606,16 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
   // ─── Actions ──────────────────────────────────────────────────────────
 
-  const seekTo = useCallback((t: number, play = true) => {
-    if (!audioRef.current) return
-    audioRef.current.currentTime = t
-    setCurrentTime(t)
-    if (play) void audioRef.current.play()
-  }, [])
+  const seekTo = useCallback(
+    (t: number, play = true) => {
+      const el = activeMediaEl()
+      if (!el) return
+      el.currentTime = t
+      setCurrentTime(t)
+      if (play) void el.play()
+    },
+    [activeMediaEl]
+  )
 
   const flashPillFor = useCallback((speaker: string) => {
     setFlashedSpeaker(speaker)
@@ -1314,7 +1353,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             )}
 
             {/* ── Audio player ─────────────────────────────────────────── */}
-            {audioSrc && (
+            {/* Hidden on the Video tab so only one media element owns
+                currentTime / playback state at a time. */}
+            {audioSrc && tab !== 'video' && (
               <div className="player-bar">
                 <audio
                   ref={audioRef}
@@ -1565,7 +1606,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
             {/* ── Tab strip with animated indicator ─────────────────────── */}
             <div className="tab-strip" ref={tabStripRef} role="tablist">
-              {TAB_DEFS.map((t, i) => (
+              {visibleTabs.map((t, i) => (
                 <button
                   key={t.key}
                   ref={(el) => {
@@ -1683,6 +1724,35 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   </div>
                 )}
               </>
+            )}
+
+            {tab === 'video' && videoSrc && (
+              <div className="tab-pane video-pane">
+                <video
+                  ref={videoRef}
+                  className="video-pane__player"
+                  src={videoSrc}
+                  controls
+                  preload="metadata"
+                  playsInline
+                  onLoadedMetadata={(e) => {
+                    const d = e.currentTarget.duration
+                    setDuration(isFinite(d) ? d : 0)
+                  }}
+                  onDurationChange={(e) => {
+                    const d = e.currentTarget.duration
+                    if (isFinite(d) && d > 0) setDuration(d)
+                  }}
+                  onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+                  onPlay={() => setIsPlaying(true)}
+                  onPause={() => setIsPlaying(false)}
+                  onEnded={() => setIsPlaying(false)}
+                />
+                <p className="video-pane__privacy-note">
+                  This is a recording of your entire screen for the meeting. Click any transcript
+                  line to jump the video there.
+                </p>
+              </div>
             )}
 
             {tab === 'speakers' && (
@@ -1840,9 +1910,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   {EXPORT_FORMATS.map((f) => {
                     const Icon = f.Icon
                     const isEngineOnly = selectedMeeting.id.startsWith('engine:')
-                    const engineDisabled = isEngineOnly && f.value !== 'txt' && f.value !== 'md'
+                    // Engine (live-recording) meetings export txt/md AND the
+                    // whole-screen video; everything else (json/srt/audio) is
+                    // unavailable for them.
+                    const engineDisabled =
+                      isEngineOnly && f.value !== 'txt' && f.value !== 'md' && f.value !== 'video'
                     const audioDisabled = f.value === 'audio' && !selectedMeeting.hasAudio
-                    const disabled = engineDisabled || audioDisabled
+                    const videoDisabled = f.value === 'video' && !selectedMeeting.hasVideo
+                    const disabled = engineDisabled || audioDisabled || videoDisabled
                     const active = previewFormat === f.value
                     return (
                       <button
@@ -1853,10 +1928,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                         disabled={disabled}
                         title={
                           engineDisabled
-                            ? 'Live recordings only support Plain text and Markdown export.'
+                            ? 'Live recordings only support Plain text, Markdown, and screen-video export.'
                             : audioDisabled
                               ? 'This meeting has no audio file.'
-                              : undefined
+                              : videoDisabled
+                                ? 'This meeting has no screen video.'
+                                : undefined
                         }
                         className={
                           'export-preview__chip' +
@@ -1901,9 +1978,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     disabled={
                       exportBusy ||
                       (previewFormat === 'audio' && !selectedMeeting.hasAudio) ||
+                      (previewFormat === 'video' && !selectedMeeting.hasVideo) ||
                       (selectedMeeting.id.startsWith('engine:') &&
                         previewFormat !== 'txt' &&
-                        previewFormat !== 'md')
+                        previewFormat !== 'md' &&
+                        previewFormat !== 'video')
                     }
                   >
                     {exportBusy ? 'Exporting…' : 'Export…'}
@@ -1925,15 +2004,20 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     const cached = previewCache[previewFormat]
                     const isEngineOnly = selectedMeeting.id.startsWith('engine:')
                     const engineUnsupported =
-                      isEngineOnly && previewFormat !== 'txt' && previewFormat !== 'md'
+                      isEngineOnly &&
+                      previewFormat !== 'txt' &&
+                      previewFormat !== 'md' &&
+                      previewFormat !== 'video'
                     const audioUnavailable =
                       previewFormat === 'audio' && !selectedMeeting.hasAudio
+                    const videoUnavailable =
+                      previewFormat === 'video' && !selectedMeeting.hasVideo
 
                     if (engineUnsupported) {
                       return (
                         <div className="export-preview__placeholder">
-                          Live-recording meetings only support Plain text and
-                          Markdown export.
+                          Live-recording meetings only support Plain text,
+                          Markdown, and screen-video export.
                         </div>
                       )
                     }
@@ -1941,6 +2025,13 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       return (
                         <div className="export-preview__placeholder">
                           This meeting has no audio file to export.
+                        </div>
+                      )
+                    }
+                    if (videoUnavailable) {
+                      return (
+                        <div className="export-preview__placeholder">
+                          This meeting has no screen video to export.
                         </div>
                       )
                     }
@@ -1962,15 +2053,21 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                         </div>
                       )
                     }
-                    // Ready — branch by format.
-                    if (previewFormat === 'audio') {
+                    // Ready — branch by format. Audio + video share the same
+                    // binary "file card" (size + filename, no inline body).
+                    if (previewFormat === 'audio' || previewFormat === 'video') {
+                      const isVideo = previewFormat === 'video'
                       return (
                         <div className="export-preview__audio-card">
                           <span
                             className="export-preview__audio-icon"
                             aria-hidden="true"
                           >
-                            <FileAudio size={48} strokeWidth={1.5} />
+                            {isVideo ? (
+                              <FileVideo size={48} strokeWidth={1.5} />
+                            ) : (
+                              <FileAudio size={48} strokeWidth={1.5} />
+                            )}
                           </span>
                           <div className="export-preview__audio-meta">
                             <div className="export-preview__audio-filename">
@@ -1982,8 +2079,18 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                                 : 'Binary file'}
                             </div>
                             <div className="export-preview__audio-hint">
-                              Audio files are exported as the original WAV.
-                              Click <strong>Export…</strong> to save a copy.
+                              {isVideo ? (
+                                <>
+                                  The whole-screen recording is exported as the
+                                  original MP4. Click <strong>Export…</strong> to
+                                  save a copy.
+                                </>
+                              ) : (
+                                <>
+                                  Audio files are exported as the original WAV.
+                                  Click <strong>Export…</strong> to save a copy.
+                                </>
+                              )}
                             </div>
                           </div>
                         </div>

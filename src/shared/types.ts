@@ -52,6 +52,8 @@ export interface MeetingSummary {
   speakerCount: number
   /** True if this meeting has audio playback available (mt-batch outputs only — engine flat files don't). */
   hasAudio: boolean
+  /** True if a whole-screen video (<prefix>_screen.mp4) exists for playback/export. */
+  hasVideo: boolean
   /** Tag IDs applied to this meeting (resolved against the global tag list). */
   tagIds: string[]
   /**
@@ -233,7 +235,7 @@ export const IPC = {
 } as const
 
 /** Export format kinds for `meetings:export`. */
-export type ExportFormat = 'txt' | 'md' | 'json' | 'srt' | 'audio'
+export type ExportFormat = 'txt' | 'md' | 'json' | 'srt' | 'audio' | 'video'
 
 /**
  * macOS TCC permission state. `unknown` means we either haven't been able to

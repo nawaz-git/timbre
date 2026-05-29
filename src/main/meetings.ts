@@ -135,18 +135,19 @@ interface TranscriptJSON {
 async function findEngineSidecars(
   root: string,
   prefix: string
-): Promise<{ segmentsPath: string | null; audioPath: string | null }> {
+): Promise<{ segmentsPath: string | null; audioPath: string | null; videoPath: string | null }> {
   const recordingsDir = join(root, 'recordings')
   let entries: string[]
   try {
     entries = await fs.readdir(recordingsDir)
   } catch {
-    return { segmentsPath: null, audioPath: null }
+    return { segmentsPath: null, audioPath: null, videoPath: null }
   }
   let segmentsPath: string | null = null
   let mixPath: string | null = null
   let appPath: string | null = null
   let micPath: string | null = null
+  let videoPath: string | null = null
   for (const e of entries) {
     if (!e.startsWith(prefix)) continue
     if (e.endsWith('_segments.json')) {
@@ -157,10 +158,12 @@ async function findEngineSidecars(
       appPath = join(recordingsDir, e)
     } else if (e.endsWith('_mic.wav')) {
       micPath = join(recordingsDir, e)
+    } else if (e.endsWith('_screen.mp4')) {
+      videoPath = join(recordingsDir, e)
     }
   }
   // Prefer mixed audio (everyone), fall back to app (remote-only), then mic (local-only).
-  return { segmentsPath, audioPath: mixPath ?? appPath ?? micPath }
+  return { segmentsPath, audioPath: mixPath ?? appPath ?? micPath, videoPath }
 }
 
 interface EngineSegmentJSON {
@@ -178,6 +181,16 @@ interface EngineSegmentJSON {
 export async function findEngineAudioForPrefix(prefix: string): Promise<string | null> {
   const { audioPath } = await findEngineSidecars(ENGINE_DEFAULT_ROOT, prefix)
   return audioPath
+}
+
+/**
+ * Public helper for the mt-audio:// protocol handler to resolve an
+ * engine-format meeting id to its whole-screen video file path. Same
+ * prefix-match logic as findEngineSidecars but exposes just the video path.
+ */
+export async function findEngineVideoForPrefix(prefix: string): Promise<string | null> {
+  const { videoPath } = await findEngineSidecars(ENGINE_DEFAULT_ROOT, prefix)
+  return videoPath
 }
 
 /**
@@ -206,6 +219,7 @@ async function listPerFolderMeetings(root: string): Promise<MeetingSummary[]> {
     const speakers = await safeReadJson<SpeakerRecord[]>(join(folderPath, 'speakers.json'))
     const transcriptJson = await safeReadJson<TranscriptJSON>(join(folderPath, 'transcript.json'))
     const hasAudio = await pathExists(join(folderPath, 'audio.wav'))
+    const hasVideo = await pathExists(join(folderPath, 'screen.mp4'))
     results.push({
       id: `imported:${entry.name}`,
       title: metadata?.title?.trim() ? metadata.title : titleFromFolderName(entry.name),
@@ -215,6 +229,7 @@ async function listPerFolderMeetings(root: string): Promise<MeetingSummary[]> {
       speakerCount:
         transcriptJson?.speakerCount ?? speakers?.length ?? metadata?.speakerCount ?? 0,
       hasAudio,
+      hasVideo,
       tagIds: Array.isArray(metadata?.tags) ? metadata.tags : [],
       additionalSpeakers: Array.isArray(metadata?.additionalSpeakers)
         ? metadata.additionalSpeakers
@@ -413,7 +428,7 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
     // most useful Finder context for a live recording.
     // v0.17+: read the engine's sidecar files to surface real duration,
     // speaker count, and audio availability instead of hardcoded zeroes.
-    const { segmentsPath, audioPath } = await findEngineSidecars(root, prefix)
+    const { segmentsPath, audioPath, videoPath } = await findEngineSidecars(root, prefix)
     let durationSeconds = 0
     let speakerCount = 0
     if (segmentsPath) {
@@ -435,6 +450,7 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       durationSeconds,
       speakerCount,
       hasAudio: audioPath !== null,
+      hasVideo: videoPath !== null,
       tagIds: Array.isArray(meta?.tags) ? meta.tags : [],
       additionalSpeakers: Array.isArray(meta?.additionalSpeakers)
         ? meta.additionalSpeakers
@@ -484,6 +500,7 @@ export async function listMeetings(outputFolder: string): Promise<MeetingSummary
         durationSeconds: 0,
         speakerCount: 0,
         hasAudio: false,
+        hasVideo: false,
         tagIds: [],
         additionalSpeakers: [],
         isLive: true
@@ -997,14 +1014,24 @@ interface ExportPayload {
 export async function exportMeeting(
   outputFolder: string,
   meetingId: string,
-  format: 'txt' | 'md' | 'json' | 'srt' | 'audio',
+  format: 'txt' | 'md' | 'json' | 'srt' | 'audio' | 'video',
   title: string
 ): Promise<ExportPayload> {
   if (meetingId.startsWith('engine:')) {
-    if (format !== 'txt' && format !== 'md') {
-      throw new Error(`Live-recording meetings only support txt/md export, not ${format}.`)
-    }
     const prefix = meetingId.slice('engine:'.length)
+    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
+      throw new Error(`Invalid engine prefix: ${prefix}`)
+    }
+    if (format === 'video') {
+      const videoPath = await findEngineVideoForPrefix(prefix)
+      if (!videoPath) throw new Error('This recording has no screen video.')
+      const body = await fs.readFile(videoPath)
+      const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || prefix
+      return { filename: `${safeTitle}.mp4`, body, contentType: 'video/mp4' }
+    }
+    if (format !== 'txt' && format !== 'md') {
+      throw new Error(`Live-recording meetings only support txt/md/video export, not ${format}.`)
+    }
     const srcExt = format === 'md' ? 'md' : 'txt'
     const srcPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.${srcExt}`)
     const body = await fs.readFile(srcPath, 'utf-8')
@@ -1013,6 +1040,10 @@ export async function exportMeeting(
       body,
       contentType: format === 'md' ? 'text/markdown' : 'text/plain'
     }
+  }
+  // Imported meetings carry no whole-screen video today — reject cleanly.
+  if (format === 'video') {
+    throw new Error('No screen video available for this meeting.')
   }
   const folderId = meetingId.startsWith('imported:')
     ? meetingId.slice('imported:'.length)
@@ -1096,9 +1127,29 @@ export interface ExportPreview {
 export async function previewExportMeeting(
   outputFolder: string,
   meetingId: string,
-  format: 'txt' | 'md' | 'json' | 'srt' | 'audio',
+  format: 'txt' | 'md' | 'json' | 'srt' | 'audio' | 'video',
   title: string
 ): Promise<ExportPreview> {
+  if (format === 'video') {
+    if (!meetingId.startsWith('engine:')) {
+      throw new Error('No screen video for this meeting.')
+    }
+    const prefix = meetingId.slice('engine:'.length)
+    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
+      throw new Error(`Invalid engine prefix: ${prefix}`)
+    }
+    const videoPath = await findEngineVideoForPrefix(prefix)
+    if (!videoPath) throw new Error('This recording has no screen video.')
+    const stat = await fs.stat(videoPath)
+    const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || prefix
+    return {
+      filename: `${safeTitle}.mp4`,
+      body: '',
+      contentType: 'video/mp4',
+      isBinary: true,
+      sizeBytes: stat.size
+    }
+  }
   if (format === 'audio') {
     // Resolve the audio path WITHOUT reading the file. The `audio` branch
     // of `exportMeeting` would otherwise load the entire WAV into memory

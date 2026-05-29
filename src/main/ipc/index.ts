@@ -450,5 +450,7 @@ function filtersForFormat(format: ExportFormat): Array<{ name: string; extension
       return [{ name: 'SubRip subtitles', extensions: ['srt'] }]
     case 'audio':
       return [{ name: 'WAV audio', extensions: ['wav'] }]
+    case 'video':
+      return [{ name: 'MP4 video', extensions: ['mp4'] }]
   }
 }
