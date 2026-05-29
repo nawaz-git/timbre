@@ -50,6 +50,13 @@ struct MeetingTranscriberApp: App {
     @Environment(\.openWindow)
     private var openWindow
 
+    /// Hide the engine's OWN menu-bar icon when it runs as Timbre's bundled
+    /// helper. Timbre always spawns the engine with `--auto-watch`, and Timbre's
+    /// tray is the only control surface the user should see — two waveform icons
+    /// (engine + Electron tray) is confusing. A standalone dev launch (no flag)
+    /// still shows the icon so the engine remains usable on its own.
+    @State private var menuBarInserted = !CommandLine.arguments.contains("--auto-watch")
+
     init() {
         AppPaths.migrateIfNeeded()
         NotificationManager.shared.setUp()
@@ -70,7 +77,7 @@ struct MeetingTranscriberApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra {
+        MenuBarExtra(isInserted: $menuBarInserted) {
             MenuBarView(
                 status: appState.currentStatus,
                 isWatching: appState.isWatching,
