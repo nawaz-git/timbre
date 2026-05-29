@@ -16,6 +16,19 @@ struct RecordingResult {
     let micPath: URL?
     let micDelay: TimeInterval
     let recordingStart: TimeInterval // ProcessInfo.systemUptime
+    /// Finished whole-screen `.mp4`, or nil when screen recording is disabled,
+    /// never started, or failed. Defaulted so the existing single constructor
+    /// and all test sites compile unchanged.
+    var screenPath: URL? = nil
+
+    /// Return a copy with `screenPath` set. Lets WatchLoop attach the screen
+    /// recording to an already-built audio `RecordingResult` after the recorder
+    /// returns.
+    func withScreenPath(_ url: URL?) -> RecordingResult {
+        var copy = self
+        copy.screenPath = url
+        return copy
+    }
 }
 
 /// The recorder's declared capture format, passed to `buildRecording` so the

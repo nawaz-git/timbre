@@ -152,6 +152,14 @@ final class AppSettings {
         didSet { defaults.set(recordOnly, forKey: "recordOnly") }
     }
 
+    /// When true, capture the whole main display to an HEVC `.mp4` alongside the
+    /// audio for every recording. Read at recording-start, so toggling takes
+    /// effect on the next recording without a restart. Defaults ON; the user can
+    /// turn it off in Settings → Output. A capture failure never affects audio.
+    var recordScreenVideo: Bool {
+        didSet { defaults.set(recordScreenVideo, forKey: "recordScreenVideo") }
+    }
+
     /// CoreAudio device UID for mic selection. Empty string = system default.
     var micDeviceUID: String {
         didSet { defaults.set(micDeviceUID, forKey: "micDeviceUID") }
@@ -474,6 +482,7 @@ final class AppSettings {
         endGrace = defaults.object(forKey: "endGrace") as? Double ?? 15.0
         noMic = defaults.object(forKey: "noMic") as? Bool ?? false
         recordOnly = defaults.object(forKey: "recordOnly") as? Bool ?? false
+        recordScreenVideo = defaults.object(forKey: "recordScreenVideo") as? Bool ?? true
         micDeviceUID = defaults.object(forKey: "micDeviceUID") as? String ?? ""
         micName = defaults.object(forKey: "micName") as? String ?? "Me"
         perChannelIndicatorEnabled = defaults.object(forKey: "perChannelIndicatorEnabled") as? Bool ?? true

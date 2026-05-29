@@ -48,6 +48,11 @@ struct PipelineJob: Identifiable, Codable {
     let mixPath: URL?
     let appPath: URL?
     let micPath: URL?
+    /// Whole-screen video (`<prefix>_screen.mp4`) recorded alongside the audio,
+    /// or nil when screen recording was disabled/failed. Surfaced by Electron
+    /// off the renamed `<slug>_screen.mp4` in the output dir. Default nil keeps
+    /// orphan-recovery construction and paired-import sites compiling.
+    let screenPath: URL?
     let micDelay: TimeInterval
     let participants: [String]
     let enqueuedAt: Date
@@ -75,6 +80,7 @@ struct PipelineJob: Identifiable, Codable {
         micPath: URL?,
         micDelay: TimeInterval,
         participants: [String] = [],
+        screenPath: URL? = nil,
     ) {
         self.id = UUID()
         self.meetingTitle = meetingTitle
@@ -82,6 +88,7 @@ struct PipelineJob: Identifiable, Codable {
         self.mixPath = mixPath
         self.appPath = appPath
         self.micPath = micPath
+        self.screenPath = screenPath
         self.micDelay = micDelay
         self.participants = participants
         self.enqueuedAt = Date()

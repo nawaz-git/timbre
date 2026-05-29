@@ -461,6 +461,8 @@ final class AppState { // swiftlint:disable:this type_body_length
                     recordOnlyDestination: { [settings] in
                         .production(parent: settings.effectiveOutputDir)
                     },
+                    recordScreenVideo: { [settings] in settings.recordScreenVideo },
+                    screenRecorderFactory: { ScreenRecorder(outputURL: $0) },
                     notifier: notifier,
                 )
 
@@ -501,6 +503,8 @@ final class AppState { // swiftlint:disable:this type_body_length
                 recordOnlyDestination: { [settings] in
                     .production(parent: settings.effectiveOutputDir)
                 },
+                recordScreenVideo: { [settings] in settings.recordScreenVideo },
+                screenRecorderFactory: { ScreenRecorder(outputURL: $0) },
                 notifier: notifier,
             )
             watchLoop = loop
@@ -530,8 +534,14 @@ final class AppState { // swiftlint:disable:this type_body_length
     }
 
     func stopManualRecording() {
-        watchLoop?.stopManualRecording()
+        // WatchLoop.stopManualRecording is async (it awaits the screen-video
+        // finalize). Capture the loop, clear the reference synchronously so the
+        // UI reflects the stop immediately, then finalize on a @MainActor Task.
+        let loop = watchLoop
         watchLoop = nil
+        Task { @MainActor in
+            await loop?.stopManualRecording()
+        }
     }
 
     /// Filters `urls` to files that currently exist on disk, forwards them to

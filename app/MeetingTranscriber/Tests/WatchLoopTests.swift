@@ -229,7 +229,7 @@ final class WatchLoopTests: XCTestCase {
         try await loop.startManualRecording(pid: 42, appName: "Chrome", title: "Standup")
         XCTAssertTrue(loop.isManualRecording)
 
-        loop.stopManualRecording()
+        await loop.stopManualRecording()
 
         XCTAssertFalse(loop.isManualRecording)
         XCTAssertEqual(loop.state, .idle)
@@ -324,7 +324,7 @@ final class WatchLoopTests: XCTestCase {
         recorder.appPath = recorderApp
         recorder.micPath = recorderMic
         try await loop.startManualRecording(pid: 42, appName: appName, title: title)
-        loop.stopManualRecording()
+        await loop.stopManualRecording()
         return loop
     }
 
@@ -413,7 +413,7 @@ final class WatchLoopTests: XCTestCase {
         let (loop, recorder) = makeTestWatchLoop(pipelineQueue: queue)
         recorder.mixPath = mixURL
         try await loop.startManualRecording(pid: 42, appName: "Microsoft Teams", title: "Standup")
-        loop.stopManualRecording()
+        await loop.stopManualRecording()
 
         XCTAssertEqual(queue.jobs.count, 1)
         XCTAssertEqual(queue.jobs.first?.meetingTitle, "Standup")

@@ -77,6 +77,23 @@ struct OutputSettingsView: View {
             }
             .accessibilityIdentifier("outputFolderSection")
 
+            // Screen video is a sibling of the audio recorder — it applies to
+            // both record-only and protocol mode, so it sits outside the
+            // .recordOnlyDisabled block.
+            Section("Screen Video") {
+                Toggle("Record screen video", isOn: $settings.recordScreenVideo)
+                Text("""
+                Captures your entire main display to a video file alongside each \
+                recording. This records everything on screen for the meeting's \
+                duration — turn it off if you don't want the screen captured. \
+                Audio and the transcript are always saved even if video capture \
+                fails.
+                """)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .accessibilityIdentifier("screenVideoSection")
+
             Section("Protocol Generation") {
                 Picker("LLM Provider", selection: $settings.protocolProvider) {
                     ForEach(ProtocolProvider.allCases, id: \.self) { provider in

@@ -35,6 +35,18 @@ class WatchLoop {
     /// indicator. Setter stays private so the recording lifecycle flows through
     /// this class only.
     private(set) var activeRecorder: (any RecordingProvider)?
+    /// Whole-screen video recorder for the current session, or nil when screen
+    /// recording is disabled / never started / failed. Owned as a SIBLING of
+    /// `activeRecorder` (not inside `RecordingProvider`) so a screen-capture
+    /// failure can never throw into the audio recording or transcript pipeline.
+    @available(macOS 14.0, *)
+    private var activeScreenRecorder: ScreenRecorder? {
+        get { _activeScreenRecorder as? ScreenRecorder }
+        set { _activeScreenRecorder = newValue }
+    }
+
+    // Type-erased storage to avoid an @available stored property.
+    private var _activeScreenRecorder: AnyObject?
     private var manualRecordingTask: Task<Void, Never>?
 
     var isManualRecording: Bool {
@@ -66,6 +78,13 @@ class WatchLoop {
     /// `recordings/` subfolder. Calling start-access on a child URL silently
     /// fails inside the App Store sandbox — see `RecordOnlyDestination`.
     let recordOnlyDestination: () -> RecordOnlyDestination
+    /// Dynamic accessor — read at recording-start so toggling the setting at
+    /// runtime takes effect on the next recording. Product default: on.
+    let recordScreenVideo: () -> Bool
+    /// Mints the transient screen `.mp4` URL for a session and builds the
+    /// recorder. Injected so tests don't spin up an SCStream; production wires
+    /// `ScreenRecorder(outputURL:)` against `AppPaths.recordingsDir`.
+    let screenRecorderFactory: @MainActor (_ outputURL: URL) -> ScreenRecorder
     /// Surface user-facing failures (e.g. sidecar write errors) that don't
     /// transition state to `.error`. Defaults to a silent no-op for tests.
     let notifier: any AppNotifying
@@ -102,6 +121,8 @@ class WatchLoop {
         recordOnlyDestination: @escaping () -> RecordOnlyDestination = {
             .unscoped(AppPaths.recordingsDir)
         },
+        recordScreenVideo: @escaping () -> Bool = { false },
+        screenRecorderFactory: @MainActor @escaping (URL) -> ScreenRecorder = { ScreenRecorder(outputURL: $0) },
         notifier: any AppNotifying = SilentNotifier(),
         nowProvider: @escaping () -> Date = Date.init,
         sleepProvider: @escaping (TimeInterval) async throws -> Void = { interval in
@@ -120,6 +141,8 @@ class WatchLoop {
         self.verboseDiagnostics = verboseDiagnostics
         self.recordOnly = recordOnly
         self.recordOnlyDestination = recordOnlyDestination
+        self.recordScreenVideo = recordScreenVideo
+        self.screenRecorderFactory = screenRecorderFactory
         self.notifier = notifier
         self.nowProvider = nowProvider
         self.sleepProvider = sleepProvider
@@ -204,6 +227,9 @@ class WatchLoop {
         )
 
         activeRecorder = recorder
+        // Best-effort screen video alongside the manual recording (same failure
+        // isolation as the auto-detected path).
+        startScreenRecorderIfEnabled()
         update { next in
             next.phase = .recording
             next.manualRecordingInfo = ManualRecordingInfo(pid: pid, appName: appName, title: title)
@@ -218,16 +244,23 @@ class WatchLoop {
         logger.info("Manual recording started for \(appName) (PID \(pid)): \(title)")
     }
 
-    func stopManualRecording() {
+    func stopManualRecording() async {
         guard let recorder = activeRecorder, let info = manualRecordingInfo else { return }
 
         manualRecordingTask?.cancel()
         manualRecordingTask = nil
 
+        // Finalize the screen video (needs `await`) before the audio stop so the
+        // result rides through enqueueRecording. Best-effort — nil on failure.
+        let screenPath = await stopScreenRecorder()
+
         var failureMessage: String?
         do {
             let recording = try recorder.stop()
-            enqueueRecording(title: info.title, appName: info.appName, recording: recording)
+            enqueueRecording(
+                title: info.title, appName: info.appName,
+                recording: recording.withScreenPath(screenPath),
+            )
         } catch {
             logger.error("Failed to stop manual recording: \(error)")
             failureMessage = error.localizedDescription
@@ -256,12 +289,12 @@ class WatchLoop {
 
             case .stopPidExited:
                 logger.info("Monitored app (PID \(pid)) exited — stopping manual recording")
-                stopManualRecording()
+                await stopManualRecording()
                 return
 
             case .stopMaxDurationExceeded:
                 logger.info("Max recording duration reached — stopping manual recording")
-                stopManualRecording()
+                await stopManualRecording()
                 return
             }
             try? await sleepProvider(pollInterval)
@@ -273,6 +306,73 @@ class WatchLoop {
         manualRecordingTask = nil
         activeRecorder = nil
         update { next in next.manualRecordingInfo = nil }
+    }
+
+    // MARK: - Screen Recording (best-effort sibling of the audio recorder)
+
+    /// Best-effort start. Any failure logs + notifies and leaves
+    /// `activeScreenRecorder` nil — audio proceeds untouched. The transient
+    /// file is `<ts>_screen.mp4` in `AppPaths.recordingsDir`, parallel to the
+    /// audio temp files; `PipelineQueue.copyAudioToOutput` later renames it to
+    /// `<slug>_screen.mp4`, exactly like the mix WAV.
+    private func startScreenRecorderIfEnabled() {
+        guard recordScreenVideo() else { return }
+        guard #available(macOS 14.0, *) else { return }
+        guard Permissions.checkScreenRecording() else {
+            logger.warning("Screen recording requested but TCC not granted — continuing audio-only")
+            PermissionHealthCheck.debugLog("[ScreenRecorder] skipped — checkScreenRecording=false")
+            return
+        }
+        let ts = Self.screenTimestamp()
+        let url = AppPaths.recordingsDir.appendingPathComponent("\(ts)\(RecordingFileSuffix.screen)")
+        let screen = screenRecorderFactory(url)
+        activeScreenRecorder = screen
+        PermissionHealthCheck.debugLog("[ScreenRecorder] start attempted -> \(url.lastPathComponent)")
+        // SCStream.startCapture() is async; launch it without awaiting so audio's
+        // synchronous recorder.start() isn't delayed. If it throws, clear state —
+        // audio is unaffected.
+        Task { [weak self] in
+            do {
+                try await screen.start()
+                PermissionHealthCheck.debugLog("[ScreenRecorder] start OK (capturing)")
+            } catch {
+                logger.error("Screen recording failed to start (continuing audio-only): \(error.localizedDescription)")
+                PermissionHealthCheck.debugLog("[ScreenRecorder] start FAILED: \(error)")
+                self?.notifier.notify(
+                    title: "Screen recording unavailable",
+                    body: "Audio + transcript will still be saved.",
+                )
+                self?.activeScreenRecorder = nil
+            }
+        }
+    }
+
+    /// Best-effort finalize. Returns the finished `.mp4` URL, or nil if disabled
+    /// / never started / failed. Never throws into the audio path.
+    private func stopScreenRecorder() async -> URL? {
+        guard #available(macOS 14.0, *) else { return nil }
+        guard let screen = activeScreenRecorder else { return nil }
+        activeScreenRecorder = nil
+        do {
+            let url = try await screen.stop() // flushes AVAssetWriter
+            logger.info("Screen recording finalized: \(url.lastPathComponent)")
+            PermissionHealthCheck.debugLog("[ScreenRecorder] finalized -> \(url.lastPathComponent)")
+            return url
+        } catch {
+            logger.error("Screen recording finalize failed (audio unaffected): \(error.localizedDescription)")
+            PermissionHealthCheck.debugLog("[ScreenRecorder] finalize FAILED: \(error)")
+            return nil
+        }
+    }
+
+    private static let screenTimestampFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyyMMdd_HHmmss"
+        return fmt
+    }()
+
+    private static func screenTimestamp() -> String {
+        screenTimestampFormatter.string(from: Date())
     }
 
     // MARK: - Watch Loop
@@ -330,6 +430,12 @@ class WatchLoop {
         activeRecorder = recorder
         defer { activeRecorder = nil }
 
+        // Screen video is best-effort: a capture failure must NEVER abort the
+        // audio recording or transcript. Started AFTER audio so audio owns the
+        // throwing contract; the screen recorder swallows its own errors.
+        startScreenRecorderIfEnabled()
+        defer { _activeScreenRecorder = nil }
+
         // Read participants (Teams)
         var participants: [String] = []
         if meeting.pattern.appName == "Microsoft Teams",
@@ -356,12 +462,13 @@ class WatchLoop {
 
         // Stop recording
         let recording = try recorder.stop()
+        let screenPath = await stopScreenRecorder() // nil on disabled/failed
 
         // --- Enqueue for background processing ---
         enqueueRecording(
             title: title,
             appName: meeting.pattern.appName,
-            recording: recording,
+            recording: recording.withScreenPath(screenPath),
             participants: participants,
         )
     }
@@ -425,6 +532,7 @@ class WatchLoop {
             micPath: recording.micPath,
             micDelay: recording.micDelay,
             participants: participants,
+            screenPath: recording.screenPath,
         )
         pipelineQueue?.enqueue(job)
         logger.info("Enqueued pipeline job for: \(title)")
@@ -467,6 +575,10 @@ class WatchLoop {
             let movedMix = try Self.move(recording.mixPath, into: destDir)
             let movedApp = try recording.appPath.map { try Self.move($0, into: destDir) }
             let movedMic = try recording.micPath.map { try Self.move($0, into: destDir) }
+            // Screen video rides along too (when present); the sidecar schema
+            // doesn't record it yet (v1.1) — Electron surfacing keys off the
+            // full-pipeline `<slug>_screen.mp4`, not the record-only sidecar.
+            _ = try recording.screenPath.map { try Self.move($0, into: destDir) }
 
             let sidecar = RecordingSidecar(
                 title: title,

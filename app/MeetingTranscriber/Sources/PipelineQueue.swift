@@ -513,6 +513,9 @@ class PipelineQueue {
         let mixPath: URL?
         let appPath: URL?
         let micPath: URL?
+        /// Whole-screen `.mp4` (transient `<ts>_screen.mp4`), renamed to
+        /// `<slug>_screen.mp4` in `copyAudioToOutput`. Nil when disabled/failed.
+        let screenPath: URL?
         let micDelay: TimeInterval
         let participants: [String]
         /// Persisted-file basename, computed once from title + jobID so the
@@ -561,6 +564,7 @@ class PipelineQueue {
             mixPath: job.mixPath,
             appPath: job.appPath,
             micPath: job.micPath,
+            screenPath: job.screenPath,
             micDelay: job.micDelay,
             participants: job.participants,
             slug: Self.namingSlug(title: job.meetingTitle, jobID: job.id),
@@ -1020,6 +1024,7 @@ class PipelineQueue {
         let recordingsDir = outputDir.appendingPathComponent("recordings")
         Self.copyAudioToOutput(
             mixPath: ctx.mixPath, appPath: ctx.appPath, micPath: ctx.micPath,
+            screenPath: ctx.screenPath,
             title: ctx.title, outputDir: recordingsDir,
         )
 
@@ -1507,7 +1512,7 @@ class PipelineQueue {
     /// `mixPath` (paired imports without a `_mix.wav` source) → mix slot
     /// is skipped, no persistent mix is written.
     private static func copyAudioToOutput(
-        mixPath: URL?, appPath: URL?, micPath: URL?,
+        mixPath: URL?, appPath: URL?, micPath: URL?, screenPath: URL?,
         title: String, outputDir: URL,
     ) {
         // Each move below renames-in-place — if two of the three URLs point at
@@ -1534,6 +1539,10 @@ class PipelineQueue {
             mixPath.map { ($0, "\(slug)\(RecordingFileSuffix.mix)") },
             appPath.map { ($0, "\(slug)\(RecordingFileSuffix.app)") },
             micPath.map { ($0, "\(slug)\(RecordingFileSuffix.mic)") },
+            // Screen video is a distinct file (not an alias of mix/app/mic), so
+            // the move loop / security scope / already-in-dir guard below handle
+            // it identically — no new alias precondition needed.
+            screenPath.map { ($0, "\(slug)\(RecordingFileSuffix.screen)") },
         ].compactMap(\.self)
 
         let outputDirStd = outputDir.standardizedFileURL
