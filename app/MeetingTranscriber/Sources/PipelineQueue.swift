@@ -1022,11 +1022,20 @@ class PipelineQueue {
         }
 
         let recordingsDir = outputDir.appendingPathComponent("recordings")
-        Self.copyAudioToOutput(
+        let movedMedia = Self.copyAudioToOutput(
             mixPath: ctx.mixPath, appPath: ctx.appPath, micPath: ctx.micPath,
             screenPath: ctx.screenPath,
             title: ctx.title, outputDir: recordingsDir,
         )
+
+        // Mux the captured audio mix into the screen video so the saved .mp4
+        // plays WITH sound (the recorder captures video-only; audio lives in
+        // _mix.wav). Best-effort: a mux failure leaves the video-only file and
+        // the standalone _mix.wav both intact.
+        if #available(macOS 14.0, *),
+           let screen = movedMedia.screen, let mix = movedMedia.mix {
+            await ScreenVideoMuxer.muxAudioIntoVideo(videoURL: screen, audioURL: mix)
+        }
 
         // --- Persist 16kHz audio for re-diarization (move instead of copy to avoid double I/O) ---
         try? FileManager.default.moveItem(
@@ -1511,10 +1520,13 @@ class PipelineQueue {
     /// Copy recording audio files to the protocol output directory. Nil
     /// `mixPath` (paired imports without a `_mix.wav` source) → mix slot
     /// is skipped, no persistent mix is written.
+    /// Returns the final on-disk URLs for the mix audio and screen video (after
+    /// any rename) so the caller can mux the audio into the video.
+    @discardableResult
     private static func copyAudioToOutput(
         mixPath: URL?, appPath: URL?, micPath: URL?, screenPath: URL?,
         title: String, outputDir: URL,
-    ) {
+    ) -> (mix: URL?, screen: URL?) {
         // Each move below renames-in-place — if two of the three URLs point at
         // the same file, the first move destroys the source for the next one.
         // Loud failure in dev/CI > silent data destruction.
@@ -1546,8 +1558,11 @@ class PipelineQueue {
         ].compactMap(\.self)
 
         let outputDirStd = outputDir.standardizedFileURL
+        var finalMix: URL?
+        var finalScreen: URL?
         for (src, name) in audioPaths {
             let dst = outputDir.appendingPathComponent(name)
+            var resolved = src
             // Source already in the target dir → move would just rename in place
             // with a fresh `<today_timestamp>_<title>` prefix, which produces an
             // endless compounding-rename loop on every re-import (orphan recovery
@@ -1555,16 +1570,20 @@ class PipelineQueue {
             // final home; keep it put.
             if src.deletingLastPathComponent().standardizedFileURL == outputDirStd {
                 logger.info("Audio already in output dir, skipping rename: \(src.lastPathComponent)")
-                continue
+            } else {
+                do {
+                    if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
+                    try fm.moveItem(at: src, to: dst)
+                    logger.info("Audio moved: \(name)")
+                    resolved = dst
+                } catch {
+                    logger.warning("Failed to move audio \(name): \(error.localizedDescription)")
+                }
             }
-            do {
-                if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
-                try fm.moveItem(at: src, to: dst)
-                logger.info("Audio moved: \(name)")
-            } catch {
-                logger.warning("Failed to move audio \(name): \(error.localizedDescription)")
-            }
+            if name.hasSuffix(RecordingFileSuffix.mix) { finalMix = resolved }
+            if name.hasSuffix(RecordingFileSuffix.screen) { finalScreen = resolved }
         }
+        return (mix: finalMix, screen: finalScreen)
     }
 
     // MARK: - Orphaned Recording Recovery
