@@ -97,7 +97,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
   const { settings } = useSettings()
   const { byId: tagById } = useTags()
   const { status, start, stop } = useRecordingStatus()
-  const { openPane } = usePermissions()
+  const { status: permState, openPane } = usePermissions()
   // Screen Recording is held by the bundled ENGINE (ai.nawaz.mintr-engine),
   // not by Mintr itself — so the banner must read the engine's live verdict
   // (same source as Settings → Setup & Permissions), NOT Electron's
@@ -308,6 +308,15 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
     helperPerms.screenRecording === 'denied' ||
     helperPerms.screenRecording === 'not-determined'
 
+  // Automation ("control Google Chrome") is the APP's own grant
+  // (ai.nawaz.meeting-transcriber), tracked separately from the engine verdict.
+  // Its absence silently breaks Google Meet detection for background tabs — the
+  // exact "ran but didn't capture" failure. Only 'denied' is actionable: macOS
+  // won't re-prompt once denied, so the user must re-enable it in System
+  // Settings → Privacy → Automation. 'not-determined' resolves itself via the
+  // auto-prompt on the first Chrome probe, so we don't nag there.
+  const automationMissing = permState.automationChrome === 'denied'
+
   // The red "Engine helper isn't capturing" banner is a PERMISSION-diagnosis
   // banner (its copy tells the user to toggle a TCC entry on). When the engine
   // self-reports every permission as granted, that advice is wrong and
@@ -340,6 +349,30 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
           >
             <ExternalLink size={14} aria-hidden="true" />
             <span>Open System Settings</span>
+          </button>
+        </div>
+      )}
+
+      {automationMissing && (
+        <div className="permission-banner" role="alert">
+          <span className="permission-banner__icon" aria-hidden="true">
+            <AlertTriangle size={16} strokeWidth={2} />
+          </span>
+          <div className="permission-banner__body">
+            <div className="permission-banner__title">Allow Timbre to control Chrome</div>
+            <div className="permission-banner__desc">
+              Timbre detects Google Meet calls in any Chrome tab by reading the tab
+              title via Automation. Without this, meetings in background tabs start
+              without being captured. Re-enable Timbre under System Settings →
+              Privacy &amp; Security → Automation → Google Chrome.
+            </div>
+          </div>
+          <button
+            className="btn btn--primary btn--small"
+            onClick={() => void openPane('automation')}
+          >
+            <ExternalLink size={14} aria-hidden="true" />
+            <span>Open Automation Settings</span>
           </button>
         </div>
       )}
