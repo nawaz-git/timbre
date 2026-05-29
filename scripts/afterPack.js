@@ -86,7 +86,25 @@ function resignEngine(bundlePath) {
     )
     return
   }
-  console.log('[afterPack] re-signing renamed helper ad-hoc')
+  // No stable identity → ad-hoc. This is intentional for CI smoke builds, but
+  // a LOCAL install of an ad-hoc bundle gets a fresh cdhash with no stable
+  // Designated Requirement, so it inherits NONE of the user's existing TCC
+  // grants (Screen Recording, Microphone, Automation). The app then looks
+  // completely broken: no meeting detection, no audio capture, no screen
+  // video — all silently. Warn loudly so this is never mistaken for a code
+  // bug. To produce a permission-stable build run dev/scripts/setup-signing.sh
+  // once, then `MINTR_SIGN_IDENTITY="Mintr Dev Signing" npm run dist:mac`.
+  console.warn(
+    '\n' +
+      '╔════════════════════════════════════════════════════════════════════╗\n' +
+      '║  [afterPack] ⚠  AD-HOC SIGNING — MINTR_SIGN_IDENTITY is not set.     ║\n' +
+      '║  The engine will get a fresh cdhash and inherit NO TCC grants        ║\n' +
+      '║  (Screen Recording / Microphone / Automation). A local install will  ║\n' +
+      '║  appear totally broken. For a permission-stable build, export        ║\n' +
+      '║  MINTR_SIGN_IDENTITY="Mintr Dev Signing" (see dev/scripts/           ║\n' +
+      '║  setup-signing.sh). Ad-hoc is fine ONLY for CI smoke builds.         ║\n' +
+      '╚════════════════════════════════════════════════════════════════════╝\n'
+  )
   execFileSync(
     '/usr/bin/codesign',
     ['--force', '--deep', '--sign', '-', '--preserve-metadata=entitlements', bundlePath],
