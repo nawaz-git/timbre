@@ -63,7 +63,11 @@ class WatchLoop {
     let pollInterval: TimeInterval
     let endGracePeriod: TimeInterval
     let maxDuration: TimeInterval
-    let noMic: Bool
+    /// Dynamic accessor — read at recording-start time (mirrors
+    /// `recordScreenVideo`) so a stale init-time value never sticks. For
+    /// auto-detected meetings the per-meeting `EngineConfig` read overrides this;
+    /// the manual path uses this captured value (no meeting context).
+    let noMic: () -> Bool
     let micDeviceUID: String?
     /// Dynamic accessor — read at recording-start time so toggling the setting
     /// at runtime takes effect on the next recording without an app restart.
@@ -83,8 +87,10 @@ class WatchLoop {
     let recordScreenVideo: () -> Bool
     /// Mints the transient screen `.mp4` URL for a session and builds the
     /// recorder. Injected so tests don't spin up an SCStream; production wires
-    /// `ScreenRecorder(outputURL:)` against `AppPaths.recordingsDir`.
-    let screenRecorderFactory: @MainActor (_ outputURL: URL) -> ScreenRecorder
+    /// `ScreenRecorder(outputURL:windowHint:)` against `AppPaths.recordingsDir`.
+    /// The `hint` carries the per-meeting screen-capture scope (window vs full
+    /// display) resolved fresh from `EngineConfig`.
+    let screenRecorderFactory: @MainActor (_ outputURL: URL, _ hint: ScreenRecorder.WindowHint) -> ScreenRecorder
     /// Surface user-facing failures (e.g. sidecar write errors) that don't
     /// transition state to `.error`. Defaults to a silent no-op for tests.
     let notifier: any AppNotifying
@@ -114,7 +120,7 @@ class WatchLoop {
         pollInterval: TimeInterval = 3.0,
         endGracePeriod: TimeInterval = 15.0,
         maxDuration: TimeInterval = 14400,
-        noMic: Bool = false,
+        noMic: @escaping () -> Bool = { false },
         micDeviceUID: String? = nil,
         verboseDiagnostics: @escaping () -> Bool = { false },
         recordOnly: @escaping () -> Bool = { false },
@@ -122,7 +128,9 @@ class WatchLoop {
             .unscoped(AppPaths.recordingsDir)
         },
         recordScreenVideo: @escaping () -> Bool = { false },
-        screenRecorderFactory: @MainActor @escaping (URL) -> ScreenRecorder = { ScreenRecorder(outputURL: $0) },
+        screenRecorderFactory: @MainActor @escaping (URL, ScreenRecorder.WindowHint) -> ScreenRecorder = { url, hint in
+            ScreenRecorder(outputURL: url, windowHint: hint)
+        },
         notifier: any AppNotifying = SilentNotifier(),
         nowProvider: @escaping () -> Date = Date.init,
         sleepProvider: @escaping (TimeInterval) async throws -> Void = { interval in
@@ -222,13 +230,14 @@ class WatchLoop {
 
         let recorder = recorderFactory()
         try recorder.start(
-            appPID: pid, noMic: noMic, micDeviceUID: micDeviceUID,
+            appPID: pid, noMic: noMic(), micDeviceUID: micDeviceUID,
             debugLogging: verboseDiagnostics(),
         )
 
         activeRecorder = recorder
         // Best-effort screen video alongside the manual recording (same failure
-        // isolation as the auto-detected path).
+        // isolation as the auto-detected path). Manual recordings have no
+        // meeting context, so capture the entire screen.
         startScreenRecorderIfEnabled()
         update { next in
             next.phase = .recording
@@ -315,7 +324,14 @@ class WatchLoop {
     /// file is `<ts>_screen.mp4` in `AppPaths.recordingsDir`, parallel to the
     /// audio temp files; `PipelineQueue.copyAudioToOutput` later renames it to
     /// `<slug>_screen.mp4`, exactly like the mix WAV.
-    private func startScreenRecorderIfEnabled() {
+    /// - Parameter hint: which slice of the screen to capture. The manual path
+    ///   passes `.entireScreen` (no meeting context); the auto-detected path
+    ///   passes a `.chromeWindow` hint built from the fresh per-meeting
+    ///   `EngineConfig` read. Defaults to `.entireScreen` so the no-arg manual
+    ///   call keeps the historic full-display behaviour.
+    private func startScreenRecorderIfEnabled(
+        hint: ScreenRecorder.WindowHint = .init(scope: .entireScreen),
+    ) {
         guard recordScreenVideo() else { return }
         guard #available(macOS 14.0, *) else { return }
         guard Permissions.checkScreenRecording() else {
@@ -325,7 +341,7 @@ class WatchLoop {
         }
         let ts = Self.screenTimestamp()
         let url = AppPaths.recordingsDir.appendingPathComponent("\(ts)\(RecordingFileSuffix.screen)")
-        let screen = screenRecorderFactory(url)
+        let screen = screenRecorderFactory(url, hint)
         activeScreenRecorder = screen
         PermissionHealthCheck.debugLog("[ScreenRecorder] start attempted -> \(url.lastPathComponent)")
         // SCStream.startCapture() is async; launch it without awaiting so audio's
@@ -413,6 +429,11 @@ class WatchLoop {
     func handleMeeting(_ meeting: DetectedMeeting) async throws {
         let title = Self.cleanTitle(meeting.windowTitle)
 
+        // Read the cross-process Electron config FRESH here (not at WatchLoop /
+        // AppState init) so a mid-session settings change takes effect on the
+        // next meeting and we sidestep UserDefaults cross-process caching.
+        let cfg = EngineConfig.read()
+
         // --- Recording ---
         update { next in
             next.phase = .recording
@@ -423,7 +444,7 @@ class WatchLoop {
         let recorder = recorderFactory()
         try recorder.start(
             appPID: meeting.windowPID,
-            noMic: noMic,
+            noMic: !cfg.recordMicrophone,
             micDeviceUID: micDeviceUID,
             debugLogging: verboseDiagnostics(),
         )
@@ -432,8 +453,17 @@ class WatchLoop {
 
         // Screen video is best-effort: a capture failure must NEVER abort the
         // audio recording or transcript. Started AFTER audio so audio owns the
-        // throwing contract; the screen recorder swallows its own errors.
-        startScreenRecorderIfEnabled()
+        // throwing contract; the screen recorder swallows its own errors. The
+        // window hint carries the fresh per-meeting capture scope; a window that
+        // can't be resolved falls back to full-display capture inside the
+        // recorder, so video is never lost.
+        let hint = ScreenRecorder.WindowHint(
+            scope: cfg.screenCaptureScope,
+            pid: meeting.windowPID,
+            titleHint: meeting.windowTitle,
+            bundleId: nil,
+        )
+        startScreenRecorderIfEnabled(hint: hint)
         defer { _activeScreenRecorder = nil }
 
         // Read participants (Teams)

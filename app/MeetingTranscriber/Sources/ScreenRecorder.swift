@@ -10,12 +10,14 @@
 // one-shot screenshots; this just streams continuously.
 
 import AppKit
+
 // @preconcurrency: AVFoundation/CoreMedia types (CMSampleBuffer, AVAssetWriter*)
 // lack Sendable annotations — same gap guarded in DualSourceRecorder.swift.
 @preconcurrency import AVFoundation
 import CoreMedia
 import Foundation
 import os.log
+
 // @preconcurrency: SCStreamConfiguration/SCContentFilter aren't Sendable-annotated.
 @preconcurrency import ScreenCaptureKit
 
@@ -23,7 +25,7 @@ private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "ScreenR
 
 /// Tunables for a screen-recording session. Size/privacy-first defaults
 /// (5 fps, 1080p cap, HEVC). Hardcoded for v1; surface via AppSettings later.
-struct ScreenRecorderConfig: Sendable {
+struct ScreenRecorderConfig {
     var framesPerSecond: Int = 5
     var maxLongEdge: Int = 1080 // cap long side; 0 = display-native
     var useHEVC: Bool = true // HEVC hw-accelerated on Apple Silicon
@@ -31,7 +33,7 @@ struct ScreenRecorderConfig: Sendable {
     /// Target average bitrate. nil → derive from pixel count (see setupWriter()).
     var averageBitRate: Int?
 
-    static let `default` = ScreenRecorderConfig()
+    static let `default` = Self()
 }
 
 enum ScreenRecorderError: LocalizedError {
@@ -56,8 +58,42 @@ enum ScreenRecorderError: LocalizedError {
 /// @MainActor WatchLoop (frames arrive ~5/sec on SCK's private queue).
 @available(macOS 14.0, *)
 actor ScreenRecorder {
+    /// Where to source the captured frames from. Stored on the actor so the
+    /// watchdog `restartStream()` re-resolves the same scope without re-plumbing
+    /// from `WatchLoop`. `.entireScreen` (the init default) preserves the
+    /// historic whole-display behaviour for existing callers + tests.
+    struct WindowHint {
+        var scope: ScreenCaptureScope
+        var pid: pid_t?
+        var titleHint: String?
+        var bundleId: String?
+
+        init(
+            scope: ScreenCaptureScope,
+            pid: pid_t? = nil,
+            titleHint: String? = nil,
+            bundleId: String? = "com.google.Chrome",
+        ) {
+            self.scope = scope
+            self.pid = pid
+            self.titleHint = titleHint
+            self.bundleId = bundleId
+        }
+    }
+
+    /// Value-type projection of an `SCWindow`, so the window-selection logic
+    /// (`pickWindow`) is pure and headless-testable without a live SCStream.
+    struct WindowInfo {
+        let id: CGWindowID?
+        let pid: pid_t
+        let title: String?
+        let bundleId: String?
+        let frameArea: CGFloat
+    }
+
     private let config: ScreenRecorderConfig
     private let outputURL: URL
+    private let windowHint: WindowHint
 
     private var stream: SCStream?
     private var output: FrameOutput?
@@ -85,9 +121,14 @@ actor ScreenRecorder {
     ///   the timestamped temp name `<ts>_screen.mp4` in AppPaths.recordingsDir,
     ///   parallel to the audio temp files DualSourceRecorder.start() creates;
     ///   PipelineQueue.copyAudioToOutput later renames it to `<slug>_screen.mp4`.
-    init(outputURL: URL, config: ScreenRecorderConfig = .default) {
+    init(
+        outputURL: URL,
+        config: ScreenRecorderConfig = .default,
+        windowHint: WindowHint = WindowHint(scope: .entireScreen),
+    ) {
         self.outputURL = outputURL
         self.config = config
+        self.windowHint = windowHint
     }
 
     // MARK: - Start
@@ -95,40 +136,12 @@ actor ScreenRecorder {
     func start() async throws {
         guard !isRecording else { return }
 
-        // 1. Pick the MAIN display (menu-bar display); fall back to first.
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false, onScreenWindowsOnly: false,
+        // 1-3. Pick the display, resolve the capture filter (window vs
+        //      full-display fallback), and build the video-only stream config.
+        let resolved = try await resolveStream(restart: false)
+        let (filter, scConfig, outW, outH) = (
+            resolved.filter, resolved.config, resolved.width, resolved.height,
         )
-        guard let display = content.displays.first(where: {
-            $0.displayID == CGMainDisplayID()
-        }) ?? content.displays.first else {
-            throw ScreenRecorderError.noDisplay
-        }
-
-        // 2. Output pixel size: cap long edge to maxLongEdge, preserve aspect,
-        //    respect Retina backing scale so text stays sharp before downscale.
-        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let nativeW = Int(CGFloat(display.width) * scale)
-        let nativeH = Int(CGFloat(display.height) * scale)
-        let (outW, outH) = Self.fit(
-            width: nativeW, height: nativeH, maxLongEdge: config.maxLongEdge,
-        )
-
-        // 3. SCStreamConfiguration — VIDEO ONLY; audio explicitly off so we never
-        //    contend with the CATap (tools/audiotap/AppAudioCapture.swift).
-        let scConfig = SCStreamConfiguration()
-        scConfig.width = outW
-        scConfig.height = outH
-        scConfig.minimumFrameInterval = CMTime(
-            value: 1, timescale: CMTimeScale(max(config.framesPerSecond, 1)),
-        )
-        scConfig.queueDepth = 6
-        scConfig.showsCursor = config.showsCursor
-        scConfig.capturesAudio = false // audio stays on the CATap
-        scConfig.pixelFormat = kCVPixelFormatType_32BGRA
-        scConfig.colorSpaceName = CGColorSpace.sRGB
-
-        let filter = SCContentFilter(display: display, excludingWindows: [])
 
         // 4. AVAssetWriter → HEVC (HW on Apple Silicon) or H.264 fallback.
         try setupWriter(width: outW, height: outH)
@@ -339,35 +352,12 @@ actor ScreenRecorder {
         observer = nil
 
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(
-                false, onScreenWindowsOnly: false,
+            // Re-resolve the SAME window-scope decision so the watchdog never
+            // silently reverts to whole-display capture; fall back gracefully.
+            let resolved = try await resolveStream(restart: true)
+            let (filter, scConfig, outW, outH) = (
+                resolved.filter, resolved.config, resolved.width, resolved.height,
             )
-            guard let display = content.displays.first(where: { d in
-                d.displayID == CGMainDisplayID()
-            }) ?? content.displays.first else {
-                throw ScreenRecorderError.noDisplay
-            }
-
-            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-            let nativeW = Int(CGFloat(display.width) * scale)
-            let nativeH = Int(CGFloat(display.height) * scale)
-            let (outW, outH) = Self.fit(
-                width: nativeW, height: nativeH, maxLongEdge: config.maxLongEdge,
-            )
-
-            let scConfig = SCStreamConfiguration()
-            scConfig.width = outW
-            scConfig.height = outH
-            scConfig.minimumFrameInterval = CMTime(
-                value: 1, timescale: CMTimeScale(max(config.framesPerSecond, 1)),
-            )
-            scConfig.queueDepth = 6
-            scConfig.showsCursor = config.showsCursor
-            scConfig.capturesAudio = false
-            scConfig.pixelFormat = kCVPixelFormatType_32BGRA
-            scConfig.colorSpaceName = CGColorSpace.sRGB
-
-            let filter = SCContentFilter(display: display, excludingWindows: [])
 
             // Re-add the SAME FrameOutput so frames feed back into appendVideo,
             // which keeps writing to the existing writer/videoInput.
@@ -427,6 +417,145 @@ actor ScreenRecorder {
         await restartStream()
     }
 
+    // MARK: - Window selection
+
+    /// Pure, headless-testable window picker. Match priority:
+    ///   1. PID match AND title contains `titleHint`
+    ///   2. PID match (any title)
+    ///   3. bundleId match
+    /// Within each tier, ties break by largest `frameArea`. Returns nil when no
+    /// candidate matches — the caller then falls back to whole-display capture.
+    nonisolated static func pickWindow(
+        candidates: [WindowInfo],
+        pid: pid_t?,
+        titleHint: String?,
+        bundleId: String?,
+    ) -> WindowInfo? {
+        // Largest-area first within each filtered tier.
+        func largest(_ ws: [WindowInfo]) -> WindowInfo? {
+            ws.max { $0.frameArea < $1.frameArea }
+        }
+
+        if let pid {
+            let pidMatches = candidates.filter { $0.pid == pid }
+            if let hint = titleHint, !hint.isEmpty {
+                let titled = pidMatches.filter { candidate in
+                    (candidate.title?.localizedCaseInsensitiveContains(hint)) == true
+                }
+                if let win = largest(titled) { return win }
+            }
+            if let win = largest(pidMatches) { return win }
+        }
+
+        if let bundleId, !bundleId.isEmpty {
+            let bundleMatches = candidates.filter { $0.bundleId == bundleId }
+            if let win = largest(bundleMatches) { return win }
+        }
+
+        return nil
+    }
+
+    /// Fetch shareable content, pick the display, resolve the capture filter
+    /// (single window when `windowHint.scope == .chromeWindow`, else the whole
+    /// display — and the same full-display FALLBACK when no window resolves),
+    /// and build the video-only `SCStreamConfiguration`. Shared by `start()` and
+    /// `restartStream()` so the scope decision and stream config can't drift
+    /// between the initial start and a watchdog restart. `restart` only varies
+    /// the fallback debug-log wording.
+    private func resolveStream(
+        restart: Bool,
+    ) async throws -> (filter: SCContentFilter, config: SCStreamConfiguration, width: Int, height: Int) {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: false,
+        )
+        guard let display = content.displays.first(where: { d in
+            d.displayID == CGMainDisplayID()
+        }) ?? content.displays.first else {
+            throw ScreenRecorderError.noDisplay
+        }
+
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let displayW = Int(CGFloat(display.width) * scale)
+        let displayH = Int(CGFloat(display.height) * scale)
+
+        let filter: SCContentFilter
+        let outW: Int
+        let outH: Int
+        if let win = buildFilter(from: content, scale: scale) {
+            filter = win.filter
+            outW = win.width
+            outH = win.height
+        } else {
+            if windowHint.scope == .chromeWindow {
+                PermissionHealthCheck.debugLog(
+                    restart
+                        ? "[ScreenRecorder] restart: no Chrome window resolved — full-display fallback"
+                        : "[ScreenRecorder] window scope requested but no Chrome window resolved — "
+                        + "falling back to full display",
+                )
+            }
+            (outW, outH) = Self.fit(
+                width: displayW, height: displayH, maxLongEdge: config.maxLongEdge,
+            )
+            filter = SCContentFilter(display: display, excludingWindows: [])
+        }
+
+        // VIDEO ONLY; audio explicitly off so we never contend with the CATap
+        // (tools/audiotap/AppAudioCapture.swift).
+        let scConfig = SCStreamConfiguration()
+        scConfig.width = outW
+        scConfig.height = outH
+        scConfig.minimumFrameInterval = CMTime(
+            value: 1, timescale: CMTimeScale(max(config.framesPerSecond, 1)),
+        )
+        scConfig.queueDepth = 6
+        scConfig.showsCursor = config.showsCursor
+        scConfig.capturesAudio = false // audio stays on the CATap
+        scConfig.pixelFormat = kCVPixelFormatType_32BGRA
+        scConfig.colorSpaceName = CGColorSpace.sRGB
+
+        return (filter, scConfig, outW, outH)
+    }
+
+    /// Build a single-window content filter from the live shareable content,
+    /// honouring `windowHint`. Returns nil when scope is `.entireScreen` OR when
+    /// no matching window resolves — in both cases the caller uses the display
+    /// filter. The returned size is the window's frame scaled to backing pixels
+    /// then capped via `fit()`.
+    private func buildFilter(
+        from content: SCShareableContent, scale: CGFloat,
+    ) -> (filter: SCContentFilter, width: Int, height: Int)? {
+        guard windowHint.scope == .chromeWindow else { return nil }
+
+        let candidates: [WindowInfo] = content.windows.map { win in
+            WindowInfo(
+                id: win.windowID,
+                pid: win.owningApplication?.processID ?? -1,
+                title: win.title,
+                bundleId: win.owningApplication?.bundleIdentifier,
+                frameArea: win.frame.width * win.frame.height,
+            )
+        }
+        guard let chosen = Self.pickWindow(
+            candidates: candidates,
+            pid: windowHint.pid,
+            titleHint: windowHint.titleHint,
+            bundleId: windowHint.bundleId,
+        ),
+            let scWindow = content.windows.first(where: { $0.windowID == chosen.id })
+        else {
+            return nil
+        }
+
+        let nativeW = Int(scWindow.frame.width * scale)
+        let nativeH = Int(scWindow.frame.height * scale)
+        let (outW, outH) = Self.fit(
+            width: nativeW, height: nativeH, maxLongEdge: config.maxLongEdge,
+        )
+        let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+        return (filter, outW, outH)
+    }
+
     // MARK: - Helpers
 
     /// Scale (w,h) down so the long edge <= maxLongEdge, preserving aspect and
@@ -439,7 +568,9 @@ actor ScreenRecorder {
         return (even(Int(Double(width) * ratio)), even(Int(Double(height) * ratio)))
     }
 
-    nonisolated static func even(_ v: Int) -> Int { max(2, v - (v % 2)) }
+    nonisolated static func even(_ v: Int) -> Int {
+        max(2, v - (v % 2))
+    }
 }
 
 /// SCStreamOutput delegate. Lives outside the actor because SCK delivers frames
@@ -502,5 +633,7 @@ final class StreamObserver: NSObject, SCStreamDelegate, @unchecked Sendable {
 @available(macOS 14.0, *)
 struct SampleBufferBox: @unchecked Sendable {
     let buffer: CMSampleBuffer
-    init(_ buffer: CMSampleBuffer) { self.buffer = buffer }
+    init(_ buffer: CMSampleBuffer) {
+        self.buffer = buffer
+    }
 }

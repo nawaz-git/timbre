@@ -23,6 +23,13 @@ enum AppPaths {
     /// IPC directory: under `dataDir` for sandbox compatibility.
     static let ipcDir = dataDir.appendingPathComponent("ipc")
 
+    /// Cross-process engine config written by Electron and read FRESH by the
+    /// engine at the start of each meeting. Carries the screen-capture scope +
+    /// mic toggle (see `EngineConfig`). Lives in the same dir as
+    /// `active_meeting.json`. NOT staleness-gated — last-known-good survives
+    /// Electron quitting.
+    static let engineConfigFile = ipcDir.appendingPathComponent("engine_config.json")
+
     /// Recordings directory.
     static let recordingsDir = dataDir.appendingPathComponent("recordings")
 

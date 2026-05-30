@@ -107,4 +107,88 @@ final class ScreenRecorderTests: XCTestCase {
         XCTAssertEqual(ScreenRecorder.even(1), 2)
         XCTAssertEqual(ScreenRecorder.even(0), 2)
     }
+
+    // MARK: - pickWindow selection (pure, no live SCStream)
+
+    private func win(
+        id: CGWindowID,
+        pid: pid_t,
+        title: String? = nil,
+        bundleId: String? = "com.google.Chrome",
+        area: CGFloat = 1000,
+    ) -> ScreenRecorder.WindowInfo {
+        ScreenRecorder.WindowInfo(
+            id: id, pid: pid, title: title, bundleId: bundleId, frameArea: area,
+        )
+    }
+
+    /// (a) A window owned by the requested PID is returned.
+    func testPickWindowPidMatch() {
+        let chosen = ScreenRecorder.pickWindow(
+            candidates: [
+                win(id: 1, pid: 100, area: 500),
+                win(id: 2, pid: 200, area: 9000),
+            ],
+            pid: 100, titleHint: nil, bundleId: "com.google.Chrome",
+        )
+        XCTAssertEqual(chosen?.id, 1)
+    }
+
+    /// (b) Multiple windows share the PID → the title-containment tiebreak wins
+    /// over the larger-but-untitled sibling.
+    func testPickWindowTitleContainmentTiebreak() {
+        let chosen = ScreenRecorder.pickWindow(
+            candidates: [
+                win(id: 1, pid: 100, title: "Docs - Google Chrome", area: 9000),
+                win(id: 2, pid: 100, title: "ntu-vwcf-onr - Google Meet", area: 500),
+            ],
+            pid: 100, titleHint: "Google Meet", bundleId: "com.google.Chrome",
+        )
+        XCTAssertEqual(chosen?.id, 2)
+    }
+
+    /// (c) PID matches but no title contains the hint → fall through to the
+    /// largest PID-matched window.
+    func testPickWindowFallsBackToLargestAreaOnTitleMiss() {
+        let chosen = ScreenRecorder.pickWindow(
+            candidates: [
+                win(id: 1, pid: 100, title: "Inbox", area: 500),
+                win(id: 2, pid: 100, title: "Docs", area: 9000),
+            ],
+            pid: 100, titleHint: "Google Meet", bundleId: "com.google.Chrome",
+        )
+        XCTAssertEqual(chosen?.id, 2)
+    }
+
+    /// (d) No PID supplied → bundleId-only match (largest area within bundle).
+    func testPickWindowBundleIdOnlyMatch() {
+        let chosen = ScreenRecorder.pickWindow(
+            candidates: [
+                win(id: 1, pid: 100, bundleId: "com.apple.finder", area: 9000),
+                win(id: 2, pid: 200, bundleId: "com.google.Chrome", area: 500),
+                win(id: 3, pid: 300, bundleId: "com.google.Chrome", area: 4000),
+            ],
+            pid: nil, titleHint: nil, bundleId: "com.google.Chrome",
+        )
+        XCTAssertEqual(chosen?.id, 3)
+    }
+
+    /// (e) No PID match and no bundleId match → nil (caller falls back to
+    /// whole-display capture).
+    func testPickWindowReturnsNilWhenNoMatch() {
+        XCTAssertNil(
+            ScreenRecorder.pickWindow(
+                candidates: [
+                    win(id: 1, pid: 999, bundleId: "com.apple.finder"),
+                ],
+                pid: 100, titleHint: nil, bundleId: "com.google.Chrome",
+            ),
+        )
+        XCTAssertNil(
+            ScreenRecorder.pickWindow(
+                candidates: [],
+                pid: 100, titleHint: "x", bundleId: "com.google.Chrome",
+            ),
+        )
+    }
 }

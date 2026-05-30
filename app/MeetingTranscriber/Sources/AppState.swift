@@ -454,7 +454,7 @@ final class AppState { // swiftlint:disable:this type_body_length
                     pipelineQueue: pipelineQueue,
                     pollInterval: settings.pollInterval,
                     endGracePeriod: settings.endGrace,
-                    noMic: settings.noMic,
+                    noMic: { [settings] in settings.noMic },
                     micDeviceUID: settings.micDeviceUID.isEmpty ? nil : settings.micDeviceUID,
                     verboseDiagnostics: { [settings] in settings.verboseDiagnostics },
                     recordOnly: { [settings] in settings.recordOnly },
@@ -462,7 +462,7 @@ final class AppState { // swiftlint:disable:this type_body_length
                         .production(parent: settings.effectiveOutputDir)
                     },
                     recordScreenVideo: { [settings] in settings.recordScreenVideo },
-                    screenRecorderFactory: { ScreenRecorder(outputURL: $0) },
+                    screenRecorderFactory: { ScreenRecorder(outputURL: $0, windowHint: $1) },
                     notifier: notifier,
                 )
 
@@ -496,7 +496,7 @@ final class AppState { // swiftlint:disable:this type_body_length
                 recorderFactory: makeRecorderFactory(),
                 pipelineQueue: pipelineQueue,
                 pollInterval: settings.pollInterval,
-                noMic: settings.noMic,
+                noMic: { [settings] in settings.noMic },
                 micDeviceUID: settings.micDeviceUID.isEmpty ? nil : settings.micDeviceUID,
                 verboseDiagnostics: { [settings] in settings.verboseDiagnostics },
                 recordOnly: { [settings] in settings.recordOnly },
@@ -504,7 +504,7 @@ final class AppState { // swiftlint:disable:this type_body_length
                     .production(parent: settings.effectiveOutputDir)
                 },
                 recordScreenVideo: { [settings] in settings.recordScreenVideo },
-                screenRecorderFactory: { ScreenRecorder(outputURL: $0) },
+                screenRecorderFactory: { ScreenRecorder(outputURL: $0, windowHint: $1) },
                 notifier: notifier,
             )
             watchLoop = loop
