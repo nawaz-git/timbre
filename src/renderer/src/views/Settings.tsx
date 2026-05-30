@@ -31,11 +31,6 @@ const SCREEN_SCOPE_OPTIONS: ReadonlyArray<{ value: ScreenCaptureScope; label: st
   { value: 'entireScreen', label: 'Entire screen' }
 ]
 
-const MIC_OPTIONS: ReadonlyArray<{ value: boolean; label: string }> = [
-  { value: true, label: 'Microphone + meeting audio' },
-  { value: false, label: 'Meeting audio only' }
-]
-
 const APP_VERSION = APP_VERSION_PLACEHOLDER
 
 const NEW_TAG_PALETTE = [
@@ -264,28 +259,6 @@ export function SettingsView(): JSX.Element {
                 }
                 onClick={() => {
                   void setSettings({ screenCaptureScope: opt.value })
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </SettingsRow>
-
-        <SettingsRow
-          label="Microphone"
-          description="Capture your mic alongside the meeting audio, or record meeting audio only."
-        >
-          <div className="theme-toggle" role="group" aria-label="Microphone">
-            {MIC_OPTIONS.map((opt) => (
-              <button
-                key={String(opt.value)}
-                className={
-                  'theme-toggle__option' +
-                  (settings.recordMicrophone === opt.value ? ' theme-toggle__option--active' : '')
-                }
-                onClick={() => {
-                  void setSettings({ recordMicrophone: opt.value })
                 }}
               >
                 {opt.label}

@@ -36,11 +36,10 @@ function defaultSettings(): Settings {
     theme: 'auto',
     numSpeakers: 'auto',
     sidebarCollapsed: false,
-    // Defaults for the engine bridge (engine_config.json): record only the
-    // meeting's Chrome window, and keep the mic ON so the user's voice is
-    // never silently dropped (diarization needs the mic track).
+    // Default for the engine bridge (engine_config.json): record only the
+    // meeting's Chrome window. The microphone is always captured alongside the
+    // meeting audio (no toggle — the user's voice must be recorded).
     screenCaptureScope: 'chromeWindow',
-    recordMicrophone: true,
     // Mintr is intended to behave like Tailscale / 1Password — quietly
     // watching in the background unless the user explicitly pauses it.
     // First launch auto-enrols into watch mode; the tray menu surfaces
@@ -78,9 +77,6 @@ export async function readSettings(): Promise<Settings> {
   const autoStartWatching =
     typeof autoStartWatchingRaw === 'boolean' ? autoStartWatchingRaw : defaults.autoStartWatching
   const screenCaptureScope = coerceScope(store.get<ScreenCaptureScope>('screenCaptureScope'))
-  const recordMicrophoneRaw = store.get<boolean>('recordMicrophone')
-  const recordMicrophone =
-    typeof recordMicrophoneRaw === 'boolean' ? recordMicrophoneRaw : defaults.recordMicrophone
   // TICKET-IPC-002: undefined => wizard not completed (no default).
   const onboardingCompletedAtRaw = store.get<number>('onboardingCompletedAt')
   const onboardingCompletedAt =
@@ -91,7 +87,6 @@ export async function readSettings(): Promise<Settings> {
     numSpeakers,
     sidebarCollapsed,
     screenCaptureScope,
-    recordMicrophone,
     autoStartWatching,
     onboardingCompletedAt
   }
@@ -112,9 +107,6 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   }
   if (patch.screenCaptureScope !== undefined) {
     store.set('screenCaptureScope', coerceScope(patch.screenCaptureScope))
-  }
-  if (patch.recordMicrophone !== undefined) {
-    store.set('recordMicrophone', Boolean(patch.recordMicrophone))
   }
   // TICKET-IPC-002: use `in` (not `!== undefined`) so the reset path can
   // explicitly clear completion by passing `onboardingCompletedAt: undefined`.

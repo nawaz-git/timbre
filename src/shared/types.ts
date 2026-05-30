@@ -24,12 +24,6 @@ export interface Settings {
    */
   screenCaptureScope: ScreenCaptureScope
   /**
-   * Whether the user's microphone is captured alongside the meeting audio.
-   * Default true — never silently drop the user's voice (diarization needs the
-   * mic track). false ⇒ "Meeting audio only" (engine maps to noMic=true).
-   */
-  recordMicrophone: boolean
-  /**
    * Auto-start watching for meetings on app launch. Default true — Mintr
    * is meant to feel like a passive background utility (Tailscale / 1Password
    * style); the user shouldn't have to press a button before every meeting.
