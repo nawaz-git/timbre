@@ -64,6 +64,19 @@ actor ScreenRecorder {
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
 
+    /// Real SCStreamDelegate so we OBSERVE a silent SCStream stop (the proven
+    /// video defect: the stream stopped delivering after ~5 frames and, with
+    /// `delegate: nil`, no `didStopWithError` was ever received — the recorder
+    /// finalized a 0.98s file for a 13m+ meeting with zero log).
+    private var observer: StreamObserver?
+    /// Wall-clock of the last appended frame. The staleness watchdog restarts
+    /// the stream if frames stop arriving while still recording — covers the
+    /// case where frames silently stop WITHOUT a didStopWithError callback
+    /// (display sleep/lock, content-filter change, queue backpressure).
+    private var lastFrameWallClock = Date()
+    private var restartAttempts = 0
+    private var watchdogTask: Task<Void, Never>?
+
     private var sessionStarted = false
     private var frameCount = 0
     private(set) var isRecording = false
@@ -130,16 +143,28 @@ actor ScreenRecorder {
             guard let self else { return }
             Task { await self.appendVideo(box.buffer) }
         }
-        let stream = SCStream(filter: filter, configuration: scConfig, delegate: nil)
+        // Real delegate: hop a didStopWithError into the actor so a silent
+        // stream stop is no longer invisible.
+        let obs = StreamObserver { [weak self] err in
+            Task { await self?.handleStreamStopped(err) }
+        }
+        let stream = SCStream(filter: filter, configuration: scConfig, delegate: obs)
         try stream.addStreamOutput(out, type: .screen, sampleHandlerQueue: out.frameQueue)
         try await stream.startCapture()
 
         self.stream = stream
         output = out
+        observer = obs
+        lastFrameWallClock = Date()
         isRecording = true
         logger.info(
             "Screen recording started: \(outW)x\(outH) @ \(self.config.framesPerSecond)fps -> \(self.outputURL.lastPathComponent)",
         )
+
+        // Frame-staleness watchdog: if frames stop arriving while still
+        // recording, restart the stream. Essential because the observed symptom
+        // (frames silently stopping) does NOT fire didStopWithError.
+        startWatchdog()
     }
 
     private func setupWriter(width: Int, height: Int) throws {
@@ -200,6 +225,7 @@ actor ScreenRecorder {
         if videoInput.isReadyForMoreMediaData {
             videoInput.append(sampleBuffer)
             frameCount += 1
+            lastFrameWallClock = Date()
         } // else: drop frame (back-pressure). Fine — no A/V sync to maintain.
     }
 
@@ -208,6 +234,10 @@ actor ScreenRecorder {
     @discardableResult
     func stop() async throws -> URL {
         guard isRecording else { throw ScreenRecorderError.notRecording }
+        // Cancel the watchdog FIRST so it observes isRecording=false and never
+        // races a restart against teardown.
+        watchdogTask?.cancel()
+        watchdogTask = nil
         isRecording = false
 
         // Stop the stream BEFORE finishing the writer so no late frame appends
@@ -217,6 +247,7 @@ actor ScreenRecorder {
         }
         stream = nil
         output = nil
+        observer = nil
 
         guard let writer, let videoInput else { throw ScreenRecorderError.notRecording }
         videoInput.markAsFinished()
@@ -240,6 +271,160 @@ actor ScreenRecorder {
             "Screen recording saved: \(self.outputURL.lastPathComponent) (\(self.frameCount) frames)",
         )
         return outputURL
+    }
+
+    // MARK: - Restart / watchdog
+
+    /// Maximum stream-restart attempts before giving up and finalizing whatever
+    /// was captured. Bounds runaway restart loops.
+    private static let maxRestartAttempts = 5
+    /// Seconds without an appended frame (while recording) that the watchdog
+    /// treats as a stall worth restarting the stream for.
+    private static let stallThreshold: Double = 3.0
+
+    /// Pure decision boundary for restart, extracted so it is headless-testable
+    /// without live ScreenCaptureKit frames. Restart only while still recording,
+    /// under the attempt cap, and once the gap reaches the stall threshold.
+    nonisolated static func shouldRestart(
+        isRecording: Bool,
+        secondsSinceLastFrame: Double,
+        attemptsSoFar: Int,
+        maxAttempts: Int,
+        stallThreshold: Double,
+    ) -> Bool {
+        isRecording && attemptsSoFar < maxAttempts && secondsSinceLastFrame >= stallThreshold
+    }
+
+    /// Invoked from the SCStreamDelegate when the stream stops with an error.
+    /// A didStopWithError means the stream is gone for certain, so restart
+    /// immediately (stall threshold 0) as long as we're still recording and
+    /// under the attempt cap.
+    private func handleStreamStopped(_ error: (any Error)?) async {
+        guard Self.shouldRestart(
+            isRecording: isRecording,
+            secondsSinceLastFrame: .greatestFiniteMagnitude,
+            attemptsSoFar: restartAttempts,
+            maxAttempts: Self.maxRestartAttempts,
+            stallThreshold: 0,
+        ) else {
+            PermissionHealthCheck.debugLog(
+                "[ScreenRecorder] stream stopped but not restarting "
+                    + "(isRecording=\(isRecording) attempts=\(restartAttempts))",
+            )
+            return
+        }
+        restartAttempts += 1
+        PermissionHealthCheck.debugLog(
+            "[ScreenRecorder] restarting after stream stop (attempt \(restartAttempts)/\(Self.maxRestartAttempts)), error=\(String(describing: error))",
+        )
+        await restartStream()
+    }
+
+    /// Tear down ONLY the old SCStream and rebuild a fresh one, REUSING the same
+    /// AVAssetWriter/videoInput/sessionStarted so appendVideo keeps appending to
+    /// the same file with monotonic PTS. A screen-recording restart never
+    /// touches the audio path (the CATap is independent), preserving the
+    /// audio-isolation guarantee.
+    private func restartStream() async {
+        // Brief backoff so we don't hot-loop against a display that is still
+        // unavailable (sleep/lock).
+        try? await Task.sleep(for: .seconds(1))
+        guard isRecording else { return }
+
+        // Tear down the old stream only — keep writer/videoInput/sessionStarted.
+        if let stream {
+            try? await stream.stopCapture()
+        }
+        stream = nil
+        observer = nil
+
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: false,
+            )
+            guard let display = content.displays.first(where: { d in
+                d.displayID == CGMainDisplayID()
+            }) ?? content.displays.first else {
+                throw ScreenRecorderError.noDisplay
+            }
+
+            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+            let nativeW = Int(CGFloat(display.width) * scale)
+            let nativeH = Int(CGFloat(display.height) * scale)
+            let (outW, outH) = Self.fit(
+                width: nativeW, height: nativeH, maxLongEdge: config.maxLongEdge,
+            )
+
+            let scConfig = SCStreamConfiguration()
+            scConfig.width = outW
+            scConfig.height = outH
+            scConfig.minimumFrameInterval = CMTime(
+                value: 1, timescale: CMTimeScale(max(config.framesPerSecond, 1)),
+            )
+            scConfig.queueDepth = 6
+            scConfig.showsCursor = config.showsCursor
+            scConfig.capturesAudio = false
+            scConfig.pixelFormat = kCVPixelFormatType_32BGRA
+            scConfig.colorSpaceName = CGColorSpace.sRGB
+
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+
+            // Re-add the SAME FrameOutput so frames feed back into appendVideo,
+            // which keeps writing to the existing writer/videoInput.
+            let out = output ?? FrameOutput { [weak self] box in
+                guard let self else { return }
+                Task { await self.appendVideo(box.buffer) }
+            }
+            let obs = StreamObserver { [weak self] err in
+                Task { await self?.handleStreamStopped(err) }
+            }
+            let newStream = SCStream(filter: filter, configuration: scConfig, delegate: obs)
+            try newStream.addStreamOutput(out, type: .screen, sampleHandlerQueue: out.frameQueue)
+            try await newStream.startCapture()
+
+            stream = newStream
+            output = out
+            observer = obs
+            lastFrameWallClock = Date()
+            PermissionHealthCheck.debugLog(
+                "[ScreenRecorder] stream restarted (\(outW)x\(outH)); writer reused, frameCount=\(frameCount)",
+            )
+        } catch {
+            // Leave isRecording true so the watchdog can retry later (up to cap).
+            PermissionHealthCheck.debugLog(
+                "[ScreenRecorder] stream restart FAILED: \(error)",
+            )
+        }
+    }
+
+    /// Periodic loop that restarts the stream when frames go stale while still
+    /// recording. Cancelled in stop().
+    private func startWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            while let self, await self.isRecording {
+                try? await Task.sleep(for: .seconds(5))
+                if Task.isCancelled { return }
+                await self.watchdogTick()
+            }
+        }
+    }
+
+    /// One watchdog evaluation — restart if frames have gone stale.
+    private func watchdogTick() async {
+        let gap = Date().timeIntervalSince(lastFrameWallClock)
+        guard Self.shouldRestart(
+            isRecording: isRecording,
+            secondsSinceLastFrame: gap,
+            attemptsSoFar: restartAttempts,
+            maxAttempts: Self.maxRestartAttempts,
+            stallThreshold: Self.stallThreshold,
+        ) else { return }
+        PermissionHealthCheck.debugLog(
+            "[ScreenRecorder] frame stall \(gap)s — restarting (attempt \(restartAttempts + 1)/\(Self.maxRestartAttempts))",
+        )
+        restartAttempts += 1
+        await restartStream()
     }
 
     // MARK: - Helpers
@@ -285,6 +470,25 @@ final class FrameOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             let status = SCFrameStatus(rawValue: raw),
             status == .complete else { return }
         onFrame(SampleBufferBox(sampleBuffer))
+    }
+}
+
+/// SCStreamDelegate that forwards a `didStopWithError` into the ScreenRecorder
+/// actor via an injected closure. Created with `delegate: obs` (was `nil`) so a
+/// silent stream stop is observable. `@unchecked Sendable` because the only
+/// stored state is the immutable `@Sendable` closure — same manual-serialization
+/// rationale as `FrameOutput`.
+@available(macOS 14.0, *)
+final class StreamObserver: NSObject, SCStreamDelegate, @unchecked Sendable {
+    private let onStop: @Sendable ((any Error)?) -> Void
+
+    init(onStop: @escaping @Sendable ((any Error)?) -> Void) {
+        self.onStop = onStop
+    }
+
+    func stream(_: SCStream, didStopWithError error: any Error) {
+        PermissionHealthCheck.debugLog("[ScreenRecorder] stream STOPPED: \(error)")
+        onStop(error)
     }
 }
 

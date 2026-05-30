@@ -179,9 +179,25 @@ public class AppAudioCapture: @unchecked Sendable {
         tapID: AudioObjectID,
         requestedRate: Int,
     ) -> Int {
-        // 1. Query the tap directly — most authoritative
+        // 1. Query the tap directly — usually authoritative, BUT for an AirPods-
+        //    backed aggregate in HFP duplex the tap's kAudioTapPropertyFormat can
+        //    report a lower rate (e.g. 24000) than the aggregate clock actually
+        //    runs (44100). Cross-check against the device's MEASURED actual rate
+        //    (kAudioDevicePropertyActualSampleRate) — authoritative once the
+        //    device is started (this is called after AudioDeviceStart). If they
+        //    disagree by >5%, trust the measured rate: under-trusting the tap
+        //    here is exactly what under-downsampled the app track ~1.84x.
         let tapRate = queryTapSampleRate(tapID: tapID)
         if tapRate > 0 {
+            let measured = queryActualSampleRate(deviceID: deviceID)
+            if measured > 0, abs(Double(measured - tapRate)) / Double(tapRate) > 0.05 {
+                logger.warning(
+                    "Tap rate \(tapRate) Hz disagrees with measured actual rate \(measured) Hz — trusting measured",
+                )
+                return SampleRateQuery.validateSampleRate(
+                    queriedRate: measured, requestedRate: requestedRate,
+                ).rate
+            }
             let validated = SampleRateQuery.validateSampleRate(
                 queriedRate: tapRate, requestedRate: requestedRate,
             )

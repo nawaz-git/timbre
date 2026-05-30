@@ -196,6 +196,11 @@ class DualSourceRecorder: RecordingProvider {
             throw RecorderError.noAudioData
         }
         let captureResult = session.stop()
+        // Capture the real stop uptime now — the delta from recordingStart is
+        // the wall-clock capture duration the rate guard anchors on. Must pass
+        // the captured value (not buildRecording's default) or the guard would
+        // measure a near-zero elapsed and self-disable.
+        let stopUptime = ProcessInfo.processInfo.systemUptime
         captureSession = nil
 
         let ts = startTimestamp ?? Self.timestamp()
@@ -207,6 +212,7 @@ class DualSourceRecorder: RecordingProvider {
             timestamp: ts,
             recordingStart: recordingStart,
             format: CaptureFormat(requestedChannels: appChannels, requestedRate: recordRate, targetRate: targetRate),
+            recordingStopUptime: stopUptime,
         )
     }
 
@@ -221,7 +227,13 @@ class DualSourceRecorder: RecordingProvider {
         timestamp ts: String,
         recordingStart: TimeInterval,
         format: CaptureFormat,
+        recordingStopUptime: TimeInterval = ProcessInfo.processInfo.systemUptime,
     ) throws -> RecordingResult {
+        // Real capture duration from the systemUptime delta. Used by the
+        // wall-clock guard below as the one reference both tracks' rate bugs
+        // cannot corrupt. Defaulted parameter keeps existing test call sites
+        // compiling; the real stop() path forwards the captured stop uptime.
+        let elapsed = recordingStopUptime - recordingStart
         let micDelay = captureResult.micDelay
         let actualChannels = captureResult.actualChannels
 
@@ -283,6 +295,28 @@ class DualSourceRecorder: RecordingProvider {
 
             // Resample to 16kHz and save app track
             appSamples16k = AudioMixer.resample(appSamples, from: actualRate, to: format.targetRate)
+
+            // Wall-clock anchor: if the produced 16k frame count disagrees with
+            // the real elapsed time by >10%, the device rate that produced these
+            // frames was wrong. Self-correct by re-resampling from the inferred
+            // true rate before saving — `appSamples` (mono floats) is still in
+            // scope. This is the authoritative override; crossCheckAppRate above
+            // compares app-vs-mic, two sources that shared the same rate bug.
+            let wallCheck = wallClockRateCheck(
+                producedFrames: appSamples16k.count,
+                targetRate: format.targetRate,
+                elapsedSeconds: elapsed,
+                appRawBytes: appRawBytes,
+                appChannels: actualChannels,
+                deviceRate: actualRate,
+            )
+            if let report = wallCheck.report {
+                logger.error("App audio \(report) — self-correcting from \(wallCheck.corrected) Hz")
+                appSamples16k = AudioMixer.resample(
+                    appSamples, from: wallCheck.corrected, to: format.targetRate,
+                )
+            }
+
             let appFile = recDir.appendingPathComponent("\(ts)\(RecordingFileSuffix.app)")
             try AudioMixer.saveWAV(samples: appSamples16k, sampleRate: format.targetRate, url: appFile)
             appPath = appFile
@@ -409,6 +443,52 @@ class DualSourceRecorder: RecordingProvider {
             return snapped
         }
         return deviceRate
+    }
+
+    /// Wall-clock anchor: the authoritative guard against shipping a wrong-speed
+    /// file. `crossCheckAppRate` compares the app track against the MIC track,
+    /// but both tracks shared the identical ~1.84x stretch (a single wrong
+    /// device-rate assumption fed both), so they corroborated each other and no
+    /// correction fired. The only reference neither track's bug can corrupt is
+    /// the real elapsed wall-clock time (systemUptime delta). 1538.88s of frames
+    /// over an 831s recording is an >80% over-length this guard catches and snaps
+    /// back to the true inferred rate.
+    ///
+    /// - Returns: `(corrected, report)` — `corrected` is the rate to resample
+    ///   from (the device rate when no mismatch, otherwise the snapped inferred
+    ///   true rate); `report` is nil when within tolerance, else a forensic
+    ///   string the caller logs at error level before self-correcting.
+    static func wallClockRateCheck( // swiftlint:disable:this function_parameter_count
+        producedFrames: Int,
+        targetRate: Int,
+        elapsedSeconds: Double,
+        appRawBytes: Int,
+        appChannels: Int,
+        deviceRate: Int,
+    ) -> (corrected: Int, report: String?) {
+        let expected = elapsedSeconds * Double(targetRate)
+        // Need a meaningful window — a near-zero elapsed (e.g. stop() forgot to
+        // pass the real stop uptime) self-disables the guard rather than firing
+        // spuriously.
+        guard elapsedSeconds > 3, expected > 0 else { return (deviceRate, nil) }
+
+        let dev = abs(Double(producedFrames) - expected) / expected
+        guard dev > 0.10 else { return (deviceRate, nil) }
+
+        // Frame count disagrees with wall-clock by >10% → the device rate that
+        // produced these frames was wrong. Infer the true source rate from the
+        // raw app bytes over the real elapsed time and snap to a standard rate.
+        let inferred = SampleRateQuery.inferRateFromDuration(
+            rawBytes: appRawBytes,
+            bytesPerSample: 4,
+            channels: max(appChannels, 1),
+            durationSeconds: elapsedSeconds,
+        )
+        let snapped = inferred.map { SampleRateQuery.snapToStandardRate($0) }
+        let report = "wall-clock mismatch: frames=\(producedFrames) "
+            + "expected=\(Int(expected)) dev=\(dev) deviceRate=\(deviceRate) "
+            + "inferredTrueRate=\(snapped.map(String.init) ?? "nil")"
+        return (snapped ?? deviceRate, report)
     }
 
     private static let timestampFormatter: DateFormatter = {

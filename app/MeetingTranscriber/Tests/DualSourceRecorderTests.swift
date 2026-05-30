@@ -1,4 +1,5 @@
 import AudioTapLib
+@preconcurrency import AVFoundation
 @testable import MeetingTranscriber
 import XCTest
 
@@ -296,6 +297,96 @@ final class DualSourceRecorderTests: XCTestCase {
             micDelay: 0,
         )
         XCTAssertEqual(result, 24000)
+    }
+
+    // MARK: - wallClockRateCheck (the authoritative anti-2x guard)
+
+    /// Field evidence from the corrupted meeting: ~24.6M frames of 16k audio
+    /// produced over an 831s wall-clock recording (a >80% over-length). The
+    /// device reported 24000 Hz but actually ran 44100 Hz, so the guard must
+    /// flag the mismatch AND snap the corrected rate to 44100 — NOT 24000.
+    func testWallClockGuardCatches2xOverLength() {
+        let (corrected, report) = DualSourceRecorder.wallClockRateCheck(
+            producedFrames: 24_622_130,
+            targetRate: 16000,
+            elapsedSeconds: 831,
+            appRawBytes: 831 * 44100 * 2 * 4,
+            appChannels: 2,
+            deviceRate: 24000,
+        )
+        XCTAssertNotNil(report, "wall-clock mismatch must be flagged")
+
+        let expectedFrames = 831.0 * 16000.0
+        let overLength = (Double(24_622_130) - expectedFrames) / expectedFrames
+        XCTAssertGreaterThan(overLength, 0.80, "over-length should exceed 80%")
+
+        XCTAssertEqual(corrected, 44100, "must snap to the inferred true rate, not the wrong device rate")
+        XCTAssertNotEqual(corrected, 24000)
+    }
+
+    /// Correct audio (frame count matches wall-clock) must NOT trip the guard —
+    /// no false positive, and the device rate is returned unchanged.
+    func testWallClockGuardPassesCorrectAudio() {
+        let elapsed = 830.0
+        let deviceRate = 16000
+        let (corrected, report) = DualSourceRecorder.wallClockRateCheck(
+            producedFrames: 16000 * 830,
+            targetRate: 16000,
+            elapsedSeconds: elapsed,
+            appRawBytes: Int(elapsed) * deviceRate * 2 * 4,
+            appChannels: 2,
+            deviceRate: deviceRate,
+        )
+        XCTAssertNil(report, "matching audio must not be flagged")
+        XCTAssertEqual(corrected, deviceRate, "no correction when within tolerance")
+    }
+
+    /// End-to-end through the WAV writer: a synthetic raw app track sized for
+    /// 44100 Hz stereo Float32 over 10s, but with a spoofed `actualSampleRate:
+    /// 24000` (the wrong device rate). buildRecording must self-correct so the
+    /// resulting app WAV has the right header rate (16000) AND ~160000 samples
+    /// (10s at 16k) — i.e. the ~1.84x stretch is gone.
+    func testBuildRecordingSelfCorrectsWrongDeviceRate() throws {
+        let dir = try makeTempDirectory(prefix: "build_selfcorrect")
+        let appTmp = dir.appendingPathComponent("20260530_125500_app_raw.tmp")
+        // 10s of 44100 Hz interleaved stereo Float32.
+        let trueRate = 44100
+        let elapsed = 10.0
+        let frames = Int(Double(trueRate) * elapsed) // 441000 stereo frames
+        try writeRawFloat32([Float](repeating: 0.25, count: frames * 2), to: appTmp)
+
+        // A mic fixture 1.8375x too long (the same bug corroborating the app
+        // track) so crossCheckAppRate can't catch it — only the wall-clock
+        // guard can.
+        let micWav = dir.appendingPathComponent("20260530_125500_mic.wav")
+        let micFrames = Int(Double(16000) * elapsed * (44100.0 / 24000.0))
+        try AudioMixer.saveWAV(
+            samples: [Float](repeating: 0.1, count: micFrames),
+            sampleRate: 16000, url: micWav,
+        )
+
+        let result = try DualSourceRecorder.buildRecording(
+            from: AudioCaptureResult(
+                appAudioFileURL: appTmp, micAudioFileURL: micWav,
+                actualSampleRate: 24000, // SPOOFED wrong device rate
+                actualChannels: 2, micDelay: 0,
+            ),
+            recordingsDir: dir, timestamp: "20260530_125500",
+            recordingStart: 1000,
+            format: CaptureFormat(requestedChannels: 2, requestedRate: 48000, targetRate: 16000),
+            recordingStopUptime: 1010, // elapsed = 10s
+        )
+
+        let appPath = try XCTUnwrap(result.appPath, "app track should be saved")
+        let file = try AVAudioFile(forReading: appPath)
+        XCTAssertEqual(file.processingFormat.sampleRate, 16000, "header rate must be 16kHz")
+
+        let expectedSamples = elapsed * 16000.0 // ~160000
+        XCTAssertLessThan(
+            abs(Double(file.length) - expectedSamples) / expectedSamples,
+            0.10,
+            "sample count must be ~160000 (10s at 16k) — the 1.84x stretch must be gone, got \(file.length)",
+        )
     }
 
     // MARK: - resolveTapPIDs

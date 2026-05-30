@@ -32,6 +32,14 @@ public class MicCaptureHandler: @unchecked Sendable {
     private var converter: AVAudioConverter?
     /// Pre-computed resampling ratio (fileSampleRate / tapSampleRate), avoids division in audio callback.
     private var resampleRatio: Double = 1.0
+    /// The input rate the cached `converter` was built for. The tap is installed
+    /// with `format: nil` so AVAudioEngine hands the node's NATIVE format
+    /// per-buffer; if a Bluetooth headset renegotiates (HFP↔A2DP) mid-recording
+    /// the delivered rate can change without an `AVAudioEngineConfigurationChange`
+    /// firing. We rebuild the converter lazily whenever the live buffer's rate
+    /// differs from this value so the resample ratio always tracks the ACTUAL
+    /// delivered rate — never a stale rate pinned once at engine start.
+    private var converterInputRate: Double = 0
     public private(set) var firstFrameTime: UInt64 = 0
 
     private var debugRMS = DebugRMSReporter()
@@ -126,11 +134,6 @@ public class MicCaptureHandler: @unchecked Sendable {
             )
         }
 
-        let tapFormat = AVAudioFormat(
-            standardFormatWithSampleRate: hwFormat.sampleRate, channels: 1,
-        )! // swiftlint:disable:this force_unwrapping
-        logger.info("Mic tap format: \(tapFormat.sampleRate) Hz, \(tapFormat.channelCount)ch")
-
         // Always 16kHz — WhisperKit target rate
         if outputFile == nil {
             fileSampleRate = speechSampleRate
@@ -151,19 +154,21 @@ public class MicCaptureHandler: @unchecked Sendable {
             )
         }
 
+        // The converter, resampleRatio, and converterInputRate are NOT pinned
+        // here. Pinning the tap format to `hwFormat.sampleRate` read once at
+        // engine start is exactly the defect that produced the ~1.84x stretch:
+        // AirPods reported one rate at start but delivered another after an
+        // HFP↔A2DP renegotiation, and AVAudioEngineConfigurationChange does not
+        // reliably fire on that switch. Instead the converter is rebuilt lazily
+        // inside the tap closure from each live buffer's ACTUAL format.
         converter = nil
         resampleRatio = 1.0
-        if tapFormat.sampleRate != fileSampleRate {
-            let outputFormat = AVAudioFormat(
-                standardFormatWithSampleRate: fileSampleRate, channels: 1,
-            )! // swiftlint:disable:this force_unwrapping
-            converter = AVAudioConverter(from: tapFormat, to: outputFormat)
-            resampleRatio = fileSampleRate / tapFormat.sampleRate
-            logger.info("Mic: resampling \(Int(tapFormat.sampleRate))→\(Int(self.fileSampleRate)) Hz")
-        }
+        converterInputRate = 0
 
         // swiftlint:disable closure_parameter_position closure_body_length
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: tapFormat) {
+        // `format: nil` → AVAudioEngine hands the node's native per-buffer format,
+        // so a mid-recording rate change is observable on the very next buffer.
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) {
             [weak self] buffer, _ in
             // swiftlint:enable closure_parameter_position closure_body_length
             guard let self, self.isRecording else { return }
@@ -173,6 +178,33 @@ public class MicCaptureHandler: @unchecked Sendable {
             self.accumulateDebugRMS(buffer: buffer)
             self.publishCurrentLevel()
             self.maybeReportDebugRMS()
+
+            // Track the ACTUAL delivered rate per-buffer. Rebuild the converter
+            // (and resample ratio) only when it changes — the steady-state hot
+            // path skips this entirely. Mutating these ivars from the render
+            // thread is consistent with the documented single-tap-closure
+            // discipline (only one tap closure runs at a time; @unchecked
+            // Sendable already covers it).
+            let bufRate = buffer.format.sampleRate
+            if self.converter == nil || bufRate != self.converterInputRate {
+                if bufRate == self.fileSampleRate {
+                    self.converter = nil
+                } else {
+                    let inFmt = AVAudioFormat(
+                        standardFormatWithSampleRate: bufRate, channels: 1,
+                    )! // swiftlint:disable:this force_unwrapping
+                    let outFmt = AVAudioFormat(
+                        standardFormatWithSampleRate: self.fileSampleRate, channels: 1,
+                    )! // swiftlint:disable:this force_unwrapping
+                    self.converter = AVAudioConverter(from: inFmt, to: outFmt)
+                }
+                self.resampleRatio = self.fileSampleRate / bufRate
+                self.converterInputRate = bufRate
+                logger.warning(
+                    "Mic delivered rate changed to \(Int(bufRate)) Hz — rebuilt converter (ratio \(self.resampleRatio))",
+                )
+            }
+
             do {
                 if let converter = self.converter {
                     let outputFrames = AVAudioFrameCount(
@@ -312,6 +344,10 @@ public class MicCaptureHandler: @unchecked Sendable {
         }
 
         do {
+            // startEngine resets converter/resampleRatio/converterInputRate to
+            // the lazy initial state, so the first post-restart buffer rebuilds
+            // the converter from its ACTUAL delivered rate — no reliance on
+            // startEngine pre-building the converter from a queried hw format.
             try startEngine(deviceUID: deviceUID)
             let hwRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
             if hwRate <= 0 {
