@@ -2336,6 +2336,30 @@
   cursor: default;
 }
 
+/* Danger variant of the inline pill button — reuses the shared --danger
+   token (same as .row-menu__item--danger / .btn--danger); no new colours. */
+.speaker-picker__add-btn--danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--divider-strong));
+}
+.speaker-picker__add-btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+[data-theme='dark'] .speaker-picker__add-btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+/* Danger list-row (the "Remove label only" chooser entry). */
+.speaker-picker__item--danger,
+.speaker-picker__item--danger .speaker-picker__name {
+  color: var(--danger);
+}
+.speaker-picker__item--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
 /* ── Inline-add input (replaces title + add-btn while editing) ── */
 .speaker-picker__input {
   flex: 1;

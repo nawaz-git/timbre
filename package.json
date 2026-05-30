@@ -1,7 +1,7 @@
 {
   "name": "timbre",
   "productName": "Timbre",
-  "version": "0.34.0",
+  "version": "0.35.0",
   "description": "Timbre — Mac desktop app for on-device meeting transcription.",
   "main": "./out/main/index.js",
   "author": "contact@nawaz.ai",

@@ -42,6 +42,15 @@ interface SpeakerPickerProps {
    * `onRename` always means "rename this speaker everywhere in the meeting".
    */
   onRename?: (newName: string) => Promise<void> | void
+  /**
+   * Called when the user deletes the CURRENT speaker cluster. When provided,
+   * the current-speaker row gains a "Delete" affordance that opens an inline
+   * chooser. `target` is the speaker to reassign this cluster's lines to (a
+   * merge), or `null` to remove the label only (relabel to a neutral
+   * placeholder). Distinct from `onRename` — delete removes the name from the
+   * speaker list entirely.
+   */
+  onDelete?: (target: string | null) => Promise<void> | void
   /** Called on dismiss. */
   onClose: () => void
   /**
@@ -110,6 +119,7 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
     anchorEl,
     onPick,
     onRename,
+    onDelete,
     onClose,
     hideInMeetingGroup,
     newNamePlaceholder
@@ -121,6 +131,8 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
   // Inline rename of the CURRENT speaker (cluster-wide). Independent of `adding`.
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
+  // Inline delete chooser for the CURRENT speaker (reassign-to / remove-label).
+  const [deleting, setDeleting] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
@@ -210,6 +222,17 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
     setBusy(true)
     try {
       await onRename(next)
+      onClose()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDelete = async (target: string | null): Promise<void> => {
+    if (busy || !onDelete) return
+    setBusy(true)
+    try {
+      await onDelete(target)
       onClose()
     } finally {
       setBusy(false)
@@ -372,13 +395,63 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
                   Rename
                 </button>
               ) : (
-                <span className="speaker-picker__meta">(current)</span>
+                !onDelete && <span className="speaker-picker__meta">(current)</span>
+              )}
+              {onDelete && (
+                <button
+                  className="speaker-picker__add-btn speaker-picker__add-btn--danger"
+                  onClick={() => setDeleting(true)}
+                  disabled={busy}
+                  title="Delete this speaker — reassign its lines or remove the label"
+                >
+                  Delete
+                </button>
               )}
             </div>
           )}
         </>
       )}
 
+      {/* ── Delete chooser (reassign lines / remove label) ───── */}
+      {deleting && onDelete ? (
+        <>
+          {others.length > 0 && (
+            <>
+              <div className="speaker-picker__divider" />
+              <div className="speaker-picker__group-label">
+                Reassign {current}’s lines to
+              </div>
+              {others.map((name) => (
+                <button
+                  key={`d-${name}`}
+                  className="speaker-picker__item"
+                  onClick={() => void handleDelete(name)}
+                  disabled={busy}
+                  title={`Merge ${current} into ${name}`}
+                >
+                  <span
+                    className="speaker-picker__dot"
+                    style={{ background: dotColor(name) }}
+                    aria-hidden="true"
+                  />
+                  <span className="speaker-picker__name">{name}</span>
+                  {addedSet.has(name) && <span className="speaker-picker__meta">(added)</span>}
+                </button>
+              ))}
+            </>
+          )}
+          <div className="speaker-picker__divider" />
+          <button
+            className="speaker-picker__item speaker-picker__item--danger"
+            onClick={() => void handleDelete(null)}
+            disabled={busy}
+            title="Remove this speaker's label without reassigning its lines"
+          >
+            <span className="speaker-picker__name">Remove label only</span>
+          </button>
+        </>
+      ) : (
+        <>
       {/* ── Also in this meeting ─────────────────────────────── */}
       {showInMeetingGroup && (
         <>
@@ -437,6 +510,8 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
           <div className="speaker-picker__empty">
             No other speakers yet — add a new name above
           </div>
+        </>
+      )}
         </>
       )}
     </div>

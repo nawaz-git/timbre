@@ -37,6 +37,7 @@ import {
   liveRecordingsRoot,
   readTranscript,
   reassignSegmentSpeaker,
+  removeSpeakerLabelInMeeting,
   renameMeetingTitle,
   renameSpeakerInMeeting,
   setMeetingTags,
@@ -204,6 +205,18 @@ export function registerIpcHandlers(): void {
     ): Promise<{ additionalSpeakers: string[] }> => {
       const settings = await readSettings()
       return addSpeakerToMeeting(settings.outputFolder, meetingId, speakerName)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.meetingsRemoveSpeakerLabel,
+    async (
+      _event,
+      meetingId: string,
+      speakerName: string
+    ): Promise<{ speakerCount: number }> => {
+      const settings = await readSettings()
+      return removeSpeakerLabelInMeeting(settings.outputFolder, meetingId, speakerName)
     }
   )
 

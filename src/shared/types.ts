@@ -177,6 +177,7 @@ export const IPC = {
   meetingsRenameSpeaker: 'meetings:renameSpeaker',
   meetingsReassignSegment: 'meetings:reassignSegment',
   meetingsAddSpeaker: 'meetings:addSpeaker',
+  meetingsRemoveSpeakerLabel: 'meetings:removeSpeakerLabel',
   meetingsReanalyze: 'meetings:reanalyze',
   fileImport: 'file:import',
   backendSpawn: 'backend:spawn',

@@ -329,7 +329,7 @@ async function patchEngineTxtByIndex(
   try {
     const raw = await fs.readFile(txtPath, 'utf-8')
     const lines = raw.split('\n')
-    const lineRe = /^(\[(?:\d{1,2}:)?\d{1,2}:\d{1,2}\])(\s+)([^:\n]+?)(:.*)$/
+    const lineRe = ENGINE_TXT_LINE_RE
     let matched = -1
     for (let i = 0; i < lines.length; i++) {
       if (lineRe.test(lines[i])) {
@@ -376,9 +376,57 @@ async function renameEngineSpeaker(
 }
 
 /**
+ * Shared timestamped-speaker-line regex for the engine protocol `.txt`. MUST
+ * stay byte-for-byte in sync with `patchEngineTxtByIndex`'s `lineRe` and with
+ * the renderer's flat-text fallback parser so that the Nth match here is the
+ * same row the renderer addresses by index. Capture groups:
+ *   1 = `[MM:SS]` / `[H:MM:SS]` bracket, 2 = whitespace, 3 = name, 4 = `:rest`.
+ */
+const ENGINE_TXT_LINE_RE = /^(\[(?:\d{1,2}:)?\d{1,2}:\d{1,2}\])(\s+)([^:\n]+?)(:.*)$/
+
+/** Parse a `[MM:SS]` / `[H:MM:SS]` / `[HH:MM:SS]` bracket into start seconds. */
+function bracketToSeconds(bracket: string): number {
+  const m = bracket.match(/\[(?:(\d{1,2}):)?(\d{1,2}):(\d{1,2})\]/)
+  if (!m) return 0
+  const h = m[1] ? parseInt(m[1], 10) : 0
+  const min = parseInt(m[2], 10)
+  const s = parseInt(m[3], 10)
+  return h * 3600 + min * 60 + s
+}
+
+/**
+ * Count distinct speaker names in an engine meeting's flat protocol `.txt`,
+ * using the SAME line regex as `patchEngineTxtByIndex`. Used as the fallback
+ * speaker count for `.txt`-only meetings (no `segments.json`). Returns 0 when
+ * the file is absent or has no timestamped speaker lines.
+ */
+async function countTxtSpeakers(prefix: string): Promise<number> {
+  const txtPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.txt`)
+  try {
+    const raw = await fs.readFile(txtPath, 'utf-8')
+    const names = new Set<string>()
+    for (const line of raw.split('\n')) {
+      const m = line.match(ENGINE_TXT_LINE_RE)
+      if (m) {
+        const name = m[3].trim()
+        if (name) names.add(name)
+      }
+    }
+    return names.size
+  } catch {
+    return 0
+  }
+}
+
+/**
  * Per-segment reassignment inside an engine meeting. Patches the structured
  * `segments.json` at `segmentIndex` and the matching `.txt` line. Returns the
  * new distinct speaker count.
+ *
+ * When the meeting has NO `segments.json` (a `.txt`-only live recording surfaced
+ * via the renderer's flat-text fallback parser), this degrades gracefully —
+ * mirroring `renameEngineSpeaker` — patching only the protocol `.txt` line by
+ * index and deriving the speaker count from the `.txt` instead of throwing.
  */
 async function reassignEngineSegment(
   prefix: string,
@@ -387,7 +435,10 @@ async function reassignEngineSegment(
 ): Promise<number> {
   const { segmentsPath } = await findEngineSidecars(ENGINE_DEFAULT_ROOT, prefix)
   if (!segmentsPath) {
-    throw new Error('This live recording has no structured segments to reassign.')
+    // .txt-only fallback: no structured segments to write, but the renderer's
+    // flat-text row index lines up 1:1 with patchEngineTxtByIndex's Nth match.
+    await patchEngineTxtByIndex(prefix, segmentIndex, newSpeaker)
+    return countTxtSpeakers(prefix)
   }
   const segs = await safeReadJson<EngineSegmentJSON[]>(segmentsPath)
   if (!Array.isArray(segs) || segmentIndex >= segs.length) {
@@ -436,6 +487,28 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       if (Array.isArray(segs) && segs.length > 0) {
         durationSeconds = Math.ceil(Math.max(...segs.map((s) => s.end ?? 0)))
         speakerCount = new Set(segs.map((s) => s.speaker)).size
+      }
+    } else {
+      // .txt-only meeting (no structured segments.json): derive stats from the
+      // flat protocol transcript so the header never reads "0:00 · 0 speakers".
+      // Speaker count = distinct timestamped-line names; duration = the LAST
+      // timestamp's start seconds (approximate — under-reports true audio length
+      // but satisfies the "never show 0:00" requirement without extra I/O).
+      try {
+        const raw = await fs.readFile(txtPath, 'utf-8')
+        const names = new Set<string>()
+        let lastStart = 0
+        for (const line of raw.split('\n')) {
+          const m = line.match(ENGINE_TXT_LINE_RE)
+          if (!m) continue
+          const name = m[3].trim()
+          if (name) names.add(name)
+          lastStart = bracketToSeconds(m[1])
+        }
+        speakerCount = names.size
+        durationSeconds = lastStart
+      } catch {
+        // .txt unreadable — leave both at 0.
       }
     }
 
@@ -632,6 +705,24 @@ export async function renameSpeakerInMeeting(
 ): Promise<{ enrolled: boolean }> {
   if (oldName === newName) return { enrolled: false }
   if (!newName.trim()) throw new Error('New name must not be empty')
+  // When the rename is a merge (oldName disappears into newName), drop oldName
+  // from additionalSpeakers so it doesn't linger as a read-only "added" pill.
+  const pruneOldFromAdditionalSpeakers = async (): Promise<void> => {
+    try {
+      const metaPath = engineOrFolderMetaPath(outputFolder, meetingId)
+      const existing = await safeReadJson<MetadataFile>(metaPath)
+      if (!existing || !Array.isArray(existing.additionalSpeakers)) return
+      const filtered = existing.additionalSpeakers.filter(
+        (n) => typeof n === 'string' && n.trim() !== oldName
+      )
+      if (filtered.length === existing.additionalSpeakers.length) return
+      existing.additionalSpeakers = filtered
+      await fs.mkdir(dirname(metaPath), { recursive: true })
+      await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+    } catch {
+      // Pruning is best-effort; never fail the rename over it.
+    }
+  }
   if (meetingId.startsWith('engine:')) {
     // Live recordings have no speakers.json centroids to enrol, but we CAN
     // relabel the transcript directly — patch segments.json + the protocol
@@ -639,6 +730,7 @@ export async function renameSpeakerInMeeting(
     const prefix = meetingId.slice('engine:'.length)
     if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) throw new Error(`Invalid engine prefix: ${prefix}`)
     await renameEngineSpeaker(prefix, oldName, newName)
+    await pruneOldFromAdditionalSpeakers()
     return { enrolled: false }
   }
   const folderId = meetingId.startsWith('imported:')
@@ -699,6 +791,7 @@ export async function renameSpeakerInMeeting(
     // transcript.json may not exist; non-fatal.
   }
 
+  await pruneOldFromAdditionalSpeakers()
   return { enrolled }
 }
 
@@ -968,6 +1061,118 @@ export async function addSpeakerToMeeting(
   await fs.mkdir(dirname(metaPath), { recursive: true })
   await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
   return { additionalSpeakers: merged }
+}
+
+/**
+ * Remove a speaker's LABEL from a meeting without reassigning its lines to
+ * another named person — every utterance currently tagged `speakerName` is
+ * relabelled to a neutral placeholder. This is the "remove the label only"
+ * branch of speaker deletion; the "delete and reassign to X" (a merge) is
+ * served by the existing `renameSpeakerInMeeting(…, speakerName, X)` path,
+ * which already degrades to `.txt`-only for engine meetings.
+ *
+ * The placeholder is the literal `"Speaker"` — a deliberately generic,
+ * monochrome-friendly token. If a `"Speaker"` cluster already exists, the
+ * removed lines merge into it; that is acceptable "remove label" semantics.
+ *
+ * Also prunes `speakerName` from `metadata → additionalSpeakers` so a deleted
+ * name cannot linger as a read-only "added" pill.
+ *
+ * Returns the recomputed distinct speaker count so the caller can refresh the
+ * header stats, mirroring `reassignSegmentSpeaker`'s convention.
+ */
+export async function removeSpeakerLabelInMeeting(
+  outputFolder: string,
+  meetingId: string,
+  speakerName: string
+): Promise<{ speakerCount: number }> {
+  const target = speakerName.trim()
+  if (!target) throw new Error('Speaker name must not be empty')
+  const PLACEHOLDER = 'Speaker'
+
+  // Prune the removed name from additionalSpeakers (engine sidecar or imported
+  // metadata.json) so it doesn't reappear as an added pill.
+  const pruneAdditionalSpeakers = async (): Promise<void> => {
+    const metaPath = engineOrFolderMetaPath(outputFolder, meetingId)
+    const existing = await safeReadJson<MetadataFile>(metaPath)
+    if (!existing || !Array.isArray(existing.additionalSpeakers)) return
+    const filtered = existing.additionalSpeakers.filter(
+      (n) => typeof n === 'string' && n.trim() !== target
+    )
+    if (filtered.length === existing.additionalSpeakers.length) return
+    existing.additionalSpeakers = filtered
+    await fs.mkdir(dirname(metaPath), { recursive: true })
+    await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+  }
+
+  if (meetingId.startsWith('engine:')) {
+    const prefix = meetingId.slice('engine:'.length)
+    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) throw new Error(`Invalid engine prefix: ${prefix}`)
+    // Relabel the whole cluster to the placeholder (reuses the segments.json +
+    // .txt degrade path).
+    await renameEngineSpeaker(prefix, target, PLACEHOLDER)
+    await pruneAdditionalSpeakers()
+    const { segmentsPath } = await findEngineSidecars(ENGINE_DEFAULT_ROOT, prefix)
+    if (segmentsPath) {
+      const segs = await safeReadJson<EngineSegmentJSON[]>(segmentsPath)
+      if (Array.isArray(segs)) {
+        return {
+          speakerCount: new Set(segs.map((s) => s.speaker).filter((v) => v && v.length > 0)).size
+        }
+      }
+    }
+    return { speakerCount: await countTxtSpeakers(prefix) }
+  }
+
+  // Imported meeting: relabel matching segments in transcript.json + .txt.
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${meetingId}`)
+  }
+  const folder = join(outputFolder, folderId)
+
+  // 1. transcript.json — relabel each matching segment, recompute distinct count.
+  const jsonPath = join(folder, 'transcript.json')
+  interface TJSON {
+    segments?: Array<{ speaker?: string; [k: string]: unknown }>
+    speakerCount?: number
+    [k: string]: unknown
+  }
+  let distinctSize = 0
+  try {
+    const raw = await fs.readFile(jsonPath, 'utf-8')
+    const parsed = JSON.parse(raw) as TJSON
+    if (parsed.segments) {
+      for (const seg of parsed.segments) {
+        if (seg.speaker === target) seg.speaker = PLACEHOLDER
+      }
+      const distinct = new Set<string>()
+      for (const seg of parsed.segments) {
+        if (typeof seg.speaker === 'string' && seg.speaker.length > 0) distinct.add(seg.speaker)
+      }
+      distinctSize = distinct.size
+      parsed.speakerCount = distinctSize
+      await fs.writeFile(jsonPath, JSON.stringify(parsed, null, 2), 'utf-8')
+    }
+  } catch {
+    // transcript.json may be absent on partial outputs — non-fatal.
+  }
+
+  // 2. transcript.txt — anchored cluster relabel (same regex used by rename).
+  const txtPath = join(folder, 'transcript.txt')
+  try {
+    const raw = await fs.readFile(txtPath, 'utf-8')
+    const re = new RegExp('(\\[\\d\\d:\\d\\d:\\d\\d\\] )' + escapeRegex(target) + '(:)', 'g')
+    const next = raw.replace(re, '$1' + PLACEHOLDER + '$2')
+    if (next !== raw) await fs.writeFile(txtPath, next, 'utf-8')
+  } catch {
+    // transcript.txt may not exist on partial outputs — non-fatal.
+  }
+
+  await pruneAdditionalSpeakers()
+  return { speakerCount: distinctSize }
 }
 
 // ─── Export helpers ─────────────────────────────────────────────────────

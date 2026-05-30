@@ -779,6 +779,41 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   )
 
   /**
+   * Delete a speaker cluster. `target` non-null → merge (reassign every line of
+   * `clusterName` to `target`, reusing the existing renameSpeaker IPC). `target`
+   * null → remove the label only (relabel to a neutral placeholder via the new
+   * removeSpeakerLabel IPC). Both then re-derive the transcript, pills, enrolled
+   * list, and header stats so the deleted name disappears everywhere.
+   */
+  const onDeleteSpeaker = useCallback(
+    async (clusterName: string, target: string | null) => {
+      if (!selectedId) return
+      try {
+        if (target) {
+          await window.api.meetings.renameSpeaker(selectedId, clusterName, target)
+        } else {
+          await window.api.meetings.removeSpeakerLabel(selectedId, clusterName)
+        }
+        setStatusBanner(
+          target
+            ? `Merged "${clusterName}" into "${target}".`
+            : `Removed label "${clusterName}".`
+        )
+        setPickerForCluster(null)
+        setPickerAnchor(null)
+        setPreviewCache({})
+        await loadTranscript(selectedId)
+        await loadEnrolled()
+        await refresh()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setStatusBanner(`Delete failed: ${msg}`)
+      }
+    },
+    [selectedId, loadTranscript, loadEnrolled, refresh]
+  )
+
+  /**
    * Reassign a SINGLE segment's speaker (not the cluster). Other segments
    * sharing the old name are untouched. Backed by `meetings:reassignSegment`.
    */
@@ -1340,6 +1375,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                           anchorEl={pickerAnchor}
                           onPick={(newName) => onPickSpeaker(name, newName)}
                           onRename={(newName) => onPickSpeaker(name, newName)}
+                          onDelete={(target) => onDeleteSpeaker(name, target)}
                           onClose={() => {
                             setPickerForCluster(null)
                             setPickerAnchor(null)
@@ -1807,6 +1843,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                             anchorEl={pickerAnchor}
                             onPick={(newName) => onPickSpeaker(name, newName)}
                             onRename={(newName) => onPickSpeaker(name, newName)}
+                            onDelete={(target) => onDeleteSpeaker(name, target)}
                             onClose={() => {
                               setPickerForCluster(null)
                               setPickerAnchor(null)
