@@ -725,7 +725,11 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
             {recent.map((m) => (
               <button
                 key={m.id}
-                className={'recent-card' + (m.isLive ? ' recent-card--live' : '')}
+                className={
+                  'recent-card' +
+                  (m.isLive ? ' recent-card--live' : '') +
+                  (m.status === 'processing' ? ' recent-card--processing' : '')
+                }
                 onClick={() => onOpenMeeting(m.id)}
                 title={m.title}
               >
@@ -737,10 +741,25 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
                       <span>LIVE</span>
                     </span>
                   )}
+                  {!m.isLive && m.status === 'processing' && (
+                    <span className="recent-card__processing-badge" aria-label="Processing">
+                      <Loader2
+                        size={10}
+                        strokeWidth={2}
+                        aria-hidden="true"
+                        className="home-status-icon--spin"
+                      />
+                      <span>PROCESSING</span>
+                    </span>
+                  )}
                 </div>
                 {m.isLive ? (
                   <div className="recent-card__meta recent-card__meta--live">
                     Recording in progress — full transcript will appear when meeting ends.
+                  </div>
+                ) : m.status === 'processing' ? (
+                  <div className="recent-card__meta recent-card__meta--processing">
+                    Processing — audio ready, transcript coming.
                   </div>
                 ) : (
                   <div className="recent-card__meta">

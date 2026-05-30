@@ -2842,6 +2842,87 @@
   max-width: 48ch;
 }
 
+/*
+ * Processing-state treatment (finished recording, transcript still being
+ * produced). DELIBERATELY MONOCHROME — clones the live-card geometry but
+ * uses only neutral tokens (--accent tint, --fg-muted, --divider) so it
+ * never inherits the live state's red dot / green tint. The spinner reuses
+ * the shared `home-status-icon--spin` keyframes.
+ */
+.recent-card--processing {
+  border-color: var(--divider);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.recent-card__processing-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-full, 999px);
+  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.recent-card__meta--processing {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* Meetings list-row processing meta — same neutral italic status sentence. */
+.meetings__row-meta--processing {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/*
+ * Inline "Processing" pill used next to the title in the Meetings list row
+ * and in the detail header. Monochrome chip + spinner; matches the
+ * recent-card badge proportions but in sentence-case for the denser rows.
+ */
+.processing-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: var(--radius-full, 999px);
+  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
+  color: var(--fg-muted);
+  font: 600 11px/1 var(--font-sans);
+}
+.processing-pill .home-status-icon--spin {
+  flex-shrink: 0;
+}
+.meetings__row--processing .meetings__row-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/*
+ * Detail-pane processing status panel — replaces the bare
+ * "(No transcript text yet.)" empty state for a processing meeting. Clones
+ * the dashed-border placeholder used by the live capture card so the user
+ * reads "work in progress, audio plays above" instead of "broken details".
+ */
+.meetings__detail-processing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  border: 1px dashed var(--divider, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-base);
+  font: 400 12.5px/1.5 var(--font-sans);
+  color: var(--fg-muted);
+}
+
 /* ── Tighten action row when overflow risk ─────────────────── */
 
 .detail-header {

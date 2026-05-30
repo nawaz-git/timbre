@@ -527,7 +527,108 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       tagIds: Array.isArray(meta?.tags) ? meta.tags : [],
       additionalSpeakers: Array.isArray(meta?.additionalSpeakers)
         ? meta.additionalSpeakers
-        : []
+        : [],
+      // These rows are derived from a landed protocols/<prefix>.txt — the
+      // engine pipeline has finished, so they are ready (not processing).
+      status: 'ready'
+    })
+  }
+  return results
+}
+
+/**
+ * Distinct raw-recording suffixes the engine writes the instant a meeting
+ * stops (BEFORE its transcribe → diarize → protocol pipeline runs). Presence
+ * of one of these with NO `protocols/<prefix>.txt` yet is the cleanest
+ * Electron-only "this meeting is still processing" signal.
+ */
+const RAW_AUDIO_SUFFIXES = ['_mix.wav', '_app.wav', '_mic.wav'] as const
+
+/**
+ * Surface meetings that have FINISHED recording but whose engine pipeline
+ * hasn't produced a transcript yet. The engine writes the raw audio
+ * (`recordings/<prefix>_{mix,app,mic}.wav`, optional `<prefix>_screen.mp4`)
+ * immediately when recording stops, then runs transcribe → diarize →
+ * protocol which lands `protocols/<prefix>.txt` LATER. During that window the
+ * `.txt`-only lister (`listEnginePrefixMeetings`) shows nothing, so the just-
+ * ended meeting is invisible in Recent / Meetings — the core complaint.
+ *
+ * This scanner does ONE `readdir` of `recordings/`, collects the distinct
+ * prefixes that have a raw audio file, and emits a `status: 'processing'`
+ * `MeetingSummary` for each prefix whose `protocols/<prefix>.txt` does NOT
+ * exist yet (so once the `.txt` lands, the ready row from
+ * `listEnginePrefixMeetings` supersedes this one — no transient duplicate).
+ *
+ * `folderPath` is the protocols dir so it matches the ready row's
+ * `folderPath`, letting `listMeetings`' `id|folderPath` de-dupe key collapse
+ * the two if they ever briefly coexist. Takes `root` as a parameter so it is
+ * testable without the module-level `ENGINE_DEFAULT_ROOT` const.
+ */
+async function listEngineProcessingMeetings(root: string): Promise<MeetingSummary[]> {
+  const recordingsDir = join(root, 'recordings')
+  let entries: string[]
+  try {
+    entries = await fs.readdir(recordingsDir)
+  } catch {
+    return []
+  }
+  // First pass: collect distinct prefixes that have a raw audio file, and note
+  // per-prefix which sidecars exist — all from the single readdir above.
+  const prefixes = new Set<string>()
+  const hasScreen = new Set<string>()
+  for (const e of entries) {
+    const rawSuffix = RAW_AUDIO_SUFFIXES.find((s) => e.endsWith(s))
+    if (rawSuffix) {
+      prefixes.add(e.slice(0, -rawSuffix.length))
+      continue
+    }
+    if (e.endsWith('_screen.mp4')) {
+      hasScreen.add(e.slice(0, -'_screen.mp4'.length))
+    }
+  }
+  if (prefixes.size === 0) return []
+
+  const protocolsDir = join(root, 'protocols')
+  const results: MeetingSummary[] = []
+  for (const prefix of prefixes) {
+    // Defence in depth: prefixes come from filenames the engine controls
+    // (YYYYMMDD_HHmm_<slug>) — skip anything that isn't safe ASCII so a
+    // surprise filename can't leak through.
+    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) continue
+    // Skip prefixes whose transcript has already landed — those are handled
+    // (as `status: 'ready'`) by listEnginePrefixMeetings. Guarding here avoids
+    // a transient double-row at the moment the .txt is written.
+    if (await pathExists(join(protocolsDir, `${prefix}.txt`))) continue
+
+    // Date from the raw audio mtime so the row sorts correctly (newest-first).
+    // Reuse findEngineSidecars for audio resolution — its startsWith(prefix)
+    // match tolerates the `_<runId>_segments.json` infix, and gives the same
+    // audioPath the mt-audio:// route resolves, so the card can play now.
+    const { audioPath } = await findEngineSidecars(root, prefix)
+    let dateIso = new Date().toISOString()
+    if (audioPath) {
+      try {
+        const st = await fs.stat(audioPath)
+        dateIso = st.mtime.toISOString()
+      } catch {
+        // fall back to now
+      }
+    }
+    const meta = await safeReadJson<MetadataFile>(engineMetaPath(prefix))
+    results.push({
+      id: `engine:${prefix}`,
+      title: meta?.title?.trim() ? meta.title : titleFromEnginePrefix(prefix),
+      folderPath: protocolsDir,
+      date: dateIso,
+      durationSeconds: 0,
+      speakerCount: 0,
+      hasAudio: audioPath !== null,
+      hasVideo: hasScreen.has(prefix),
+      tagIds: Array.isArray(meta?.tags) ? meta.tags : [],
+      additionalSpeakers: Array.isArray(meta?.additionalSpeakers)
+        ? meta.additionalSpeakers
+        : [],
+      status: 'processing'
     })
   }
   return results
@@ -539,15 +640,19 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
  * De-duped and sorted newest-first.
  */
 export async function listMeetings(outputFolder: string): Promise<MeetingSummary[]> {
-  const [imported, engineDefault] = await Promise.all([
+  const [imported, engineDefault, engineProcessing] = await Promise.all([
     listPerFolderMeetings(outputFolder),
-    listEnginePrefixMeetings(ENGINE_DEFAULT_ROOT)
+    listEnginePrefixMeetings(ENGINE_DEFAULT_ROOT),
+    listEngineProcessingMeetings(ENGINE_DEFAULT_ROOT)
   ])
   // If the user happens to point the Electron output folder at the engine
-  // default, we'd otherwise scan it twice; de-dupe by folderPath+id.
+  // default, we'd otherwise scan it twice; de-dupe by folderPath+id. The
+  // processing rows go LAST so that if a ready row (from listEnginePrefix)
+  // and a processing row ever share `id|folderPath` for the same prefix, the
+  // ready row is seen first and the processing duplicate is dropped.
   const seen = new Set<string>()
   const merged: MeetingSummary[] = []
-  for (const m of [...imported, ...engineDefault]) {
+  for (const m of [...imported, ...engineDefault, ...engineProcessing]) {
     const key = `${m.id}|${m.folderPath}`
     if (seen.has(key)) continue
     seen.add(key)

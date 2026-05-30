@@ -10,6 +10,7 @@ import {
   FileVideo,
   Filter,
   Inbox,
+  Loader2,
   MoreVertical,
   Pause,
   Play,
@@ -183,6 +184,13 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const [meetings, setMeetings] = useState<MeetingSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Mirror of selectedId for use inside long-lived event/poll callbacks
+  // (onMeetingsChanged, the processing poll) without re-subscribing on every
+  // selection change.
+  const selectedIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    selectedIdRef.current = selectedId
+  }, [selectedId])
   const [transcript, setTranscript] = useState<MeetingTranscript | null>(null)
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [tab, setTab] = useState<TabKey>('transcript')
@@ -280,6 +288,18 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // or when the user clicks "Later" (next rename re-populates).
   const [reassignQueue, setReassignQueue] = useState<string[]>([])
 
+  // "Name the speakers" nudge — shown ONCE per meeting that flips from
+  // processing → ready (segments first appear) so the user notices the
+  // existing SpeakerPicker pills the moment processing completes. We DON'T
+  // own the native post-processing speaker-naming popup (that lives in the
+  // Swift engine, out of scope); this is the Electron-side discoverability
+  // affordance for the in-app rename. `prevStatusRef` records the last-seen
+  // status per meeting id so we only fire on a genuine processing → ready
+  // transition (not on a meeting that was already ready when opened).
+  const prevStatusRef = useRef<Map<string, 'processing' | 'ready'>>(new Map())
+  const [namingNudgeForId, setNamingNudgeForId] = useState<string | null>(null)
+  const [namingNudgeDismissed, setNamingNudgeDismissed] = useState<Set<string>>(new Set())
+
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
@@ -289,6 +309,19 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       console.error('Failed to list meetings', err)
     } finally {
       setLoading(false)
+    }
+  }, [])
+
+  const loadTranscript = useCallback(async (meetingId: string) => {
+    setTranscriptLoading(true)
+    try {
+      const t = await window.api.meetings.transcript(meetingId)
+      setTranscript(t)
+    } catch (err) {
+      console.error('Failed to read transcript', err)
+      setTranscript({ meetingId, transcript: '', speakers: [] })
+    } finally {
+      setTranscriptLoading(false)
     }
   }, [])
 
@@ -303,22 +336,55 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   useEffect(() => {
     const unsub = window.api.system.onMeetingsChanged(() => {
       void refresh()
+      // If the open detail is an engine meeting, reload its transcript too.
+      // When a processing meeting's pipeline finishes it writes
+      // protocols/<prefix>.txt (a watched file → this event), but the
+      // backend `done` reload at the other effect only fires for an active
+      // reanalyzeJobId — so a fresh processing completion would otherwise
+      // leave the open detail stuck on the Processing panel until the user
+      // reselected it. Reloading here flips it to the transcript live.
+      if (selectedIdRef.current?.startsWith('engine:')) {
+        void loadTranscript(selectedIdRef.current)
+      }
     })
     return unsub
-  }, [refresh])
+  }, [refresh, loadTranscript])
 
-  const loadTranscript = useCallback(async (meetingId: string) => {
-    setTranscriptLoading(true)
-    try {
-      const t = await window.api.meetings.transcript(meetingId)
-      setTranscript(t)
-    } catch (err) {
-      console.error('Failed to read transcript', err)
-      setTranscript({ meetingId, transcript: '', speakers: [] })
-    } finally {
-      setTranscriptLoading(false)
+  // Poll safety-net (≥4s) while ANY visible meeting is still processing. The
+  // onMeetingsChanged push above is the primary trigger, but macOS fs.watch
+  // can coalesce a final .txt write into an earlier debounce window and not
+  // emit a distinct event — this poll guarantees the processing → ready flip
+  // (and the open detail's transcript reveal) eventually lands without the
+  // user closing/reopening the app. The interval clears itself once no
+  // processing meetings remain and on unmount.
+  const hasProcessing = useMemo(
+    () => meetings.some((m) => m.status === 'processing'),
+    [meetings]
+  )
+  useEffect(() => {
+    if (!hasProcessing) return
+    const id = window.setInterval(() => {
+      void refresh()
+      if (selectedIdRef.current?.startsWith('engine:')) {
+        void loadTranscript(selectedIdRef.current)
+      }
+    }, 4000)
+    return () => window.clearInterval(id)
+  }, [hasProcessing, refresh, loadTranscript])
+
+  // Detect a processing → ready transition for any meeting and arm the
+  // one-time "Name the speakers" nudge for it (unless already dismissed).
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    for (const m of meetings) {
+      const status: 'processing' | 'ready' = m.status === 'processing' ? 'processing' : 'ready'
+      const before = prev.get(m.id)
+      if (before === 'processing' && status === 'ready' && !namingNudgeDismissed.has(m.id)) {
+        setNamingNudgeForId(m.id)
+      }
+      prev.set(m.id, status)
     }
-  }, [])
+  }, [meetings, namingNudgeDismissed])
 
   const loadEnrolled = useCallback(async () => {
     try {
@@ -1042,7 +1108,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     'meetings__row' +
                     (m.id === selectedId ? ' meetings__row--active' : '') +
                     (isEditing ? ' meetings__row--editing' : '') +
-                    (m.isLive ? ' meetings__row--live' : '')
+                    (m.isLive ? ' meetings__row--live' : '') +
+                    (m.status === 'processing' ? ' meetings__row--processing' : '')
                   }
                   onClick={() => {
                     if (isEditing) return
@@ -1085,6 +1152,21 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                           />
                         )}
                         <span>{m.title}</span>
+                        {m.status === 'processing' && (
+                          <span
+                            className="processing-pill"
+                            aria-label="Processing"
+                            title="Transcribing and separating speakers"
+                          >
+                            <Loader2
+                              size={11}
+                              strokeWidth={2}
+                              aria-hidden="true"
+                              className="home-status-icon--spin"
+                            />
+                            <span>Processing</span>
+                          </span>
+                        )}
                       </div>
                     )}
                     {!isEditing && !m.isLive && (
@@ -1193,6 +1275,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     <div className="meetings__row-meta meetings__row-meta--live">
                       Recording in progress — full transcript when meeting ends.
                     </div>
+                  ) : m.status === 'processing' ? (
+                    <div className="meetings__row-meta meetings__row-meta--processing">
+                      Processing — audio ready, transcript coming.
+                    </div>
                   ) : (
                     <div className="meetings__row-meta">
                       <span>{formatDate(m.date)}</span>
@@ -1275,10 +1361,31 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 )}
                 <div className="detail-meta">
                   <span>{formatDate(selectedMeeting.date)}</span>
-                  <span>·</span>
-                  <span>{formatDuration(selectedMeeting.durationSeconds)}</span>
-                  <span>·</span>
-                  <span>{selectedMeeting.speakerCount} speakers</span>
+                  {selectedMeeting.status === 'processing' ? (
+                    <>
+                      <span>·</span>
+                      <span
+                        className="processing-pill"
+                        aria-label="Processing"
+                        title="Transcribing and separating speakers"
+                      >
+                        <Loader2
+                          size={11}
+                          strokeWidth={2}
+                          aria-hidden="true"
+                          className="home-status-icon--spin"
+                        />
+                        <span>Processing</span>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span>·</span>
+                      <span>{formatDuration(selectedMeeting.durationSeconds)}</span>
+                      <span>·</span>
+                      <span>{selectedMeeting.speakerCount} speakers</span>
+                    </>
+                  )}
                 </div>
               </div>
               <div className="detail-actions">
@@ -1330,6 +1437,40 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 </button>
               </div>
             )}
+
+            {/* One-time "Name the speakers" nudge — shown the moment a
+                meeting finishes processing and its speaker pills appear, to
+                point the user at the existing in-app rename (the native
+                post-processing popup lives in the engine, out of scope). */}
+            {namingNudgeForId === selectedMeeting.id &&
+              !namingNudgeDismissed.has(selectedMeeting.id) &&
+              speakersInTranscript.length > 0 && (
+                <div className="cascade-banner" role="status">
+                  <span className="cascade-banner__icon" aria-hidden="true">
+                    <Check size={15} strokeWidth={2} />
+                  </span>
+                  <div className="cascade-banner__body">
+                    <div className="cascade-banner__line">
+                      Speakers detected — click a speaker pill below to name them.
+                    </div>
+                  </div>
+                  <div className="cascade-banner__actions">
+                    <button
+                      className="btn btn--small"
+                      onClick={() => {
+                        setNamingNudgeDismissed((prev) => {
+                          const next = new Set(prev)
+                          next.add(selectedMeeting.id)
+                          return next
+                        })
+                        setNamingNudgeForId(null)
+                      }}
+                    >
+                      Got it
+                    </button>
+                  </div>
+                </div>
+              )}
 
             {/* ── Speaker pills with picker ────────────────────────────── */}
             {speakersInTranscript.length > 0 && (
@@ -1691,9 +1832,26 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             {tab === 'transcript' && (
               <>
                 {transcriptLoading && <div className="empty">Loading transcript…</div>}
-                {!transcriptLoading && segments.length === 0 && (
-                  <div className="empty">(No transcript text yet.)</div>
-                )}
+                {!transcriptLoading &&
+                  segments.length === 0 &&
+                  selectedMeeting.status === 'processing' && (
+                    <div className="meetings__detail-processing" role="status">
+                      <Loader2
+                        size={16}
+                        aria-hidden="true"
+                        className="home-status-icon--spin"
+                      />
+                      <span>
+                        Transcribing and separating speakers… audio is ready to play
+                        above.
+                      </span>
+                    </div>
+                  )}
+                {!transcriptLoading &&
+                  segments.length === 0 &&
+                  selectedMeeting.status !== 'processing' && (
+                    <div className="empty">(No transcript text yet.)</div>
+                  )}
                 {!transcriptLoading && segments.length > 0 && (
                   <div className="transcript-list" ref={transcriptListRef}>
                     {segments.map((seg, i) => (

@@ -69,6 +69,20 @@ export interface MeetingSummary {
    * renderer keys the LIVE badge + "Recording in progress…" copy off this.
    */
   isLive?: boolean
+  /**
+   * Processing-state discriminator for a finished-but-not-yet-transcribed
+   * meeting. The engine writes the RAW recordings
+   * (`recordings/<prefix>_{mix,app,mic}.wav` + `_screen.mp4`) the instant
+   * recording stops, THEN runs its pipeline (transcribe → diarize →
+   * protocol) which lands `protocols/<prefix>.txt` + `_segments.json`
+   * LATER. While only the raw audio exists, the meeting is surfaced with
+   * `status: 'processing'` so it appears in Recent / Meetings IMMEDIATELY
+   * as a card with a Processing badge and a playable audio file, instead
+   * of being invisible for the whole processing window. Once the `.txt`
+   * lands it is re-derived as `status: 'ready'`. OPTIONAL — every existing
+   * call site omits it; the renderer treats `undefined` as 'ready'.
+   */
+  status?: 'processing' | 'ready'
 }
 
 /**
