@@ -145,6 +145,10 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
     /// Indices of speaker rows where the user clicked "More…" to reveal the full
     /// known-names list instead of the top-N ranked subset.
     @State private var knownExpanded: Set<Int> = []
+    /// Whether the secondary "Wrong number of speakers?" disclosure (Re-run
+    /// controls) is expanded. Collapsed by default so naming stays the focus;
+    /// reset on job-switch alongside `knownExpanded`.
+    @State private var rerunExpanded: Bool = false
     /// Number of "Known:" chips shown by default before "More…" appears.
     private static let knownChipsCollapsedLimit = 8
 
@@ -158,31 +162,41 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
     /// when the picked mode differs from `currentDiarizerMode`, otherwise the
     /// legacy `.rerun(count)` form (so consumers that don't care about
     /// mode-switching stay unaffected).
+    /// Re-run controls collapsed into a secondary disclosure so they don't
+    /// compete with the name fields. `rerunExpanded` is a pure UI-local toggle
+    /// (also reset on job-switch in `resetForCurrentPresentation`). The
+    /// disclosure CONTENT keeps every control + conditional unchanged.
     private var rerunSection: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                Text("Wrong count?").font(.caption).foregroundStyle(.secondary)
-                // Hide the mode picker for callers that don't track per-job
-                // diarizer mode (currently the voice-enrollment flow): they
-                // can't honour `.rerunWithMode`, so a visible-but-inert
-                // picker would silently discard the user's choice.
-                if currentDiarizerMode != nil {
-                    rerunModePicker
+        DisclosureGroup(isExpanded: $rerunExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    // Hide the mode picker for callers that don't track per-job
+                    // diarizer mode (currently the voice-enrollment flow): they
+                    // can't honour `.rerunWithMode`, so a visible-but-inert
+                    // picker would silently discard the user's choice.
+                    if currentDiarizerMode != nil {
+                        rerunModePicker
+                    }
+                    Stepper(
+                        "\(rerunCount) speakers", value: $rerunCount,
+                        in: Self.rerunCountRange(for: rerunMode),
+                    )
+                    .font(.caption)
+                    .accessibilityIdentifier("rerun-stepper")
+                    rerunButton
                 }
-                Stepper(
-                    "\(rerunCount) speakers", value: $rerunCount,
-                    in: Self.rerunCountRange(for: rerunMode),
-                )
+                if currentDiarizerMode != nil, rerunMode == .sortformer {
+                    Text("Sortformer caps at \(DiarizerMode.sortformer.speakerCap) speakers — switch to Offline for larger meetings.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("sortformer-cap-hint")
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Wrong number of speakers?")
                 .font(.caption)
-                .accessibilityIdentifier("rerun-stepper")
-                rerunButton
-            }
-            if currentDiarizerMode != nil, rerunMode == .sortformer {
-                Text("Sortformer caps at \(DiarizerMode.sortformer.speakerCap) speakers — switch to Offline for larger meetings.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("sortformer-cap-hint")
-            }
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -240,10 +254,20 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
 
     var body: some View {
         // swiftlint:disable:next closure_body_length
-        VStack(spacing: 16) {
-            Text("Name Speakers — \"\(data.meetingTitle)\"")
-                .font(.headline)
-                .padding(.top, 8)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Name Speakers")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text("\"\(data.meetingTitle)\"")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("Confirm or rename each detected speaker")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             ScrollView {
                 VStack(spacing: 16) {
@@ -252,7 +276,7 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
                     }
                 }
             }
-            .frame(height: min(CGFloat(speakers.count) * 120, 500))
+            .frame(minHeight: 200, maxHeight: 420)
 
             Divider()
 
@@ -265,8 +289,11 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
                     onComplete(.skipped)
                 }
                 .keyboardShortcut(.escape)
+                .controlSize(.large)
                 .disabled(keyboardGracePeriodActive)
                 .accessibilityIdentifier("skip-button")
+
+                Spacer()
 
                 Button("Confirm") {
                     guard completedJobID != data.jobID else { return }
@@ -275,13 +302,16 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
                 }
                 .keyboardShortcut(.return)
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .disabled(keyboardGracePeriodActive)
                 .accessibilityIdentifier("confirm-button")
             }
-            .padding(.bottom, 8)
         }
-        .padding()
-        .frame(minWidth: 400, maxHeight: 700)
+        .padding(20)
+        .frame(
+            minWidth: 440, idealWidth: 480, maxWidth: 560,
+            minHeight: 360, idealHeight: 520, maxHeight: 760,
+        )
         .id(data.meetingTitle)
         .onAppear { resetForCurrentPresentation() }
         // After Re-run, lateDiarization replaces the SpeakerNamingData for
@@ -332,6 +362,9 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
         // Indices are speaker-position based; a different speaker count would
         // leave stale entries pointing at no-longer-rendered rows.
         knownExpanded.removeAll()
+        // Collapse the secondary Re-run disclosure on job-switch so each new
+        // presentation opens focused on naming.
+        rerunExpanded = false
     }
 
     private func speakerRow(
@@ -341,47 +374,78 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
         // swiftlint:disable:next closure_body_length
         GroupBox {
             // swiftlint:disable:next closure_body_length
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(speaker.label)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
+            HStack(alignment: .top, spacing: 12) {
+                // Neutral monochrome swatch with the speaker initial —
+                // purely decorative (no accessibility id, no behaviour).
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.quaternary)
+                    .frame(width: 28, height: 28)
+                    .overlay(
+                        Text(Self.swatchInitial(label: speaker.label, autoName: speaker.autoName))
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.secondary),
+                    )
 
-                    if data.audioPath != nil {
-                        Button {
-                            playSpeakerSnippet(label: speaker.label)
-                        } label: {
-                            Image(systemName: playingLabel == speaker.label
-                                ? "stop.circle.fill" : "play.circle.fill")
-                                .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(speaker.label)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+
+                        if data.audioPath != nil {
+                            Button {
+                                playSpeakerSnippet(label: speaker.label)
+                            } label: {
+                                Image(systemName: playingLabel == speaker.label
+                                    ? "stop.circle.fill" : "play.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("play-\(speaker.label)")
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("play-\(speaker.label)")
+
+                        Spacer()
+                        Text("(\(formattedTime(speaker.speakingTime)))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
-                    Spacer()
-                    Text("(\(formattedTime(speaker.speakingTime)))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                    if let autoName = speaker.autoName {
+                        Text("Auto: \(autoName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Unknown")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
-                if let autoName = speaker.autoName {
-                    Text("Auto: \(autoName)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Unknown")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if index < names.count {
-                    nameField(for: index, label: speaker.label)
-                    suggestionChips(for: index)
+                    if index < names.count {
+                        nameField(for: index, label: speaker.label)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 2)
+                        suggestionChips(for: index)
+                    }
                 }
             }
             .padding(4)
         }
+    }
+
+    /// Decorative initial for the row swatch: first character of the auto-name
+    /// when present, otherwise the trailing digits of a `SPEAKER_NN` label
+    /// (falling back to the label's first character). Pure + presentation-only.
+    static func swatchInitial(label: String, autoName: String?) -> String {
+        if let autoName, let first = autoName.first {
+            return String(first).uppercased()
+        }
+        let trailingDigits = String(label.reversed().prefix { $0.isNumber }.reversed())
+        if !trailingDigits.isEmpty {
+            // Drop leading zeros for a compact glyph (e.g. "00" → "0", "01" → "1").
+            return String(Int(trailingDigits) ?? 0)
+        }
+        return label.first.map { String($0).uppercased() } ?? "?"
     }
 
     private func nameField(for index: Int, label: String) -> some View {
