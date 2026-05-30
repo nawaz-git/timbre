@@ -1,7 +1,13 @@
 import { app } from 'electron'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
-import type { NumSpeakersHint, Settings, TagDef, ThemeMode } from '../shared/types'
+import type {
+  NumSpeakersHint,
+  ScreenCaptureScope,
+  Settings,
+  TagDef,
+  ThemeMode
+} from '../shared/types'
 
 // electron-store v10 is ESM-only — load it via dynamic import the first time we need it.
 // We cache the resulting instance so subsequent gets/sets are synchronous-ish from callers.
@@ -30,6 +36,11 @@ function defaultSettings(): Settings {
     theme: 'auto',
     numSpeakers: 'auto',
     sidebarCollapsed: false,
+    // Defaults for the engine bridge (engine_config.json): record only the
+    // meeting's Chrome window, and keep the mic ON so the user's voice is
+    // never silently dropped (diarization needs the mic track).
+    screenCaptureScope: 'chromeWindow',
+    recordMicrophone: true,
     // Mintr is intended to behave like Tailscale / 1Password — quietly
     // watching in the background unless the user explicitly pauses it.
     // First launch auto-enrols into watch mode; the tray menu surfaces
@@ -48,6 +59,12 @@ function coerceNumSpeakers(raw: unknown): NumSpeakersHint {
   return 'auto'
 }
 
+/** Anything that isn't the explicit `entireScreen` opt-in defaults to the
+ *  Chrome-window scope — the privacy-first product default. */
+function coerceScope(raw: unknown): ScreenCaptureScope {
+  return raw === 'entireScreen' ? 'entireScreen' : 'chromeWindow'
+}
+
 export async function readSettings(): Promise<Settings> {
   const store = await getStore()
   const defaults = defaultSettings()
@@ -60,6 +77,10 @@ export async function readSettings(): Promise<Settings> {
   const autoStartWatchingRaw = store.get<boolean>('autoStartWatching')
   const autoStartWatching =
     typeof autoStartWatchingRaw === 'boolean' ? autoStartWatchingRaw : defaults.autoStartWatching
+  const screenCaptureScope = coerceScope(store.get<ScreenCaptureScope>('screenCaptureScope'))
+  const recordMicrophoneRaw = store.get<boolean>('recordMicrophone')
+  const recordMicrophone =
+    typeof recordMicrophoneRaw === 'boolean' ? recordMicrophoneRaw : defaults.recordMicrophone
   // TICKET-IPC-002: undefined => wizard not completed (no default).
   const onboardingCompletedAtRaw = store.get<number>('onboardingCompletedAt')
   const onboardingCompletedAt =
@@ -69,6 +90,8 @@ export async function readSettings(): Promise<Settings> {
     theme,
     numSpeakers,
     sidebarCollapsed,
+    screenCaptureScope,
+    recordMicrophone,
     autoStartWatching,
     onboardingCompletedAt
   }
@@ -86,6 +109,12 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   }
   if (patch.autoStartWatching !== undefined) {
     store.set('autoStartWatching', Boolean(patch.autoStartWatching))
+  }
+  if (patch.screenCaptureScope !== undefined) {
+    store.set('screenCaptureScope', coerceScope(patch.screenCaptureScope))
+  }
+  if (patch.recordMicrophone !== undefined) {
+    store.set('recordMicrophone', Boolean(patch.recordMicrophone))
   }
   // TICKET-IPC-002: use `in` (not `!== undefined`) so the reset path can
   // explicitly clear completion by passing `onboardingCompletedAt: undefined`.

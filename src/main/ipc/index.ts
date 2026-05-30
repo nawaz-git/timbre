@@ -22,12 +22,9 @@ import type {
 } from '../../shared/types'
 import { getPermissionStatus, openPrivacyPane } from '../permissions'
 import { getChromeMeetSnapshot } from '../chromeProbe'
+import { writeEngineConfig } from '../engineConfig'
 import { showMainWindow } from '../tray'
-import {
-  deleteSpeakerFromGlobalDB,
-  listEnrolledSpeakers,
-  numSpeakersToArg
-} from '../backend'
+import { deleteSpeakerFromGlobalDB, listEnrolledSpeakers, numSpeakersToArg } from '../backend'
 import {
   addSpeakerToMeeting,
   deleteMeeting,
@@ -50,14 +47,7 @@ import {
   startWatching,
   stopWatching
 } from '../recording'
-import {
-  addTag,
-  deleteTag,
-  readSettings,
-  readTags,
-  updateTag,
-  writeSettings
-} from '../settings'
+import { addTag, deleteTag, readSettings, readTags, updateTag, writeSettings } from '../settings'
 import * as onboarding from '../onboarding'
 
 /** Register every IPC handler. Called once after `app.whenReady()`. */
@@ -67,7 +57,11 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.settingsSet, async (_event, patch: Partial<Settings>): Promise<Settings> => {
-    return writeSettings(patch)
+    const result = await writeSettings(patch)
+    // Re-emit the engine bridge so a scope/mic change takes effect on the next
+    // meeting. Best-effort — a failed bridge write must never fail the save.
+    await writeEngineConfig().catch(() => {})
+    return result
   })
 
   ipcMain.handle(IPC.recordingStart, async (): Promise<RecordingStatus> => {
@@ -187,12 +181,7 @@ export function registerIpcHandlers(): void {
       newSpeaker: string
     ): Promise<{ speakerCount: number; newSpeaker: string }> => {
       const settings = await readSettings()
-      return reassignSegmentSpeaker(
-        settings.outputFolder,
-        meetingId,
-        segmentIndex,
-        newSpeaker
-      )
+      return reassignSegmentSpeaker(settings.outputFolder, meetingId, segmentIndex, newSpeaker)
     }
   )
 
@@ -210,11 +199,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     IPC.meetingsRemoveSpeakerLabel,
-    async (
-      _event,
-      meetingId: string,
-      speakerName: string
-    ): Promise<{ speakerCount: number }> => {
+    async (_event, meetingId: string, speakerName: string): Promise<{ speakerCount: number }> => {
       const settings = await readSettings()
       return removeSpeakerLabelInMeeting(settings.outputFolder, meetingId, speakerName)
     }
@@ -222,16 +207,11 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     IPC.meetingsReanalyze,
-    async (
-      _event,
-      meetingId: string,
-      numSpeakers?: number
-    ): Promise<BackendJob> => {
+    async (_event, meetingId: string, numSpeakers?: number): Promise<BackendJob> => {
       const jobId = randomUUID()
       const settings = await readSettings()
-      const hint = typeof numSpeakers === 'number'
-        ? numSpeakers
-        : numSpeakersToArg(settings.numSpeakers)
+      const hint =
+        typeof numSpeakers === 'number' ? numSpeakers : numSpeakersToArg(settings.numSpeakers)
       console.log('[meetings:reanalyze]', { jobId, meetingId, hint })
       reanalyzeMeetingProc({
         outputFolder: settings.outputFolder,
@@ -313,12 +293,7 @@ export function registerIpcHandlers(): void {
       title: string
     ): Promise<ExportPreview> => {
       const settings = await readSettings()
-      return previewExportMeeting(
-        settings.outputFolder,
-        meetingId,
-        format,
-        title || 'Meeting'
-      )
+      return previewExportMeeting(settings.outputFolder, meetingId, format, title || 'Meeting')
     }
   )
 
@@ -331,11 +306,8 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     IPC.tagsUpdate,
-    async (
-      _event,
-      id: string,
-      patch: { name?: string; color?: string }
-    ): Promise<TagDef> => updateTag(id, patch)
+    async (_event, id: string, patch: { name?: string; color?: string }): Promise<TagDef> =>
+      updateTag(id, patch)
   )
 
   ipcMain.handle(IPC.tagsDelete, async (_event, id: string): Promise<void> => deleteTag(id))
@@ -381,41 +353,41 @@ export function registerIpcHandlers(): void {
     setImmediate(() => app.quit())
   })
 
-  ipcMain.handle(IPC.systemRevealHelper, async (): Promise<{ revealed: boolean; path?: string }> => {
-    const { resolveLiveRecorderApp } = await import('../backend')
-    const appPath = resolveLiveRecorderApp()
-    if (!appPath) return { revealed: false }
-    // `shell.showItemInFolder` highlights the .app bundle inside its
-    // parent (Mintr's Resources/), where the user can grab it and drop
-    // onto the Screen Recording "+" dialog.
-    shell.showItemInFolder(appPath)
-    return { revealed: true, path: appPath }
-  })
-
   ipcMain.handle(
-    IPC.systemRestartHelper,
-    async (): Promise<{ ok: boolean; message?: string }> => {
-      // Stop (which also kills) then start. The stopWatching path also
-      // flips recording state to 'idle' which would cancel the Chrome
-      // probe — so we call backend directly here, bypassing the
-      // higher-level state machine.
-      const { killLiveRecorderSync, startLiveRecorder } = await import('../backend')
-      // TICKET-003: reset the watchdog BEFORE we kill the helper so the
-      // renderer sees the cleared `helperPermissionLikely` push first,
-      // then the kill/respawn happens. Without this, the red banner
-      // stays visible even after a successful restart because the
-      // watchdog only un-alarms on meeting-id change.
-      const { resetCaptureWatchdog } = await import('../captureWatchdog')
-      resetCaptureWatchdog()
-      killLiveRecorderSync()
-      // Tiny pause so the OS reaps the killed PID before macOS `open`
-      // tries to "reactivate" it (which would no-op against the same
-      // bundle id).
-      await new Promise((r) => setTimeout(r, 300))
-      const result = startLiveRecorder()
-      return { ok: result.ok, message: result.message }
+    IPC.systemRevealHelper,
+    async (): Promise<{ revealed: boolean; path?: string }> => {
+      const { resolveLiveRecorderApp } = await import('../backend')
+      const appPath = resolveLiveRecorderApp()
+      if (!appPath) return { revealed: false }
+      // `shell.showItemInFolder` highlights the .app bundle inside its
+      // parent (Mintr's Resources/), where the user can grab it and drop
+      // onto the Screen Recording "+" dialog.
+      shell.showItemInFolder(appPath)
+      return { revealed: true, path: appPath }
     }
   )
+
+  ipcMain.handle(IPC.systemRestartHelper, async (): Promise<{ ok: boolean; message?: string }> => {
+    // Stop (which also kills) then start. The stopWatching path also
+    // flips recording state to 'idle' which would cancel the Chrome
+    // probe — so we call backend directly here, bypassing the
+    // higher-level state machine.
+    const { killLiveRecorderSync, startLiveRecorder } = await import('../backend')
+    // TICKET-003: reset the watchdog BEFORE we kill the helper so the
+    // renderer sees the cleared `helperPermissionLikely` push first,
+    // then the kill/respawn happens. Without this, the red banner
+    // stays visible even after a successful restart because the
+    // watchdog only un-alarms on meeting-id change.
+    const { resetCaptureWatchdog } = await import('../captureWatchdog')
+    resetCaptureWatchdog()
+    killLiveRecorderSync()
+    // Tiny pause so the OS reaps the killed PID before macOS `open`
+    // tries to "reactivate" it (which would no-op against the same
+    // bundle id).
+    await new Promise((r) => setTimeout(r, 300))
+    const result = startLiveRecorder()
+    return { ok: result.ok, message: result.message }
+  })
 
   // ── onboarding:* — wizard main-process surface (TICKET-IPC-002) ────────
   // Queries the HELPER's per-service TCC state (not Mintr's own), drives

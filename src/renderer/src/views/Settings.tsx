@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react'
 import {
   Folder,
   Info,
+  Monitor,
   Palette,
   Play,
   Plus,
@@ -16,7 +17,7 @@ import { PermissionChecklist } from '../components/PermissionChecklist'
 import { useSettings } from '../state/settings'
 import { useOnboardingComplete } from '../state/onboarding'
 import { useTags } from '../state/tags'
-import type { TagDef, ThemeMode } from '../../../shared/types'
+import type { ScreenCaptureScope, TagDef, ThemeMode } from '../../../shared/types'
 
 const THEME_OPTIONS: ThemeMode[] = ['auto', 'light', 'dark']
 const THEME_LABEL: Record<ThemeMode, string> = {
@@ -24,6 +25,16 @@ const THEME_LABEL: Record<ThemeMode, string> = {
   light: 'Light',
   dark: 'Dark'
 }
+
+const SCREEN_SCOPE_OPTIONS: ReadonlyArray<{ value: ScreenCaptureScope; label: string }> = [
+  { value: 'chromeWindow', label: 'Chrome tab' },
+  { value: 'entireScreen', label: 'Entire screen' }
+]
+
+const MIC_OPTIONS: ReadonlyArray<{ value: boolean; label: string }> = [
+  { value: true, label: 'Microphone + meeting audio' },
+  { value: false, label: 'Meeting audio only' }
+]
 
 const APP_VERSION = APP_VERSION_PLACEHOLDER
 
@@ -161,9 +172,8 @@ export function SettingsView(): JSX.Element {
       {/* ── Setup & Permissions (TICKET-UI-003) ────────────────────── */}
       <Section icon={<ShieldCheck size={16} />} title="Setup & Permissions">
         <div className="settings-row__description settings-row__description--top">
-          The bundled engine needs these macOS permissions to capture
-          meetings. Grant any that aren&apos;t green, or re-run the guided
-          first-run wizard.
+          The bundled engine needs these macOS permissions to capture meetings. Grant any that
+          aren&apos;t green, or re-run the guided first-run wizard.
         </div>
         <PermissionChecklist mode="settings" />
         <div className="settings-row__value">
@@ -238,6 +248,53 @@ export function SettingsView(): JSX.Element {
         </SettingsRow>
       </Section>
 
+      {/* ── Recording ──────────────────────────────────────────────── */}
+      <Section icon={<Monitor size={16} />} title="Recording">
+        <SettingsRow
+          label="Screen capture"
+          description="Record only the meeting's Chrome window, or the entire screen."
+        >
+          <div className="theme-toggle" role="group" aria-label="Screen capture">
+            {SCREEN_SCOPE_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                className={
+                  'theme-toggle__option' +
+                  (settings.screenCaptureScope === opt.value ? ' theme-toggle__option--active' : '')
+                }
+                onClick={() => {
+                  void setSettings({ screenCaptureScope: opt.value })
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Microphone"
+          description="Capture your mic alongside the meeting audio, or record meeting audio only."
+        >
+          <div className="theme-toggle" role="group" aria-label="Microphone">
+            {MIC_OPTIONS.map((opt) => (
+              <button
+                key={String(opt.value)}
+                className={
+                  'theme-toggle__option' +
+                  (settings.recordMicrophone === opt.value ? ' theme-toggle__option--active' : '')
+                }
+                onClick={() => {
+                  void setSettings({ recordMicrophone: opt.value })
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+      </Section>
+
       {/* ── Appearance ─────────────────────────────────────────────── */}
       <Section icon={<Palette size={16} />} title="Appearance">
         <SettingsRow label="Theme" description="Follow the system, or force light or dark.">
@@ -263,8 +320,8 @@ export function SettingsView(): JSX.Element {
       {/* ── Tags ───────────────────────────────────────────────────── */}
       <Section icon={<TagIcon size={16} />} title="Tags">
         <div className="settings-row__description settings-row__description--top">
-          Apply tags to meetings to filter the Meetings list by project or type. Click a swatch
-          to change a tag&apos;s colour, or the name to rename it.
+          Apply tags to meetings to filter the Meetings list by project or type. Click a swatch to
+          change a tag&apos;s colour, or the name to rename it.
         </div>
 
         {tags.length > 0 && (

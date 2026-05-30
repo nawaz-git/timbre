@@ -2,6 +2,14 @@
 
 export type ThemeMode = 'auto' | 'light' | 'dark'
 
+/**
+ * Which slice of the screen the engine records as video during a meeting.
+ * `chromeWindow` (default) captures only the meeting's browser window;
+ * `entireScreen` captures the whole display. Mirrors the engine-side
+ * `ScreenCaptureScope` and rides the `engine_config.json` bridge.
+ */
+export type ScreenCaptureScope = 'chromeWindow' | 'entireScreen'
+
 export interface Settings {
   outputFolder: string
   theme: ThemeMode
@@ -9,6 +17,18 @@ export interface Settings {
   numSpeakers: NumSpeakersHint
   /** Whether the left sidebar is collapsed to icon-only mode. */
   sidebarCollapsed: boolean
+  /**
+   * Video capture scope for live recordings. Default `chromeWindow` — record
+   * only the meeting's browser window, not the whole screen. Written into the
+   * engine_config.json bridge and read fresh by the engine each meeting.
+   */
+  screenCaptureScope: ScreenCaptureScope
+  /**
+   * Whether the user's microphone is captured alongside the meeting audio.
+   * Default true — never silently drop the user's voice (diarization needs the
+   * mic track). false ⇒ "Meeting audio only" (engine maps to noMic=true).
+   */
+  recordMicrophone: boolean
   /**
    * Auto-start watching for meetings on app launch. Default true — Mintr
    * is meant to feel like a passive background utility (Tailscale / 1Password
@@ -275,11 +295,7 @@ export interface PermissionStatus {
 }
 
 /** Privacy panes that `systemOpenSettings` knows how to deep-link to. */
-export type PrivacyPane =
-  | 'screen-recording'
-  | 'microphone'
-  | 'automation'
-  | 'accessibility'
+export type PrivacyPane = 'screen-recording' | 'microphone' | 'automation' | 'accessibility'
 
 /**
  * Snapshot of what the AppleScript Chrome-tab probe found on its last poll.
@@ -315,11 +331,7 @@ export interface ChromeMeetTab {
  * known failure substrings; surfaced to the renderer so the banner can
  * name the specific permission (e.g. Accessibility) the user must grant.
  */
-export type WatchdogPermissionHint =
-  | 'accessibility'
-  | 'microphone'
-  | 'screenRecording'
-  | 'unknown'
+export type WatchdogPermissionHint = 'accessibility' | 'microphone' | 'screenRecording' | 'unknown'
 
 /**
  * Capture-watchdog signal pushed from main → renderer. Flips to

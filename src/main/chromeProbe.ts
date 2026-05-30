@@ -47,7 +47,7 @@ const execFileP = promisify(execFile)
  * `updatedAt` every tick (heartbeat, so the engine can treat a stale file as
  * gone if Mintr quits) and delete it when no Meet is open.
  */
-const ENGINE_IPC_DIR = join(
+export const ENGINE_IPC_DIR = join(
   homedir(),
   'Library',
   'Application Support',
@@ -56,23 +56,33 @@ const ENGINE_IPC_DIR = join(
 )
 const ACTIVE_MEETING_SIGNAL = join(ENGINE_IPC_DIR, 'active_meeting.json')
 
+/**
+ * Atomically write a JSON object to `path` (tmp-file + rename) so a reader on
+ * the engine side never observes a torn file. Ensures the parent dir exists.
+ * Shared by `writeActiveMeetingSignal` and the `engine_config.json` writer
+ * (`engineConfig.ts`) so the atomic-write semantics and the ipc-dir path can't
+ * drift between the two writers. Throws on failure — callers wrap as needed.
+ */
+export async function writeJsonAtomic(path: string, obj: unknown): Promise<void> {
+  await fsp.mkdir(ENGINE_IPC_DIR, { recursive: true })
+  const tmp = `${path}.tmp`
+  await fsp.writeFile(tmp, JSON.stringify(obj), 'utf-8')
+  await fsp.rename(tmp, path)
+}
+
 async function writeActiveMeetingSignal(tab: ChromeMeetTab | null): Promise<void> {
   try {
     if (!tab) {
       await fsp.rm(ACTIVE_MEETING_SIGNAL, { force: true })
       return
     }
-    await fsp.mkdir(ENGINE_IPC_DIR, { recursive: true })
-    const payload = JSON.stringify({
+    await writeJsonAtomic(ACTIVE_MEETING_SIGNAL, {
       meetingId: tab.meetingId,
       title: `${tab.meetingId} - Google Meet`,
       browserBundleId: tab.browser,
       url: tab.url,
       updatedAt: Date.now()
     })
-    const tmp = `${ACTIVE_MEETING_SIGNAL}.tmp`
-    await fsp.writeFile(tmp, payload, 'utf-8')
-    await fsp.rename(tmp, ACTIVE_MEETING_SIGNAL)
   } catch {
     // Best-effort — a failed signal write must never break the probe loop.
   }
@@ -242,7 +252,7 @@ async function fetchUrls(appName: string): Promise<string[]> {
     '      set end of urls to URL of t',
     '    end repeat',
     '  end repeat',
-    '  set AppleScript\'s text item delimiters to linefeed',
+    "  set AppleScript's text item delimiters to linefeed",
     '  return urls as text',
     'end tell'
   ].join('\n')

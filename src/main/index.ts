@@ -16,6 +16,7 @@ import { findEngineAudioForPrefix, findEngineVideoForPrefix, liveRecordingsRoot 
 import { readSettings } from './settings'
 import { createTray, setMainWindowFactory } from './tray'
 import { startChromeProbe, stopChromeProbe } from './chromeProbe'
+import { writeEngineConfig } from './engineConfig'
 import { onStatusChange, startWatching } from './recording'
 import { startCaptureWatchdog, stopCaptureWatchdog } from './captureWatchdog'
 
@@ -158,19 +159,16 @@ function registerAudioProtocol(): void {
 
       const { start, end } = range
       const chunkSize = end - start + 1
-      return new Response(
-        nodeStreamToWeb(createReadStream(path, { start, end })),
-        {
-          status: 206,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(chunkSize),
-            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-store'
-          }
+      return new Response(nodeStreamToWeb(createReadStream(path, { start, end })), {
+        status: 206,
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': String(chunkSize),
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'no-store'
         }
-      )
+      })
     } catch (err) {
       console.error('[mt-audio] handler error', err)
       return new Response('Internal error', { status: 500 })
@@ -280,6 +278,9 @@ app.whenReady().then(async () => {
   registerAudioProtocol()
   registerIpcHandlers()
   await ensureOutputFolder()
+  // Ensure engine_config.json exists with current/default settings before any
+  // meeting starts, even if the user never opens Settings. Best-effort.
+  await writeEngineConfig().catch((err) => console.warn('[main] writeEngineConfig failed', err))
   // Register the window factory BEFORE creating the tray so the tray can
   // call back into it if all windows have been closed.
   setMainWindowFactory(createWindow)
