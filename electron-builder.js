@@ -36,6 +36,12 @@ module.exports = {
     buildResources: 'build'
   },
   files: [
+    // The vendored Swift engine lives at meeting-transcriber/ (monorepo). Its
+    // BUILT artifacts are bundled via `extraResources` below; the SOURCE must
+    // NOT be packed into app.asar — doing so bloated the app ~6x and leaked
+    // .swift source files into the renderer. `extraResources` reads from disk,
+    // so this exclusion does not affect engine bundling.
+    '!meeting-transcriber/**/*',
     '!**/.vscode/*',
     '!src/*',
     '!electron.vite.config.{js,ts,mjs,cjs}',
