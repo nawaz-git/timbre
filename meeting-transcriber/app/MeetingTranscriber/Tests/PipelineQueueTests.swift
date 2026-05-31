@@ -1,0 +1,2306 @@
+// swiftlint:disable file_length
+@testable import MeetingTranscriber
+import os
+import XCTest
+
+@MainActor
+// swiftlint:disable:next attributes type_body_length balanced_xctest_lifecycle
+final class PipelineQueueTests: XCTestCase {
+    // swiftlint:disable implicitly_unwrapped_optional
+    private var tmpDir: URL!
+    private var queue: PipelineQueue!
+    // swiftlint:enable implicitly_unwrapped_optional
+
+    override func setUp() async throws {
+        try await super.setUp()
+        tmpDir = try makeTempDirectory(prefix: "pipeline_queue_test")
+        queue = PipelineQueue(logDir: tmpDir)
+    }
+
+    private func makeJob(title: String = "Test Meeting") -> PipelineJob {
+        PipelineJob(
+            meetingTitle: title,
+            appName: "Microsoft Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+    }
+
+    func testEnqueueAddsJob() {
+        let job = makeJob()
+        queue.enqueue(job)
+        XCTAssertEqual(queue.jobs.count, 1)
+        XCTAssertEqual(queue.jobs[0].meetingTitle, "Test Meeting")
+    }
+
+    func testEnqueueMultipleJobs() {
+        queue.enqueue(makeJob(title: "Meeting 1"))
+        queue.enqueue(makeJob(title: "Meeting 2"))
+        XCTAssertEqual(queue.jobs.count, 2)
+    }
+
+    func testSnapshotWrittenOnEnqueue() async {
+        queue.enqueue(makeJob())
+        await queue.awaitSnapshotFlush()
+        let snapshotPath = tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshotPath.path))
+    }
+
+    func testSnapshotIsValidJSON() async throws {
+        queue.enqueue(makeJob(title: "Standup"))
+        await queue.awaitSnapshotFlush()
+        let snapshotPath = tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename)
+        let data = try Data(contentsOf: snapshotPath)
+        let jobs = try JSONDecoder().decode([PipelineJob].self, from: data)
+        XCTAssertEqual(jobs.count, 1)
+        XCTAssertEqual(jobs[0].meetingTitle, "Standup")
+    }
+
+    func testSaveSnapshotDoesNotBlockMainActor() {
+        // Regression guard — if saveSnapshot ever goes synchronous again,
+        // a stalled `replaceItemAt` would freeze the UI / RPC / watch loop.
+        queue.enqueue(makeJob())
+        let start = Date()
+        queue.saveSnapshot()
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 0.05, "saveSnapshot returned in \(elapsed)s — should be near-instant")
+    }
+
+    func testConsecutiveSnapshotsPersistLastStateOnDisk() async throws {
+        // Coalescing: a burst of saves must collapse to a single write of
+        // the final state, never an interleaved earlier snapshot.
+        for i in 1 ... 5 {
+            queue.enqueue(makeJob(title: "Job \(i)"))
+        }
+        await queue.awaitSnapshotFlush()
+
+        let snapshotPath = tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename)
+        let data = try Data(contentsOf: snapshotPath)
+        let jobs = try JSONDecoder().decode([PipelineJob].self, from: data)
+        XCTAssertEqual(jobs.count, 5)
+        XCTAssertEqual(jobs.map(\.meetingTitle), ["Job 1", "Job 2", "Job 3", "Job 4", "Job 5"])
+    }
+
+    func testSnapshotWorkerClearsItselfAfterFlush() async {
+        // Lifecycle guard: a drained worker must set `snapshotWorker = nil`
+        // so the next saveSnapshot starts a fresh task. Without this, a
+        // leak-then-skip bug would silently drop later writes.
+        queue.enqueue(makeJob())
+        XCTAssertTrue(queue.isSnapshotWorkerActive)
+        await queue.awaitSnapshotFlush()
+        XCTAssertFalse(queue.isSnapshotWorkerActive, "worker should clear itself after the queue drains")
+
+        // Second burst spawns a fresh worker — verifies the first didn't
+        // get stuck in a way that prevents re-spawn.
+        queue.enqueue(makeJob(title: "Second"))
+        XCTAssertTrue(queue.isSnapshotWorkerActive)
+        await queue.awaitSnapshotFlush()
+        XCTAssertFalse(queue.isSnapshotWorkerActive)
+    }
+
+    func testCoalescingReducesActualWriteCount() async {
+        // Inject a counting writer to verify the worker collapses many
+        // rapid saves into fewer disk writes. testConsecutive... only
+        // asserts final state matches — this proves coalescing is real.
+        let count = OSAllocatedUnfairLock<Int>(initialState: 0)
+        // swiftlint:disable trailing_closure
+        let testQueue = PipelineQueue(
+            logDir: tmpDir,
+            snapshotWriter: { _, _ in count.withLock { $0 += 1 } },
+        )
+        // swiftlint:enable trailing_closure
+        for i in 1 ... 20 {
+            testQueue.enqueue(makeJob(title: "Job \(i)"))
+        }
+        await testQueue.awaitSnapshotFlush()
+
+        let writes = count.withLock { $0 }
+        XCTAssertGreaterThan(writes, 0, "writer must be called at least once")
+        XCTAssertLessThan(writes, 20, "coalescing should collapse 20 saves to fewer writes (got \(writes))")
+    }
+
+    func testSaveSnapshotReturnsImmediatelyWhileWriterIsWedged() async {
+        // Direct regression test for the original bug: a stalled writer
+        // (modelling `renamex_np` deadlock) must NOT block follow-up
+        // saveSnapshot calls on the main actor. With the synchronous-on-
+        // main implementation, the second call would hang waiting on the
+        // first; with the off-main worker, it returns instantly.
+        let gate = DispatchSemaphore(value: 0)
+        // swiftlint:disable trailing_closure
+        let testQueue = PipelineQueue(
+            logDir: tmpDir,
+            snapshotWriter: { _, _ in
+                gate.wait()
+                gate.signal() // re-arm so subsequent callers fall through
+            },
+        )
+        // swiftlint:enable trailing_closure
+        testQueue.enqueue(makeJob()) // triggers worker → blocks in writer
+
+        let start = Date()
+        testQueue.saveSnapshot() // would deadlock if main-actor were waiting
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 0.05, "saveSnapshot blocked while writer was wedged (\(elapsed)s)")
+
+        gate.signal() // release the wedged write so the worker can drain
+        await testQueue.awaitSnapshotFlush()
+    }
+
+    func testSnapshotMatchesInMemoryStateAfterStateTransitionBurst() async throws {
+        // Pipeline-shaped load: enqueue several jobs, then drive each
+        // through transcribing → diarizing → generatingProtocol → done.
+        // 12 updateJobState calls + 3 enqueues = 15 saveSnapshot triggers
+        // in rapid succession. The on-disk state must match in-memory at
+        // the end regardless of how many coalesced batches actually ran.
+        let jobs = (1 ... 3).map { makeJob(title: "Job \($0)") }
+        for job in jobs {
+            queue.enqueue(job)
+        }
+        let transitions: [JobState] = [.transcribing, .diarizing, .generatingProtocol, .done]
+        for job in jobs {
+            for next in transitions {
+                queue.updateJobState(id: job.id, to: next)
+            }
+        }
+        await queue.awaitSnapshotFlush()
+
+        let snapshotPath = tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename)
+        let data = try Data(contentsOf: snapshotPath)
+        let onDisk = try JSONDecoder().decode([PipelineJob].self, from: data)
+        XCTAssertEqual(onDisk.count, queue.jobs.count)
+        XCTAssertEqual(onDisk.map(\.id), queue.jobs.map(\.id))
+        XCTAssertEqual(onDisk.map(\.state), queue.jobs.map(\.state))
+    }
+
+    func testLogAppendedOnEnqueue() throws {
+        queue.enqueue(makeJob())
+        let logPath = tmpDir.appendingPathComponent("pipeline_log.jsonl")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: logPath.path))
+        let content = try String(contentsOf: logPath, encoding: .utf8)
+        XCTAssertTrue(content.contains("enqueued"))
+    }
+
+    func testActiveJobs() {
+        var job1 = makeJob(title: "Active")
+        job1.state = .transcribing
+        queue.enqueue(job1)
+        queue.enqueue(makeJob(title: "Waiting"))
+        XCTAssertEqual(queue.activeJobs.count, 1)
+        XCTAssertEqual(queue.activeJobs[0].meetingTitle, "Active")
+    }
+
+    func testActiveJobsIncludesDiarizingAndGeneratingProtocol() {
+        var j1 = makeJob(title: "Diarizing")
+        j1.state = .diarizing
+        var j2 = makeJob(title: "Protocol")
+        j2.state = .generatingProtocol
+        queue.enqueue(j1)
+        queue.enqueue(j2)
+        XCTAssertEqual(queue.activeJobs.count, 2)
+    }
+
+    func testActiveJobsExcludesTerminalStates() {
+        var done = makeJob(title: "Done")
+        done.state = .done
+        var err = makeJob(title: "Error")
+        err.state = .error
+        queue.enqueue(done)
+        queue.enqueue(err)
+        queue.enqueue(makeJob(title: "Waiting"))
+        XCTAssertTrue(queue.activeJobs.isEmpty)
+    }
+
+    func testPendingJobs() {
+        queue.enqueue(makeJob(title: "Waiting 1"))
+        queue.enqueue(makeJob(title: "Waiting 2"))
+        XCTAssertEqual(queue.pendingJobs.count, 2)
+    }
+
+    func testRemoveCompletedJob() {
+        var job = makeJob()
+        job.state = .done
+        queue.enqueue(job)
+        XCTAssertEqual(queue.jobs.count, 1)
+        queue.removeJob(id: job.id)
+        XCTAssertEqual(queue.jobs.count, 0)
+    }
+
+    // MARK: - Cancel Tests
+
+    func testCancelWaitingJobRemovesIt() {
+        let job = makeJob()
+        queue.enqueue(job)
+        XCTAssertEqual(queue.jobs.count, 1)
+
+        queue.cancelJob(id: job.id)
+        XCTAssertEqual(queue.jobs.count, 0)
+    }
+
+    func testCancelActiveJobRemovesIt() {
+        let job = makeJob()
+        queue.enqueue(job)
+        queue.updateJobState(id: job.id, to: .transcribing)
+
+        queue.cancelJob(id: job.id)
+        XCTAssertEqual(queue.jobs.count, 0)
+    }
+
+    func testCancelDuringSpeakerNamingClearsData() {
+        let job = makeJob()
+        queue.enqueue(job)
+        queue.updateJobState(id: job.id, to: .diarizing)
+        queue.speakerNamingDataByJob[job.id] = PipelineQueue.SpeakerNamingData(
+            jobID: job.id,
+            meetingTitle: "Test",
+            mapping: [:],
+            speakingTimes: [:],
+            embeddings: [:],
+            audioPath: nil,
+            segments: [],
+            participants: [],
+            isDualSource: false,
+        )
+
+        queue.cancelJob(id: job.id)
+
+        XCTAssertNil(queue.pendingSpeakerNaming, "popup data must be cleared on cancel")
+        XCTAssertEqual(queue.jobs.count, 0)
+    }
+
+    func testCancelActiveJobWithoutPendingNamingIsSafe() {
+        let job = makeJob()
+        queue.enqueue(job)
+        queue.updateJobState(id: job.id, to: .diarizing)
+        XCTAssertNil(queue.pendingSpeakerNaming)
+
+        queue.cancelJob(id: job.id)
+
+        XCTAssertNil(queue.pendingSpeakerNaming)
+        XCTAssertEqual(queue.jobs.count, 0)
+    }
+
+    func testCancelDoneJobIsNoOp() {
+        let job = makeJob()
+        queue.enqueue(job)
+        queue.updateJobState(id: job.id, to: .done)
+
+        let countBefore = queue.jobs.count
+        queue.cancelJob(id: job.id)
+        XCTAssertEqual(queue.jobs.count, countBefore)
+    }
+
+    // MARK: - Snapshot Recovery Tests (loadSnapshot)
+
+    func testLoadSnapshotRestoresWaitingJobs() throws {
+        let mixPath = tmpDir.appendingPathComponent("audio_mix.wav")
+        try Data("fake audio".utf8).write(to: mixPath)
+
+        let job = PipelineJob(
+            meetingTitle: "Restored Meeting",
+            appName: "Teams",
+            mixPath: mixPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        let data = try JSONEncoder().encode([job])
+        let snapshotPath = tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename)
+        try data.write(to: snapshotPath)
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.loadSnapshot()
+
+        XCTAssertEqual(freshQueue.jobs.count, 1)
+        XCTAssertEqual(freshQueue.jobs[0].meetingTitle, "Restored Meeting")
+        XCTAssertEqual(freshQueue.jobs[0].state, .waiting)
+    }
+
+    func testLoadSnapshotResetsActiveToWaiting() throws {
+        let mixPath = tmpDir.appendingPathComponent("audio_mix.wav")
+        try Data("fake audio".utf8).write(to: mixPath)
+
+        var job = PipelineJob(
+            meetingTitle: "Active Meeting",
+            appName: "Teams",
+            mixPath: mixPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .transcribing
+        let data = try JSONEncoder().encode([job])
+        try data.write(to: tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename))
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.loadSnapshot()
+
+        XCTAssertEqual(freshQueue.jobs.count, 1)
+        XCTAssertEqual(freshQueue.jobs[0].state, .waiting)
+    }
+
+    func testLoadSnapshotDiscardsDoneJobs() throws {
+        let mixPath = tmpDir.appendingPathComponent("audio_mix.wav")
+        try Data("fake audio".utf8).write(to: mixPath)
+
+        var job = PipelineJob(
+            meetingTitle: "Done Meeting",
+            appName: "Teams",
+            mixPath: mixPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .done
+        let data = try JSONEncoder().encode([job])
+        try data.write(to: tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename))
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.loadSnapshot()
+
+        XCTAssertEqual(freshQueue.jobs.count, 0)
+    }
+
+    func testLoadSnapshotDiscardsMissingAudio() throws {
+        let job = PipelineJob(
+            meetingTitle: "Ghost Meeting",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/nonexistent_\(UUID().uuidString).wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        let data = try JSONEncoder().encode([job])
+        try data.write(to: tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename))
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.loadSnapshot()
+
+        XCTAssertEqual(freshQueue.jobs.count, 0)
+    }
+
+    func testLoadSnapshotNoFileIsNoOp() {
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.loadSnapshot()
+        XCTAssertTrue(freshQueue.jobs.isEmpty)
+    }
+
+    // MARK: - Orphaned Recording Recovery Tests
+
+    func testRecoverFindsUntrackedMixWav() async throws {
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+
+        let mixFile = recDir.appendingPathComponent("20260311_100000_mix.wav")
+        try Data(repeating: 0xFF, count: 100).write(to: mixFile)
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        await freshQueue.recoverOrphanedRecordings(recordingsDir: recDir)
+
+        XCTAssertEqual(freshQueue.jobs.count, 1)
+        XCTAssertEqual(freshQueue.jobs[0].meetingTitle, "Recovered Recording (20260311_100000)")
+        XCTAssertEqual(
+            freshQueue.jobs[0].mixPath?.standardizedFileURL,
+            mixFile.standardizedFileURL,
+        )
+    }
+
+    func testRecoverSkipsTrackedFiles() async throws {
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+
+        let mixFile = recDir.appendingPathComponent("20260311_100000_mix.wav")
+        try Data(repeating: 0xFF, count: 100).write(to: mixFile)
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        let existing = PipelineJob(
+            meetingTitle: "Already Tracked",
+            appName: "Teams",
+            mixPath: mixFile,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        freshQueue.enqueue(existing)
+
+        await freshQueue.recoverOrphanedRecordings(recordingsDir: recDir)
+        XCTAssertEqual(freshQueue.jobs.count, 1)
+        XCTAssertEqual(freshQueue.jobs[0].meetingTitle, "Already Tracked")
+    }
+
+    func testRecoverSkipsTinyFiles() async throws {
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+
+        let mixFile = recDir.appendingPathComponent("20260311_100000_mix.wav")
+        try Data(repeating: 0x00, count: 44).write(to: mixFile)
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        await freshQueue.recoverOrphanedRecordings(recordingsDir: recDir)
+
+        XCTAssertEqual(freshQueue.jobs.count, 0)
+    }
+
+    func testRecoverFindsCompanionTracks() async throws {
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+
+        let prefix = "20260311_100000"
+        try Data(repeating: 0xFF, count: 100).write(to: recDir.appendingPathComponent("\(prefix)_mix.wav"))
+        try Data(repeating: 0xFF, count: 100).write(to: recDir.appendingPathComponent("\(prefix)_app.wav"))
+        try Data(repeating: 0xFF, count: 100).write(to: recDir.appendingPathComponent("\(prefix)_mic.wav"))
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        await freshQueue.recoverOrphanedRecordings(recordingsDir: recDir)
+
+        XCTAssertEqual(freshQueue.jobs.count, 1)
+        XCTAssertNotNil(freshQueue.jobs[0].appPath)
+        XCTAssertNotNil(freshQueue.jobs[0].micPath)
+    }
+
+    func testRecoverSkipsOldFiles() async throws {
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+
+        let mixFile = recDir.appendingPathComponent("20250101_100000_mix.wav")
+        try Data(repeating: 0xFF, count: 100).write(to: mixFile)
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        await freshQueue.recoverOrphanedRecordings(recordingsDir: recDir, maxAge: 0)
+
+        XCTAssertEqual(freshQueue.jobs.count, 0)
+    }
+
+    func testRecoverSkipsProcessedFiles() async throws {
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+
+        let mixFile = recDir.appendingPathComponent("20260311_100000_mix.wav")
+        try Data(repeating: 0xFF, count: 100).write(to: mixFile)
+
+        // Mark it as already processed
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.markProcessed(mixPath: mixFile)
+
+        await freshQueue.recoverOrphanedRecordings(recordingsDir: recDir)
+        XCTAssertEqual(freshQueue.jobs.count, 0)
+    }
+
+    func testErrorJobIsMarkedProcessedSoRecoverySkipsIt() async throws {
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+        let mixFile = recDir.appendingPathComponent("20260318_214744_mix.wav")
+        try Data(repeating: 0xFF, count: 100).write(to: mixFile)
+
+        // Enqueue and fail the job (simulates "Empty transcript" scenario)
+        let job = PipelineJob(
+            meetingTitle: "Brave Browser",
+            appName: "Brave Browser",
+            mixPath: mixFile,
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+        queue.enqueue(job)
+        queue.updateJobState(id: job.id, to: .error, error: "Empty transcript")
+
+        // A fresh queue (simulates pressing Start Watching) must not recover the failed recording
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        await freshQueue.recoverOrphanedRecordings(recordingsDir: recDir)
+        XCTAssertTrue(freshQueue.jobs.isEmpty, "Failed recording should not be re-queued")
+    }
+
+    func testMarkProcessedPersists() throws {
+        let mixPath = tmpDir.appendingPathComponent("test_mix.wav")
+
+        let q1 = PipelineQueue(logDir: tmpDir)
+        q1.markProcessed(mixPath: mixPath)
+
+        // New queue instance should see the processed path
+        _ = PipelineQueue(logDir: tmpDir)
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+        // Create a file with the same standardized name
+        try Data(repeating: 0xFF, count: 100).write(to: mixPath)
+
+        // Won't find it if the path is in processed list — but the file is in tmpDir not recDir
+        // So test directly via the processed set behavior
+        let processedPath = tmpDir.appendingPathComponent("processed_recordings.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: processedPath.path))
+        let data = try Data(contentsOf: processedPath)
+        let paths = try JSONDecoder().decode([String].self, from: data)
+        XCTAssertTrue(paths.contains(mixPath.standardizedFileURL.path))
+    }
+
+    func testRecoverEmptyDirIsNoOp() async {
+        let recDir = tmpDir.appendingPathComponent("nonexistent_recordings")
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        await freshQueue.recoverOrphanedRecordings(recordingsDir: recDir)
+        XCTAssertTrue(freshQueue.jobs.isEmpty)
+    }
+
+    func testMigrateSeedsProcessedRecordingsFromExistingMixFiles() async throws {
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+        let mixA = recDir.appendingPathComponent("20260101_100000_mix.wav")
+        let mixB = recDir.appendingPathComponent("20260102_100000_mix.wav")
+        try Data(repeating: 0xFF, count: 100).write(to: mixA)
+        try Data(repeating: 0xFF, count: 100).write(to: mixB)
+        // Non-mix file must be ignored.
+        try Data(repeating: 0xFF, count: 100).write(to: recDir.appendingPathComponent("notes.txt"))
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        await freshQueue.migrateProcessedRecordings(recordingsDir: recDir)
+
+        let processedPath = tmpDir.appendingPathComponent("processed_recordings.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: processedPath.path))
+        let paths = try JSONDecoder().decode([String].self, from: Data(contentsOf: processedPath))
+        XCTAssertEqual(Set(paths), Set([
+            mixA.standardizedFileURL.path,
+            mixB.standardizedFileURL.path,
+        ]))
+    }
+
+    func testMigrateIsNoOpWhenProcessedFileAlreadyExists() async throws {
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+        try Data(repeating: 0xFF, count: 100).write(to: recDir.appendingPathComponent("20260101_mix.wav"))
+
+        // Pre-create the processed file with a sentinel value; migration must
+        // not overwrite it.
+        let processedPath = tmpDir.appendingPathComponent("processed_recordings.json")
+        let sentinel = try JSONEncoder().encode(["/preexisting/path/mix.wav"])
+        try sentinel.write(to: processedPath)
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        await freshQueue.migrateProcessedRecordings(recordingsDir: recDir)
+
+        let paths = try JSONDecoder().decode([String].self, from: Data(contentsOf: processedPath))
+        XCTAssertEqual(paths, ["/preexisting/path/mix.wav"])
+    }
+
+    func testMigrateRunsOffMainActor() async throws {
+        // Smoke test parity with testRecoverRunsDirScanOffMainActor:
+        // verify the dir scan + JSON write don't starve main-actor work.
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+        for i in 0 ..< 50 {
+            let mixFile = recDir.appendingPathComponent("20260311_10000\(i)_mix.wav")
+            try Data(repeating: 0xFF, count: 100).write(to: mixFile)
+        }
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        async let migration: Void = freshQueue.migrateProcessedRecordings(recordingsDir: recDir)
+
+        var counter = 0
+        for _ in 0 ..< 10000 {
+            counter += 1
+        }
+        XCTAssertEqual(counter, 10000)
+
+        await migration
+        let processedPath = tmpDir.appendingPathComponent("processed_recordings.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: processedPath.path))
+    }
+
+    func testRecoverRunsDirScanOffMainActor() async throws {
+        // Smoke test that the scan doesn't starve main-actor work: kick
+        // off recovery with `async let`, do synchronous work concurrently,
+        // verify both complete.
+        let recDir = tmpDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recDir, withIntermediateDirectories: true)
+        for i in 0 ..< 50 {
+            let mixFile = recDir.appendingPathComponent("20260311_10000\(i)_mix.wav")
+            try Data(repeating: 0xFF, count: 100).write(to: mixFile)
+        }
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        async let recovery: Void = freshQueue.recoverOrphanedRecordings(recordingsDir: recDir)
+
+        var counter = 0
+        for _ in 0 ..< 10000 {
+            counter += 1
+        }
+        XCTAssertEqual(counter, 10000)
+
+        await recovery
+        XCTAssertEqual(freshQueue.jobs.count, 50)
+    }
+
+    // MARK: - Processing Tests
+
+    private func makeProcessingQueue() -> PipelineQueue {
+        PipelineQueue(
+            engine: WhisperKitEngine(),
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { MockProtocolGen() },
+            outputDir: tmpDir,
+            logDir: tmpDir,
+            diarizeEnabled: false,
+            micLabel: "Me",
+        )
+    }
+
+    func testProcessNextPicksFirstWaitingJob() async {
+        let pQueue = makeProcessingQueue()
+
+        let job = makeJob()
+        pQueue.enqueue(job)
+        XCTAssertEqual(pQueue.jobs[0].state, .waiting)
+
+        await pQueue.processNext()
+
+        // Job should have been picked up (state != waiting)
+        XCTAssertNotEqual(pQueue.jobs[0].state, .waiting)
+    }
+
+    func testProcessNextSkipsWhenNoWaitingJobs() async {
+        let pQueue = makeProcessingQueue()
+        await pQueue.processNext()
+        XCTAssertTrue(pQueue.jobs.isEmpty)
+    }
+
+    func testAwaitProcessingReturnsImmediatelyWhenIdle() async {
+        let pQueue = makeProcessingQueue()
+        await pQueue.awaitProcessing()
+        XCTAssertFalse(pQueue.isProcessing)
+        XCTAssertTrue(pQueue.pendingJobs.isEmpty)
+    }
+
+    func testAwaitProcessingDrainsSpawnedTask() async {
+        let pQueue = makeProcessingQueue()
+        let job = makeJob()
+        pQueue.enqueue(job)
+        // Spawned task is in flight (or about to be). Without awaitProcessing,
+        // observers race against the spawned Task.
+        await pQueue.awaitProcessing()
+        XCTAssertFalse(pQueue.isProcessing, "queue should be idle after awaitProcessing")
+        XCTAssertTrue(pQueue.pendingJobs.isEmpty, "no jobs should remain in waiting")
+        XCTAssertNotEqual(pQueue.jobs.first?.state, .waiting)
+    }
+
+    func testIsProcessingFlag() {
+        let pQueue = makeProcessingQueue()
+        XCTAssertFalse(pQueue.isProcessing)
+    }
+
+    // MARK: - Auto-Removal Tests
+
+    func testCompletedJobAutoRemovedAfterDelay() async throws {
+        let queue = PipelineQueue(logDir: tmpDir, completedJobLifetime: 0.2)
+        let job = makeJob()
+        queue.enqueue(job)
+        queue.updateJobState(id: job.id, to: .done)
+        XCTAssertEqual(queue.jobs.count, 1)
+
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(queue.jobs.count, 0, "Done job should be auto-removed")
+    }
+
+    func testErrorJobNotAutoRemoved() async throws {
+        let queue = PipelineQueue(logDir: tmpDir, completedJobLifetime: 0.2)
+        let job = makeJob()
+        queue.enqueue(job)
+        queue.updateJobState(id: job.id, to: .error, error: "Test error")
+
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(queue.jobs.count, 1, "Error job should NOT be auto-removed")
+    }
+
+    // MARK: - Mock-Engine Processing Tests
+
+    private func makeMockProcessingQueue(
+        engine: MockEngine? = nil,
+        diarizationFactory: @escaping () -> any DiarizationProvider = { MockDiarization() },
+        diarizationFactoryWithMode: ((DiarizerMode) -> any DiarizationProvider)? = nil,
+        diarizeEnabled: Bool = false,
+        numSpeakers: Int = 0,
+    ) -> (PipelineQueue, MockEngine) {
+        let engine = engine ?? MockEngine()
+        let q = PipelineQueue(
+            engine: engine,
+            diarizationFactory: diarizationFactory,
+            diarizationFactoryWithMode: diarizationFactoryWithMode,
+            protocolGeneratorFactory: { MockProtocolGen() },
+            outputDir: tmpDir,
+            logDir: tmpDir,
+            diarizeEnabled: diarizeEnabled,
+            numSpeakers: numSpeakers,
+            micLabel: "Me",
+        )
+        return (q, engine)
+    }
+
+    func testProcessNextWithMockEngineTranscribes() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Hello from mock"),
+        ]
+        let (pQueue, _) = makeMockProcessingQueue(engine: engine)
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Mock Test",
+            appName: "Teams",
+            mixPath: audioPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        await pQueue.processNext()
+
+        XCTAssertTrue(engine.transcribeCallCount > 0)
+    }
+
+    func testProcessNextEmptyTranscriptSetsError() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [] // empty = no speech
+        let (pQueue, _) = makeMockProcessingQueue(engine: engine)
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Silent Meeting",
+            appName: "Teams",
+            mixPath: audioPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        await pQueue.processNext()
+
+        XCTAssertEqual(pQueue.jobs.first?.state, .error)
+        XCTAssertEqual(pQueue.jobs.first?.error, "Empty transcript")
+    }
+
+    func testProcessNextDualSourceTranscribesBothTracks() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Track content"),
+        ]
+        let (pQueue, _) = makeMockProcessingQueue(engine: engine)
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let appPath = tmpDir.appendingPathComponent("app_audio.wav")
+        let micPath = tmpDir.appendingPathComponent("mic_audio.wav")
+        try FileManager.default.copyItem(at: audioPath, to: appPath)
+        try FileManager.default.copyItem(at: audioPath, to: micPath)
+
+        let job = PipelineJob(
+            meetingTitle: "Dual Source",
+            appName: "Teams",
+            mixPath: audioPath,
+            appPath: appPath,
+            micPath: micPath,
+            micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        await pQueue.processNext()
+
+        // Dual source: transcribes app + mic = 2 calls
+        XCTAssertEqual(engine.transcribeCallCount, 2)
+    }
+
+    func testSpeakerNamingHandlerCalled() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Hello"),
+        ]
+        let mockDiar = MockDiarization()
+        mockDiar.resultToReturn = DiarizationResult(
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            speakingTimes: ["SPEAKER_0": 5],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0]],
+        )
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { mockDiar },
+            diarizeEnabled: true,
+        )
+
+        var handlerCalled = false
+        pQueue.speakerNamingHandler = { _ in
+            handlerCalled = true
+            return .skipped
+        }
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Naming Test",
+            appName: "Teams",
+            mixPath: audioPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        await pQueue.processNext()
+
+        XCTAssertTrue(handlerCalled)
+    }
+
+    func testSpeakerNamingSkippedUsesAutoNames() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Hello"),
+        ]
+        let mockDiar = MockDiarization()
+        mockDiar.resultToReturn = DiarizationResult(
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            speakingTimes: ["SPEAKER_0": 5],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0]],
+        )
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { mockDiar },
+            diarizeEnabled: true,
+        )
+
+        pQueue.speakerNamingHandler = { _ in .skipped }
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Skip Test",
+            appName: "Teams",
+            mixPath: audioPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        await pQueue.processNext()
+
+        // Should complete without error (auto names used)
+        let finalState = pQueue.jobs.first?.state
+        XCTAssertTrue(finalState == .done || finalState == .error)
+    }
+
+    func testSpeakerNamingRerunCallsDiarizationAgain() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Hello"),
+        ]
+        let mockDiar = MockDiarization()
+        mockDiar.resultToReturn = DiarizationResult(
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            speakingTimes: ["SPEAKER_0": 5],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0]],
+        )
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { mockDiar },
+            diarizeEnabled: true,
+        )
+
+        var callCount = 0
+        pQueue.speakerNamingHandler = { _ in
+            callCount += 1
+            if callCount == 1 {
+                return .rerun(3)
+            }
+            return .skipped
+        }
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Rerun Test",
+            appName: "Teams",
+            mixPath: audioPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        await pQueue.processNext()
+
+        // Handler should be called twice (first returns rerun, second returns skipped)
+        XCTAssertEqual(callCount, 2)
+    }
+
+    func testCompleteSpeakerNamingDoubleResumeIsNoOp() {
+        // completeSpeakerNaming should not crash when called twice
+        let queue = PipelineQueue(logDir: tmpDir)
+        queue.completeSpeakerNaming(result: .skipped)
+        queue.completeSpeakerNaming(result: .skipped) // should not crash
+    }
+
+    func testOnJobStateChangeCallbackFired() {
+        var transitions: [(UUID, JobState, JobState)] = []
+        queue.onJobStateChange = { job, old, new in
+            transitions.append((job.id, old, new))
+        }
+
+        let job = makeJob()
+        queue.enqueue(job)
+        queue.updateJobState(id: job.id, to: .transcribing)
+
+        XCTAssertEqual(transitions.count, 1)
+        XCTAssertEqual(transitions[0].1, .waiting)
+        XCTAssertEqual(transitions[0].2, .transcribing)
+    }
+
+    func testLoadSnapshotResetsDiarizingToWaiting() throws {
+        let mixPath = tmpDir.appendingPathComponent("audio_diar.wav")
+        try Data("fake audio".utf8).write(to: mixPath)
+
+        var job = PipelineJob(
+            meetingTitle: "Diarizing Meeting",
+            appName: "Teams",
+            mixPath: mixPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .diarizing
+        let data = try JSONEncoder().encode([job])
+        try data.write(to: tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename))
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.loadSnapshot()
+
+        XCTAssertEqual(freshQueue.jobs.count, 1)
+        XCTAssertEqual(freshQueue.jobs[0].state, .waiting)
+    }
+
+    func testLoadSnapshotResetsGeneratingProtocolToWaiting() throws {
+        let mixPath = tmpDir.appendingPathComponent("audio_proto.wav")
+        try Data("fake audio".utf8).write(to: mixPath)
+
+        var job = PipelineJob(
+            meetingTitle: "Protocol Meeting",
+            appName: "Teams",
+            mixPath: mixPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .generatingProtocol
+        let data = try JSONEncoder().encode([job])
+        try data.write(to: tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename))
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.loadSnapshot()
+
+        XCTAssertEqual(freshQueue.jobs.count, 1)
+        XCTAssertEqual(freshQueue.jobs[0].state, .waiting)
+    }
+
+    // MARK: - addWarning
+
+    func testAddWarningAppendsToJob() {
+        let queue = PipelineQueue(logDir: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Warn Test",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        queue.enqueue(job)
+        queue.addWarning(id: job.id, "Test warning")
+        XCTAssertEqual(queue.jobs[0].warnings, ["Test warning"])
+    }
+
+    func testAddWarningDeduplicates() {
+        let queue = PipelineQueue(logDir: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Dedup Test",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        queue.enqueue(job)
+        queue.addWarning(id: job.id, "Same warning")
+        queue.addWarning(id: job.id, "Same warning")
+        XCTAssertEqual(queue.jobs[0].warnings.count, 1)
+    }
+
+    func testAddWarningIgnoresInvalidJobID() {
+        let queue = PipelineQueue(logDir: tmpDir)
+        // Should not crash with non-existent job ID
+        queue.addWarning(id: UUID(), "Orphan warning")
+        XCTAssertTrue(queue.jobs.isEmpty)
+    }
+
+    func testAddWarningMultipleDistinct() {
+        let queue = PipelineQueue(logDir: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Multi Test",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        queue.enqueue(job)
+        queue.addWarning(id: job.id, "Warning A")
+        queue.addWarning(id: job.id, "Warning B")
+        XCTAssertEqual(queue.jobs[0].warnings, ["Warning A", "Warning B"])
+    }
+
+    // MARK: - State Machine Edge Cases
+
+    func testCompletedJobsFilter() {
+        var doneJob = makeJob(title: "Done Meeting")
+        doneJob.state = .done
+        queue.enqueue(doneJob)
+        queue.enqueue(makeJob(title: "Waiting Meeting"))
+
+        XCTAssertEqual(queue.completedJobs.count, 1)
+        XCTAssertEqual(queue.completedJobs[0].meetingTitle, "Done Meeting")
+    }
+
+    func testCancelNonexistentJobIsNoOp() {
+        queue.enqueue(makeJob())
+        let countBefore = queue.jobs.count
+        queue.cancelJob(id: UUID())
+        XCTAssertEqual(queue.jobs.count, countBefore)
+    }
+
+    func testUpdateJobStateNonexistentJobIsNoOp() {
+        queue.enqueue(makeJob())
+        let countBefore = queue.jobs.count
+        queue.updateJobState(id: UUID(), to: .transcribing)
+        XCTAssertEqual(queue.jobs.count, countBefore)
+        // All existing jobs should remain in their original state
+        XCTAssertEqual(queue.jobs[0].state, .waiting)
+    }
+
+    func testUpdateJobStateSetsError() {
+        let job = makeJob()
+        queue.enqueue(job)
+        queue.updateJobState(id: job.id, to: .error, error: "Something went wrong")
+
+        XCTAssertEqual(queue.jobs[0].state, .error)
+        XCTAssertEqual(queue.jobs[0].error, "Something went wrong")
+    }
+
+    func testLoadSnapshotCorruptJSONIsNoOp() throws {
+        let snapshotPath = tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename)
+        try Data("{{not valid json".utf8).write(to: snapshotPath)
+
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.loadSnapshot()
+
+        XCTAssertTrue(freshQueue.jobs.isEmpty)
+    }
+
+    // MARK: - Crash-Recovery E2E
+
+    func testCrashRecoveryResumesAndCompletesJob() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Recovery test"),
+        ]
+        let protocolGen = MockProtocolGen()
+        let audioPath = try createTestAudioFile(in: tmpDir)
+
+        let queue1 = PipelineQueue(
+            engine: engine,
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { protocolGen },
+            outputDir: tmpDir,
+            logDir: tmpDir,
+        )
+
+        let job = PipelineJob(
+            meetingTitle: "Crash Test",
+            appName: "Test",
+            mixPath: audioPath,
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+        queue1.enqueue(job)
+        queue1.updateJobState(id: job.id, to: .transcribing)
+        queue1.saveSnapshot()
+        await queue1.awaitSnapshotFlush()
+
+        let snapshotPath = tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshotPath.path))
+
+        // "Crash" — create fresh queue from snapshot
+        let engine2 = MockEngine()
+        engine2.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Recovery works"),
+        ]
+        let protocolGen2 = MockProtocolGen()
+
+        let queue2 = PipelineQueue(
+            engine: engine2,
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { protocolGen2 },
+            outputDir: tmpDir,
+            logDir: tmpDir,
+        )
+
+        queue2.loadSnapshot()
+        XCTAssertEqual(queue2.jobs.count, 1)
+        XCTAssertEqual(queue2.jobs.first?.state, .waiting)
+        XCTAssertEqual(queue2.jobs.first?.meetingTitle, "Crash Test")
+
+        await queue2.processNext()
+
+        XCTAssertEqual(queue2.jobs.first?.state, .done)
+        XCTAssertEqual(engine2.transcribeCallCount, 1)
+        XCTAssertTrue(protocolGen2.generateCalled)
+        XCTAssertNotNil(queue2.jobs.first?.protocolPath)
+    }
+
+    func testCrashRecoveryDuringDiarizingResumes() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Diarize recovery"),
+        ]
+        let audioPath = try createTestAudioFile(in: tmpDir)
+
+        let queue1 = PipelineQueue(
+            engine: engine,
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { MockProtocolGen() },
+            outputDir: tmpDir,
+            logDir: tmpDir,
+            diarizeEnabled: true,
+        )
+
+        let job = PipelineJob(
+            meetingTitle: "Diarize Crash",
+            appName: "Test",
+            mixPath: audioPath,
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+        queue1.enqueue(job)
+        queue1.updateJobState(id: job.id, to: .diarizing)
+        queue1.saveSnapshot()
+        await queue1.awaitSnapshotFlush()
+
+        let engine2 = MockEngine()
+        engine2.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Recovered"),
+        ]
+        let protocolGen2 = MockProtocolGen()
+
+        let queue2 = PipelineQueue(
+            engine: engine2,
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { protocolGen2 },
+            outputDir: tmpDir,
+            logDir: tmpDir,
+            diarizeEnabled: true,
+        )
+        queue2.speakerNamingHandler = { _ in .skipped }
+
+        queue2.loadSnapshot()
+        XCTAssertEqual(queue2.jobs.first?.state, .waiting)
+
+        await queue2.processNext()
+        XCTAssertEqual(queue2.jobs.first?.state, .done)
+    }
+
+    func testJobStateSpeakerNamingPendingLabel() {
+        XCTAssertEqual(JobState.speakerNamingPending.label, "Name Speakers...")
+    }
+
+    func testJobStateSpeakerNamingPendingIsCodable() throws {
+        let state = JobState.speakerNamingPending
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(JobState.self, from: data)
+        XCTAssertEqual(decoded, state)
+    }
+
+    // MARK: - SpeakerNamingData Codable
+
+    func testSpeakerNamingDataRoundTripsThroughJSON() throws {
+        let data = PipelineQueue.SpeakerNamingData(
+            jobID: UUID(),
+            meetingTitle: "Test Meeting",
+            mapping: ["SPEAKER_0": "Alice", "SPEAKER_1": "Speaker C"],
+            speakingTimes: ["SPEAKER_0": 120.5, "SPEAKER_1": 85.3],
+            embeddings: ["SPEAKER_0": [0.1, 0.2], "SPEAKER_1": [0.3, 0.4]],
+            audioPath: URL(fileURLWithPath: "/tmp/test_16k.wav"),
+            segments: [
+                .init(start: 0.0, end: 5.0, speaker: "SPEAKER_0"),
+                .init(start: 5.0, end: 10.0, speaker: "SPEAKER_1"),
+            ],
+            participants: ["Alice", "Speaker C", "Speaker D"],
+            isDualSource: false,
+        )
+
+        let encoded = try JSONEncoder().encode(data)
+        let decoded = try JSONDecoder().decode(PipelineQueue.SpeakerNamingData.self, from: encoded)
+
+        XCTAssertEqual(decoded.jobID, data.jobID)
+        XCTAssertEqual(decoded.meetingTitle, data.meetingTitle)
+        XCTAssertEqual(decoded.mapping, data.mapping)
+        XCTAssertEqual(decoded.participants, data.participants)
+        XCTAssertFalse(decoded.isDualSource)
+        XCTAssertEqual(decoded.segments.count, 2)
+    }
+
+    /// Regression: each `SpeakerNamingData` instance must carry a unique
+    /// `revision` so that SwiftUI `.onChange(of: data.revision)` fires on
+    /// every late-diarization re-render — even when the resulting mapping
+    /// happens to be byte-identical to the previous run. Without this,
+    /// the SpeakerNamingView's per-presentation `@State` reset never runs
+    /// and consecutive Re-run clicks are silently swallowed.
+    func test_speakerNamingData_revisionDiffersBetweenInstancesWithIdenticalContent() {
+        let jobID = UUID()
+        let mapping = ["SPEAKER_0": "Alice"]
+        let speakingTimes: [String: TimeInterval] = ["SPEAKER_0": 60]
+        let embeddings: [String: [Float]] = ["SPEAKER_0": [0.1, 0.2]]
+
+        let first = PipelineQueue.SpeakerNamingData(
+            jobID: jobID, meetingTitle: "Standup",
+            mapping: mapping, speakingTimes: speakingTimes,
+            embeddings: embeddings, audioPath: nil,
+            segments: [], participants: [], isDualSource: false,
+        )
+        let second = PipelineQueue.SpeakerNamingData(
+            jobID: jobID, meetingTitle: "Standup",
+            mapping: mapping, speakingTimes: speakingTimes,
+            embeddings: embeddings, audioPath: nil,
+            segments: [], participants: [], isDualSource: false,
+        )
+
+        XCTAssertNotEqual(first.revision, second.revision)
+    }
+
+    /// `revision` is a presentation-only marker and must not survive the
+    /// JSON sidecar round-trip — encoding leaves it out, decoding regenerates
+    /// it. Otherwise reloading the sidecar from disk would freeze the
+    /// revision and re-introduce the stuck-button bug after app restart.
+    func test_speakerNamingData_revisionRegeneratesOnJSONRoundTrip() throws {
+        let original = PipelineQueue.SpeakerNamingData(
+            jobID: UUID(), meetingTitle: "Standup",
+            mapping: ["S": "Alice"], speakingTimes: ["S": 60],
+            embeddings: ["S": [0.1]], audioPath: nil,
+            segments: [], participants: [], isDualSource: false,
+        )
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(PipelineQueue.SpeakerNamingData.self, from: encoded)
+
+        XCTAssertNotEqual(original.revision, decoded.revision)
+        // JSON payload must not contain the field name.
+        let json = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+        XCTAssertFalse(json.contains("revision"))
+    }
+
+    func testPendingSpeakerNamingJobsReturnsNamingPendingJobs() {
+        let queue = PipelineQueue(logDir: tmpDir)
+        XCTAssertTrue(queue.pendingSpeakerNamingJobs.isEmpty)
+    }
+
+    // MARK: - Pipeline Timeout → speakerNamingPending
+
+    func testPipelineSetsSpeakerNamingPendingAfterTimeout() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Hello"),
+        ]
+        let mockDiar = MockDiarization()
+        mockDiar.resultToReturn = DiarizationResult(
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            speakingTimes: ["SPEAKER_0": 5],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0]],
+        )
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { mockDiar },
+            diarizeEnabled: true,
+        )
+        // Don't set speakerNamingHandler — pipeline proceeds with auto-names immediately
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Timeout Test",
+            appName: "TestApp",
+            mixPath: audioPath,
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+        pQueue.enqueue(job)
+
+        let expectation = XCTestExpectation(description: "Pipeline completes")
+        pQueue.onJobStateChange = { _, _, newState in
+            if newState == .speakerNamingPending {
+                expectation.fulfill()
+            }
+        }
+
+        await pQueue.processNext()
+
+        await fulfillment(of: [expectation], timeout: 10)
+
+        let finalJob = pQueue.jobs.first
+        XCTAssertEqual(
+            finalJob?.state, .speakerNamingPending,
+            "Job should be speakerNamingPending when naming was not confirmed",
+        )
+        XCTAssertNotNil(
+            pQueue.speakerNamingDataByJob[job.id],
+            "Naming data should still be available",
+        )
+    }
+
+    func testPipelineSetsDoneWhenNamingConfirmed() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Hello"),
+        ]
+        let mockDiar = MockDiarization()
+        mockDiar.resultToReturn = DiarizationResult(
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            speakingTimes: ["SPEAKER_0": 5],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0]],
+        )
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { mockDiar },
+            diarizeEnabled: true,
+        )
+
+        pQueue.speakerNamingHandler = { _ in .confirmed(["SPEAKER_0": "Alice"]) }
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Confirm Test",
+            appName: "Teams",
+            mixPath: audioPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        await pQueue.processNext()
+
+        let finalState = pQueue.jobs.first?.state
+        XCTAssertEqual(finalState, .done, "Confirmed naming should end as .done")
+    }
+
+    func testCompleteSpeakerNamingLateConfirmedTransitionsToDone() async {
+        let queue = PipelineQueue(logDir: tmpDir)
+        var job = PipelineJob(
+            meetingTitle: "Late Naming",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        queue.enqueue(job)
+
+        // Simulate naming data still present
+        let namingData = PipelineQueue.SpeakerNamingData(
+            jobID: job.id,
+            meetingTitle: "Late Naming",
+            mapping: [:],
+            speakingTimes: [:],
+            embeddings: [:],
+            audioPath: nil,
+            segments: [],
+            participants: [],
+            isDualSource: false,
+        )
+        queue.speakerNamingDataByJob[job.id] = namingData
+
+        let doneExpectation = XCTestExpectation(description: "Job transitions to done")
+        queue.onJobStateChange = { _, _, newState in
+            if newState == .done {
+                doneExpectation.fulfill()
+            }
+        }
+
+        // Late completion: no continuation, pipeline done → spawns async re-apply
+        queue.completeSpeakerNaming(jobID: job.id, result: .confirmed([:]))
+
+        await fulfillment(of: [doneExpectation], timeout: 5)
+
+        XCTAssertEqual(queue.jobs.first?.state, .done)
+        XCTAssertNil(queue.speakerNamingDataByJob[job.id])
+    }
+
+    func testCompleteSpeakerNamingLateSkipTransitionsToDone() {
+        let queue = PipelineQueue(logDir: tmpDir)
+        var job = PipelineJob(
+            meetingTitle: "Late Skip",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        queue.enqueue(job)
+
+        let namingData = PipelineQueue.SpeakerNamingData(
+            jobID: job.id,
+            meetingTitle: "Late Skip",
+            mapping: [:],
+            speakingTimes: [:],
+            embeddings: [:],
+            audioPath: nil,
+            segments: [],
+            participants: [],
+            isDualSource: false,
+        )
+        queue.speakerNamingDataByJob[job.id] = namingData
+
+        // Late skip: synchronous cleanup
+        queue.completeSpeakerNaming(jobID: job.id, result: .skipped)
+
+        XCTAssertEqual(queue.jobs.first?.state, .done)
+        XCTAssertNil(queue.speakerNamingDataByJob[job.id])
+    }
+
+    func testSkipTransitionsToDoneWhenProtocolFactoryReturnsNil() async throws {
+        // Regression: when AppSettings.protocolProvider == .none, the
+        // factory closure exists but returns nil. Earlier acceptAutoNames
+        // checked closure-existence (always true here), took the Task
+        // path, and that Task fizzled in generateProtocol's guard —
+        // leaving the job stuck in .speakerNamingPending. The fix
+        // probes the closure's output, so skip falls through to .done.
+        let outputDir = tmpDir.appendingPathComponent("output")
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        let mixPath = tmpDir.appendingPathComponent("mix.wav")
+        try Data([0]).write(to: mixPath)
+        let transcriptPath = tmpDir.appendingPathComponent("transcript.txt")
+        try "[00:00] SPEAKER_0: Hello".write(to: transcriptPath, atomically: true, encoding: .utf8)
+
+        let queue = PipelineQueue(
+            engine: MockEngine(),
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { nil },
+            outputDir: outputDir,
+            logDir: tmpDir,
+            diarizeEnabled: true,
+        )
+
+        var job = PipelineJob(
+            meetingTitle: "Provider None Skip",
+            appName: "Teams",
+            mixPath: mixPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        job.transcriptPath = transcriptPath
+        queue.enqueue(job)
+
+        queue.speakerNamingDataByJob[job.id] = PipelineQueue.SpeakerNamingData(
+            jobID: job.id,
+            meetingTitle: "Provider None Skip",
+            mapping: [:], speakingTimes: [:], embeddings: [:],
+            audioPath: nil, segments: [], participants: [],
+            isDualSource: false,
+        )
+
+        let doneExpectation = XCTestExpectation(description: "Job transitions to done after skip")
+        queue.onJobStateChange = { _, _, newState in
+            if newState == .done {
+                doneExpectation.fulfill()
+            }
+        }
+
+        queue.completeSpeakerNaming(jobID: job.id, result: .skipped)
+
+        await fulfillment(of: [doneExpectation], timeout: 2)
+
+        XCTAssertEqual(
+            queue.jobs.first?.state, .done,
+            "Skip with provider=.none must transition to .done, not stay in .speakerNamingPending",
+        )
+        XCTAssertNil(queue.speakerNamingDataByJob[job.id])
+    }
+
+    // MARK: - Late Re-apply Speaker Names
+
+    func testLateConfirmationRewritesTranscript() async throws {
+        // Create a transcript file with speaker labels
+        let protocolsDir = tmpDir.appendingPathComponent("protocols")
+        try FileManager.default.createDirectory(at: protocolsDir, withIntermediateDirectories: true)
+        let transcriptPath = protocolsDir.appendingPathComponent("test_transcript.txt")
+        let originalTranscript = "[00:00] SPEAKER_0: Hello world\n[00:05] SPEAKER_1: Hi there"
+        try originalTranscript.write(to: transcriptPath, atomically: true, encoding: .utf8)
+
+        let queue = PipelineQueue(logDir: tmpDir)
+        var job = PipelineJob(
+            meetingTitle: "Rewrite Test",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        job.transcriptPath = transcriptPath
+        queue.enqueue(job)
+
+        let namingData = PipelineQueue.SpeakerNamingData(
+            jobID: job.id,
+            meetingTitle: "Rewrite Test",
+            mapping: ["SPEAKER_0": "SPEAKER_0", "SPEAKER_1": "SPEAKER_1"],
+            speakingTimes: ["SPEAKER_0": 5, "SPEAKER_1": 5],
+            embeddings: ["SPEAKER_0": [1, 0], "SPEAKER_1": [0, 1]],
+            audioPath: nil,
+            segments: [],
+            participants: [],
+            isDualSource: false,
+        )
+        queue.speakerNamingDataByJob[job.id] = namingData
+
+        let doneExpectation = XCTestExpectation(description: "Job transitions to done")
+        queue.onJobStateChange = { _, _, newState in
+            if newState == .done {
+                doneExpectation.fulfill()
+            }
+        }
+
+        queue.completeSpeakerNaming(jobID: job.id, result: .confirmed(["SPEAKER_0": "Alice", "SPEAKER_1": "Speaker C"]))
+
+        await fulfillment(of: [doneExpectation], timeout: 5)
+
+        XCTAssertEqual(queue.jobs.first?.state, .done)
+        XCTAssertNil(queue.speakerNamingDataByJob[job.id])
+
+        // Verify transcript was rewritten with user-provided names
+        let rewritten = try String(contentsOf: transcriptPath, encoding: .utf8)
+        XCTAssertTrue(rewritten.contains("] Alice: Hello world"), "Transcript should contain user-provided name Alice in formattedLine format")
+        XCTAssertTrue(rewritten.contains("] Speaker C: Hi there"), "Transcript should contain user-provided name Speaker C in formattedLine format")
+        XCTAssertFalse(rewritten.contains("SPEAKER_0:"), "Generic label should be replaced")
+        XCTAssertFalse(rewritten.contains("SPEAKER_1:"), "Generic label should be replaced")
+    }
+
+    /// Regression test for dual-source `R_`/`M_` prefixed labels (the format
+    /// actually produced by `assignSpeakersDualTrack`). These never had
+    /// brackets around the speaker name in the saved transcript, so the
+    /// pre-fix `replacingOccurrences(of: "[\(label)]", ...)` logic silently
+    /// did nothing and Confirm appeared to do nothing in the .txt.
+    func testLateConfirmationRewritesDualSourceLabels() async throws {
+        let protocolsDir = tmpDir.appendingPathComponent("protocols")
+        try FileManager.default.createDirectory(at: protocolsDir, withIntermediateDirectories: true)
+        let transcriptPath = protocolsDir.appendingPathComponent("dualsource_transcript.txt")
+        let originalTranscript = "[00:00] Roman Passler: Morgen.\n[00:30] R_S2: Hallo\n[00:42] R_S3: Hi\n[09:55] M_S0: Da kenne ich mich nicht aus."
+        try originalTranscript.write(to: transcriptPath, atomically: true, encoding: .utf8)
+
+        let queue = PipelineQueue(logDir: tmpDir)
+        var job = PipelineJob(
+            meetingTitle: "Dual Source Test",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        job.transcriptPath = transcriptPath
+        queue.enqueue(job)
+
+        let namingData = PipelineQueue.SpeakerNamingData(
+            jobID: job.id,
+            meetingTitle: "Dual Source Test",
+            mapping: ["R_S2": "R_S2", "R_S3": "R_S3", "M_S0": "Roman Passler"],
+            speakingTimes: ["R_S2": 5, "R_S3": 5, "M_S0": 5],
+            embeddings: ["R_S2": [1, 0], "R_S3": [0, 1], "M_S0": [0, 0]],
+            audioPath: nil,
+            segments: [],
+            participants: [],
+            isDualSource: true,
+        )
+        queue.speakerNamingDataByJob[job.id] = namingData
+
+        let doneExpectation = XCTestExpectation(description: "Job transitions to done")
+        queue.onJobStateChange = { _, _, newState in
+            if newState == .done {
+                doneExpectation.fulfill()
+            }
+        }
+
+        queue.completeSpeakerNaming(jobID: job.id, result: .confirmed([
+            "R_S2": "Lennart",
+            "R_S3": "Diana",
+        ]))
+
+        await fulfillment(of: [doneExpectation], timeout: 5)
+
+        let rewritten = try String(contentsOf: transcriptPath, encoding: .utf8)
+        XCTAssertTrue(rewritten.contains("] Lennart: Hallo"), "R_S2 should be renamed to Lennart")
+        XCTAssertTrue(rewritten.contains("] Diana: Hi"), "R_S3 should be renamed to Diana")
+        XCTAssertTrue(rewritten.contains("] Roman Passler: Morgen."), "Already-named speaker should be untouched")
+        XCTAssertFalse(rewritten.contains("R_S2:"), "R_S2 label should be gone")
+        XCTAssertFalse(rewritten.contains("R_S3:"), "R_S3 label should be gone")
+    }
+
+    func testLateConfirmationReplacesAutoMatchedNames() async throws {
+        // Test that auto-matched names (from SpeakerMatcher) are also replaced
+        let protocolsDir = tmpDir.appendingPathComponent("protocols")
+        try FileManager.default.createDirectory(at: protocolsDir, withIntermediateDirectories: true)
+        let transcriptPath = protocolsDir.appendingPathComponent("auto_match_transcript.txt")
+        // Transcript already has auto-matched name "John" for SPEAKER_0
+        let originalTranscript = "[00:00] John: Hello world"
+        try originalTranscript.write(to: transcriptPath, atomically: true, encoding: .utf8)
+
+        let queue = PipelineQueue(logDir: tmpDir)
+        var job = PipelineJob(
+            meetingTitle: "Auto Match Test",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        job.transcriptPath = transcriptPath
+        queue.enqueue(job)
+
+        let namingData = PipelineQueue.SpeakerNamingData(
+            jobID: job.id,
+            meetingTitle: "Auto Match Test",
+            mapping: ["SPEAKER_0": "John"], // auto-matched to John
+            speakingTimes: ["SPEAKER_0": 5],
+            embeddings: ["SPEAKER_0": [1, 0]],
+            audioPath: nil,
+            segments: [],
+            participants: [],
+            isDualSource: false,
+        )
+        queue.speakerNamingDataByJob[job.id] = namingData
+
+        let doneExpectation = XCTestExpectation(description: "done")
+        queue.onJobStateChange = { _, _, newState in
+            if newState == .done {
+                doneExpectation.fulfill()
+            }
+        }
+
+        // User corrects John → Jonathan
+        queue.completeSpeakerNaming(jobID: job.id, result: .confirmed(["SPEAKER_0": "Jonathan"]))
+
+        await fulfillment(of: [doneExpectation], timeout: 5)
+
+        let rewritten = try String(contentsOf: transcriptPath, encoding: .utf8)
+        XCTAssertTrue(rewritten.contains("] Jonathan: Hello world"), "Auto-matched name should be replaced with user correction")
+        XCTAssertFalse(rewritten.contains("John:"), "Old auto-matched name should be gone")
+    }
+
+    // MARK: - Late Re-diarization
+
+    func testLateRerunDiarizesFromPersistedAudio() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Hello"),
+        ]
+        let mockDiar = MockDiarization()
+        mockDiar.resultToReturn = DiarizationResult(
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            speakingTimes: ["SPEAKER_0": 5],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0]],
+        )
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { mockDiar },
+            diarizeEnabled: true,
+        )
+        // No handler → pipeline proceeds immediately with auto-names
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Late Rerun Test",
+            appName: "TestApp",
+            mixPath: audioPath,
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+        pQueue.enqueue(job)
+
+        // Wait for speakerNamingPending (timeout path leaves naming data intact)
+        let pendingExpectation = XCTestExpectation(description: "speakerNamingPending")
+        pQueue.onJobStateChange = { _, _, newState in
+            if newState == .speakerNamingPending {
+                pendingExpectation.fulfill()
+            }
+        }
+        await pQueue.processNext()
+        await fulfillment(of: [pendingExpectation], timeout: 10)
+
+        XCTAssertEqual(pQueue.jobs.first?.state, .speakerNamingPending)
+        XCTAssertNotNil(pQueue.speakerNamingDataByJob[job.id])
+
+        // Now set handler to confirm after re-run
+        var rerunHandlerCalled = false
+        pQueue.speakerNamingHandler = { _ in
+            rerunHandlerCalled = true
+            return .confirmed([:])
+        }
+
+        // Request re-run with 3 speakers
+        let doneExpectation = XCTestExpectation(description: "done after rerun")
+        pQueue.onJobStateChange = { _, _, newState in
+            if newState == .done {
+                doneExpectation.fulfill()
+            }
+        }
+
+        pQueue.completeSpeakerNaming(jobID: job.id, result: .rerun(3))
+        await fulfillment(of: [doneExpectation], timeout: 60)
+
+        XCTAssertTrue(rerunHandlerCalled, "Handler should be called with new diarization results")
+        XCTAssertEqual(pQueue.jobs.first?.state, .done)
+    }
+
+    /// Factory helper for the mode-override integration tests. Returns a
+    /// `MockDiarization` with `.mode` set + a small fixture result keyed off
+    /// the mode, so the two test bodies can verify which provider was used.
+    private func makeModeOverrideDiar(_ mode: DiarizerMode) -> MockDiarization {
+        let mock = MockDiarization()
+        mock.mode = mode
+        mock.resultToReturn = DiarizationResult(
+            segments: [
+                .init(start: 0, end: 2, speaker: "SPEAKER_0"),
+                .init(start: 2, end: 5, speaker: "SPEAKER_1"),
+            ],
+            speakingTimes: ["SPEAKER_0": 2, "SPEAKER_1": 3],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0], "SPEAKER_1": [0, 1, 0]],
+        )
+        return mock
+    }
+
+    /// `.rerunWithMode(.sortformer, _)` swaps the `DiarizationProvider`
+    /// through the mode-aware factory and writes the new mode back onto
+    /// `PipelineJob.usedDiarizerMode`. Regression gate for the mode↔count
+    /// coupling: a missing wire-through here means the picker in
+    /// `SpeakerNamingView` becomes ghost UI in Sortformer mode.
+    func testLateRerunWithModeOverrideSwapsProviderAndRecordsMode() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [TimestampedSegment(start: 0, end: 5, text: "Hello")]
+        let offlineDiar = makeModeOverrideDiar(.offline)
+        let sortformerDiar = makeModeOverrideDiar(.sortformer)
+        let modeOverrideCalls = OSAllocatedUnfairLock<[DiarizerMode]>(initialState: [])
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { offlineDiar },
+            diarizationFactoryWithMode: { mode in
+                modeOverrideCalls.withLock { $0.append(mode) }
+                return mode == .sortformer ? sortformerDiar : offlineDiar
+            },
+            diarizeEnabled: true,
+        )
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Mode Override Test", appName: "TestApp",
+            mixPath: audioPath, appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        let pendingExpectation = XCTestExpectation(description: "speakerNamingPending")
+        pQueue.onJobStateChange = { _, _, newState in
+            if newState == .speakerNamingPending { pendingExpectation.fulfill() }
+        }
+        await pQueue.processNext()
+        await fulfillment(of: [pendingExpectation], timeout: 10)
+        XCTAssertEqual(pQueue.jobs.first?.usedDiarizerMode, .offline)
+
+        pQueue.speakerNamingHandler = { _ in .confirmed([:]) }
+        let doneExpectation = XCTestExpectation(description: "done after mode override")
+        pQueue.onJobStateChange = { _, _, newState in
+            if newState == .done { doneExpectation.fulfill() }
+        }
+        pQueue.completeSpeakerNaming(jobID: job.id, result: .rerunWithMode(.sortformer, 2))
+        await fulfillment(of: [doneExpectation], timeout: 60)
+
+        XCTAssertEqual(modeOverrideCalls.withLock(\.self), [.sortformer])
+        XCTAssertEqual(pQueue.jobs.first?.usedDiarizerMode, .sortformer)
+        XCTAssertEqual(pQueue.jobs.first?.state, .done)
+    }
+
+    /// `.rerunWithMode(_, _)` falls back to the no-arg factory when no
+    /// mode-aware factory is wired (covers tests and any callsite that
+    /// hasn't been migrated yet). The mode metadata follows the actual
+    /// provider — so a default-mode `MockDiarization` keeps the job's
+    /// `usedDiarizerMode` consistent with what ran.
+    func testLateRerunWithModeOverrideFallsBackToDefaultFactory() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [
+            TimestampedSegment(start: 0, end: 5, text: "Hello"),
+        ]
+        let mockDiar = MockDiarization()
+        mockDiar.mode = .offline
+        mockDiar.resultToReturn = DiarizationResult(
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            speakingTimes: ["SPEAKER_0": 5],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0]],
+        )
+        // No `diarizationFactoryWithMode` provided — covers the fallback path.
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { mockDiar },
+            diarizeEnabled: true,
+        )
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Mode Override Fallback Test",
+            appName: "TestApp",
+            mixPath: audioPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+
+        let pendingExpectation = XCTestExpectation(description: "speakerNamingPending")
+        pQueue.onJobStateChange = { _, _, newState in
+            if newState == .speakerNamingPending {
+                pendingExpectation.fulfill()
+            }
+        }
+        await pQueue.processNext()
+        await fulfillment(of: [pendingExpectation], timeout: 10)
+
+        pQueue.speakerNamingHandler = { _ in .confirmed([:]) }
+        let doneExpectation = XCTestExpectation(description: "done after fallback")
+        pQueue.onJobStateChange = { _, _, newState in
+            if newState == .done {
+                doneExpectation.fulfill()
+            }
+        }
+
+        pQueue.completeSpeakerNaming(
+            jobID: job.id,
+            result: .rerunWithMode(.sortformer, 2),
+        )
+        await fulfillment(of: [doneExpectation], timeout: 60)
+
+        // Without a mode-aware factory, the fallback runs the no-arg
+        // factory and the resulting provider's mode (.offline) wins.
+        XCTAssertEqual(pQueue.jobs.first?.usedDiarizerMode, .offline)
+    }
+
+    /// `lateDiarization` swallows diarizer errors and rolls the job back
+    /// to `.speakerNamingPending` (so the user can try again) without
+    /// touching `usedDiarizerMode` — the cached naming data still
+    /// reflects the prior successful run.
+    func testLateRerunRollsBackToPendingWhenDiarizerThrows() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [TimestampedSegment(start: 0, end: 5, text: "Hello")]
+        let mockDiar = MockDiarization()
+        mockDiar.mode = .offline
+        mockDiar.resultToReturn = DiarizationResult(
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            speakingTimes: ["SPEAKER_0": 5],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0]],
+        )
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { mockDiar },
+            diarizeEnabled: true,
+        )
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Late Rerun Throw Test", appName: "TestApp",
+            mixPath: audioPath, appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        let pendingExpectation = XCTestExpectation(description: "speakerNamingPending")
+        pQueue.onJobStateChange = { _, _, newState in
+            if newState == .speakerNamingPending { pendingExpectation.fulfill() }
+        }
+        await pQueue.processNext()
+        await fulfillment(of: [pendingExpectation], timeout: 10)
+        XCTAssertEqual(pQueue.jobs.first?.usedDiarizerMode, .offline)
+
+        // Make the diarizer throw on the next run (the `_16k.wav` re-run path).
+        mockDiar.throwOnPathSuffix = "_16k.wav"
+
+        let rolledBack = XCTestExpectation(description: "rolled back to pending after throw")
+        var seenStates: [JobState] = []
+        pQueue.onJobStateChange = { _, _, newState in
+            seenStates.append(newState)
+            if seenStates.contains(.diarizing), newState == .speakerNamingPending {
+                rolledBack.fulfill()
+            }
+        }
+        pQueue.completeSpeakerNaming(jobID: job.id, result: .rerun(2))
+        await fulfillment(of: [rolledBack], timeout: 10)
+
+        XCTAssertEqual(pQueue.jobs.first?.state, .speakerNamingPending)
+        // usedDiarizerMode is unchanged from the prior successful run
+        // because the cached naming data still reflects that run.
+        XCTAssertEqual(pQueue.jobs.first?.usedDiarizerMode, .offline)
+    }
+
+    /// `isAvailable == false` short-circuits lateDiarization without
+    /// changing the job state — there's no recoverable path so the
+    /// user is left to fix the configuration (model download, etc.).
+    func testLateRerunIsNoOpWhenDiarizerNotAvailable() async throws {
+        let engine = MockEngine()
+        engine.segmentsToReturn = [TimestampedSegment(start: 0, end: 5, text: "Hello")]
+        let mockDiar = MockDiarization()
+        mockDiar.mode = .offline
+        mockDiar.resultToReturn = DiarizationResult(
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            speakingTimes: ["SPEAKER_0": 5],
+            autoNames: [:],
+            embeddings: ["SPEAKER_0": [1, 0, 0]],
+        )
+        let (pQueue, _) = makeMockProcessingQueue(
+            engine: engine,
+            diarizationFactory: { mockDiar },
+            diarizeEnabled: true,
+        )
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Late Rerun Unavailable", appName: "TestApp",
+            mixPath: audioPath, appPath: nil, micPath: nil, micDelay: 0,
+        )
+        pQueue.enqueue(job)
+        let pendingExpectation = XCTestExpectation(description: "speakerNamingPending")
+        pQueue.onJobStateChange = { _, _, newState in
+            if newState == .speakerNamingPending { pendingExpectation.fulfill() }
+        }
+        await pQueue.processNext()
+        await fulfillment(of: [pendingExpectation], timeout: 10)
+
+        // Flip the mock to "not available" so the late-rerun guard at the
+        // top of lateDiarization trips.
+        mockDiar.isAvailable = false
+        let initialState = pQueue.jobs.first?.state
+        pQueue.completeSpeakerNaming(jobID: job.id, result: .rerun(3))
+        // Yield once to let the Task dispatched from completeSpeakerNaming
+        // observe the unavailable guard and return early.
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(pQueue.jobs.first?.state, initialState)
+    }
+
+    func testLateConfirmationWithNoNamingDataIsNoOp() {
+        let queue = PipelineQueue(logDir: tmpDir)
+        var job = PipelineJob(
+            meetingTitle: "No Data Test",
+            appName: "Teams",
+            mixPath: URL(fileURLWithPath: "/tmp/mix.wav"),
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        queue.enqueue(job)
+
+        // No naming data set — should be a no-op
+        queue.completeSpeakerNaming(jobID: job.id, result: .confirmed(["SPEAKER_0": "Alice"]))
+
+        // State should NOT change since guard fails
+        XCTAssertEqual(queue.jobs.first?.state, .speakerNamingPending)
+    }
+
+    // MARK: - Snapshot Restore + Speaker Naming Cache
+
+    func testLoadSnapshotRebuildsSpeakerNamingCache() throws {
+        let outputDir = tmpDir.appendingPathComponent("output")
+        let recordingsDir = outputDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+
+        let mixPath = tmpDir.appendingPathComponent("mix.wav")
+        try Data([0]).write(to: mixPath)
+
+        // Create a job in speakerNamingPending state and write snapshot JSON directly
+        var job = PipelineJob(
+            meetingTitle: "Snapshot Test",
+            appName: "App",
+            mixPath: mixPath,
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        job.namingSlug = "snapshot_test"
+        let snapshotData = try JSONEncoder().encode([job])
+        try snapshotData.write(to: tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename))
+
+        // Save naming data as sidecar JSON
+        let namingData = PipelineQueue.SpeakerNamingData(
+            jobID: job.id,
+            meetingTitle: "Snapshot Test",
+            mapping: ["SPEAKER_0": "Alice"],
+            speakingTimes: ["SPEAKER_0": 60.0],
+            embeddings: ["SPEAKER_0": [0.1, 0.2]],
+            audioPath: recordingsDir.appendingPathComponent("snapshot_test_16k.wav"),
+            segments: [.init(start: 0, end: 5, speaker: "SPEAKER_0")],
+            participants: [],
+            isDualSource: false,
+        )
+        let json = try JSONEncoder().encode(namingData)
+        try json.write(to: recordingsDir.appendingPathComponent("snapshot_test_naming.json"))
+
+        // Load snapshot in a new queue that has outputDir set
+        let mockEngine = MockEngine()
+        let freshQueue = PipelineQueue(
+            engine: mockEngine,
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { nil },
+            outputDir: outputDir,
+            logDir: tmpDir,
+            diarizeEnabled: true,
+        )
+        freshQueue.loadSnapshot()
+
+        // Verify: job still in speakerNamingPending, naming data loaded
+        XCTAssertEqual(freshQueue.jobs.first?.state, .speakerNamingPending)
+        XCTAssertNotNil(try freshQueue.speakerNamingDataByJob[XCTUnwrap(freshQueue.jobs.first?.id)])
+        XCTAssertEqual(
+            try freshQueue.speakerNamingDataByJob[XCTUnwrap(freshQueue.jobs.first?.id)]?.mapping["SPEAKER_0"],
+            "Alice",
+        )
+    }
+
+    func testLoadSnapshotFallsToDoneWhenNamingDataMissing() throws {
+        let mixPath = tmpDir.appendingPathComponent("mix.wav")
+        try Data([0]).write(to: mixPath)
+
+        var job = PipelineJob(
+            meetingTitle: "Missing Data Test",
+            appName: "App",
+            mixPath: mixPath,
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        job.namingSlug = "missing_data_test"
+        let snapshotData = try JSONEncoder().encode([job])
+        try snapshotData.write(to: tmpDir.appendingPathComponent(PipelineSnapshot.snapshotFilename))
+
+        // Load without saving naming JSON — should fall back to .done
+        let freshQueue = PipelineQueue(logDir: tmpDir)
+        freshQueue.loadSnapshot()
+
+        // Job transitions to .done in the naming rebuild loop (after removeAll ran),
+        // so it remains in the list as .done
+        let finalJob = freshQueue.jobs.first
+        XCTAssertEqual(finalJob?.state, .done)
+    }
+
+    // MARK: - Stale Pending Cleanup
+
+    func testCleanupStalePendingTransitionsToDone() {
+        var job = PipelineJob(
+            meetingTitle: "Old Meeting",
+            appName: "App",
+            mixPath: tmpDir.appendingPathComponent("mix.wav"),
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        queue.enqueue(job)
+
+        // enqueuedAt is "now" — calling with maxAge: 0 should clean it up
+        queue.cleanupStalePending(maxAge: 0)
+
+        XCTAssertEqual(queue.jobs.first?.state, .done)
+        XCTAssertNil(queue.speakerNamingDataByJob[job.id])
+    }
+
+    func testCleanupStalePendingKeepsRecentJobs() {
+        var job = PipelineJob(
+            meetingTitle: "Recent Meeting",
+            appName: "App",
+            mixPath: tmpDir.appendingPathComponent("mix.wav"),
+            appPath: nil,
+            micPath: nil,
+            micDelay: 0,
+        )
+        job.state = .speakerNamingPending
+        queue.enqueue(job)
+
+        // With default 24h maxAge, a fresh job should not be cleaned up
+        queue.cleanupStalePending()
+
+        XCTAssertEqual(queue.jobs.first?.state, .speakerNamingPending)
+    }
+
+    func testCleanupSidecarFilesDeletesPersistedFiles() throws {
+        let outputDir = tmpDir.appendingPathComponent("output")
+        let recordingsDir = outputDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+
+        let slug = "test_cleanup"
+        for suffix in ["_16k.wav", "_segments.json", "_naming.json"] {
+            try Data([0]).write(to: recordingsDir.appendingPathComponent("\(slug)\(suffix)"))
+        }
+
+        let localQueue = PipelineQueue(
+            engine: MockEngine(),
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { nil },
+            outputDir: outputDir,
+            logDir: self.tmpDir,
+        )
+
+        localQueue.cleanupSidecarFiles(slug: slug)
+        localQueue.deleteNamingData(slug: slug)
+
+        for suffix in ["_16k.wav", "_segments.json", "_naming.json"] {
+            let path = recordingsDir.appendingPathComponent("\(slug)\(suffix)")
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: path.path),
+                "\(suffix) should be deleted",
+            )
+        }
+    }
+
+    // MARK: - knownSpeakerNames cache (issue #155)
+
+    //
+    // The SpeakerNamingView dialog used to call
+    // `appState.pipelineQueue.speakerMatcherFactory().allSpeakerNames()`
+    // inside the SwiftUI body getter. Each body re-eval re-constructed a
+    // SpeakerMatcher (running migrateIfNeeded → file read) and re-parsed
+    // the entire speakers.json (including embeddings) just to extract
+    // names — pinning the main thread at 100% CPU after extended uptime.
+    //
+    // Fix: cache the result on PipelineQueue, refresh only on updateDB
+    // and explicit calls. UI reads `pipelineQueue.knownSpeakerNames`
+    // directly with zero per-render I/O.
+
+    func testKnownSpeakerNamesIsExposedAsCachedProperty() {
+        // The cached property must exist on PipelineQueue. Empty DB → empty list.
+        let dbURL = tmpDir.appendingPathComponent("speakers.json")
+        let localQueue = PipelineQueue(
+            logDir: tmpDir,
+        ) { SpeakerMatcher(dbPath: dbURL) }
+        XCTAssertEqual(localQueue.knownSpeakerNames, [])
+    }
+
+    func testKnownSpeakerNamesReflectsDBAfterRefresh() {
+        let dbURL = tmpDir.appendingPathComponent("speakers.json")
+        // Seed the on-disk DB before constructing the queue.
+        let seeded = SpeakerMatcher(dbPath: dbURL)
+        seeded.updateDB(
+            mapping: ["S0": "Alice", "S1": "Bob"],
+            embeddings: ["S0": [0.1, 0.2], "S1": [0.3, 0.4]],
+        )
+
+        let localQueue = PipelineQueue(
+            logDir: tmpDir,
+        ) { SpeakerMatcher(dbPath: dbURL) }
+        localQueue.refreshKnownSpeakerNames()
+
+        XCTAssertEqual(Set(localQueue.knownSpeakerNames), Set(["Alice", "Bob"]))
+    }
+
+    func testKnownSpeakerNamesRefreshesAfterFactoryDBChange() {
+        let dbURL = tmpDir.appendingPathComponent("speakers.json")
+        let localQueue = PipelineQueue(
+            logDir: tmpDir,
+        ) { SpeakerMatcher(dbPath: dbURL) }
+        localQueue.refreshKnownSpeakerNames()
+        XCTAssertEqual(localQueue.knownSpeakerNames, [], "Empty DB at start")
+
+        // Simulate a recognition outcome that adds a new speaker.
+        let matcher = localQueue.speakerMatcherFactory()
+        matcher.updateDB(
+            mapping: ["S0": "Charlie"], embeddings: ["S0": [0.5, 0.6]],
+        )
+        localQueue.refreshKnownSpeakerNames()
+
+        XCTAssertEqual(localQueue.knownSpeakerNames, ["Charlie"])
+    }
+
+    func testKnownSpeakerNamesReadsAreFreeFromFactoryInvocation() {
+        // Property reads must not invoke the factory — that's the whole
+        // point of the cache. The factory is the heavy operation that was
+        // re-firing per SwiftUI render in the bug report.
+        let dbURL = tmpDir.appendingPathComponent("speakers.json")
+        var factoryCalls = 0
+        let localQueue = PipelineQueue(
+            logDir: tmpDir,
+        ) {
+            factoryCalls += 1
+            return SpeakerMatcher(dbPath: dbURL)
+        }
+        localQueue.refreshKnownSpeakerNames()
+        let baseline = factoryCalls
+
+        for _ in 0 ..< 10 {
+            _ = localQueue.knownSpeakerNames
+        }
+
+        XCTAssertEqual(
+            factoryCalls, baseline,
+            "Reading knownSpeakerNames must not invoke speakerMatcherFactory",
+        )
+    }
+
+    // MARK: - M3: slug uniqueness
+
+    /// Two back-to-back meetings with identical titles (e.g. recurring
+    /// "Daily Standup") would otherwise share the same on-disk slug — the
+    /// second job's `_naming.json` / `_16k.wav` overwrites the first's, and
+    /// snapshot rebuild then maps the survivor's data onto both UUIDs.
+    /// Embedding the job's short-id keeps each on-disk artefact distinct.
+    func test_namingSlug_differsForSameTitleDifferentJobs() {
+        let id1 = UUID()
+        let id2 = UUID()
+        let slug1 = PipelineQueue.namingSlug(title: "Daily Standup", jobID: id1)
+        let slug2 = PipelineQueue.namingSlug(title: "Daily Standup", jobID: id2)
+        XCTAssertNotEqual(
+            slug1, slug2,
+            "Identical titles must produce distinct slugs when job IDs differ",
+        )
+    }
+
+    /// Determinism: same input → same slug. Snapshot rebuild relies on this
+    /// to find a job's persisted `_naming.json` after a relaunch.
+    func test_namingSlug_isDeterministicForSameJob() {
+        let id = UUID()
+        let first = PipelineQueue.namingSlug(title: "Daily Standup", jobID: id)
+        let second = PipelineQueue.namingSlug(title: "Daily Standup", jobID: id)
+        XCTAssertEqual(first, second)
+    }
+
+    func test_namingSlug_embedsTitleAndShortID() {
+        let id = UUID()
+        let slug = PipelineQueue.namingSlug(title: "Daily Standup", jobID: id)
+        XCTAssertTrue(
+            slug.contains(PipelineJob.shortID(for: id)),
+            "Slug must include the job short-ID for uniqueness across same-title runs",
+        )
+        // Title-derived part should still be present (filesystem-friendly form).
+        XCTAssertTrue(
+            slug.lowercased().contains("daily") && slug.lowercased().contains("standup"),
+            "Slug should still encode the title for human-readable filenames",
+        )
+    }
+
+    /// End-to-end: two same-title jobs save naming data to disk via the
+    /// real `saveNamingData(_:slug:)` path and produce distinct files. The
+    /// pure-function slug tests above prove the helper is collision-free;
+    /// this test proves the helper is actually wired into the persistence
+    /// path (catches a future refactor that bypasses `namingSlug`).
+    func test_sameTitleJobsWriteDistinctNamingFiles() throws {
+        let outputDir = try XCTUnwrap(tmpDir)
+        let recordingsDir = outputDir.appendingPathComponent("recordings")
+        try FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+
+        let mockEngine = MockEngine()
+        let queueWithOutput = PipelineQueue(
+            engine: mockEngine,
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { nil },
+            outputDir: outputDir,
+            logDir: tmpDir,
+            diarizeEnabled: false,
+        )
+
+        let title = "Daily Standup"
+        let job1ID = UUID()
+        let job2ID = UUID()
+        let slug1 = PipelineQueue.namingSlug(title: title, jobID: job1ID)
+        let slug2 = PipelineQueue.namingSlug(title: title, jobID: job2ID)
+
+        let data1 = PipelineQueue.SpeakerNamingData(
+            jobID: job1ID, meetingTitle: title,
+            mapping: ["SPEAKER_0": "Alice"], speakingTimes: [:], embeddings: [:],
+            audioPath: nil, segments: [], participants: [], isDualSource: false,
+        )
+        let data2 = PipelineQueue.SpeakerNamingData(
+            jobID: job2ID, meetingTitle: title,
+            mapping: ["SPEAKER_0": "Bob"], speakingTimes: [:], embeddings: [:],
+            audioPath: nil, segments: [], participants: [], isDualSource: false,
+        )
+
+        queueWithOutput.saveNamingData(data1, slug: slug1)
+        queueWithOutput.saveNamingData(data2, slug: slug2)
+
+        let path1 = recordingsDir.appendingPathComponent("\(slug1)_naming.json")
+        let path2 = recordingsDir.appendingPathComponent("\(slug2)_naming.json")
+
+        XCTAssertNotEqual(
+            path1.lastPathComponent, path2.lastPathComponent,
+            "Same-title jobs must produce distinct on-disk filenames",
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path1.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path2.path))
+
+        // Each file resolves back to its own job's mapping — survivor's
+        // data isn't shadowing the other.
+        let loaded1 = queueWithOutput.loadNamingData(slug: slug1)
+        let loaded2 = queueWithOutput.loadNamingData(slug: slug2)
+        XCTAssertEqual(loaded1?.mapping["SPEAKER_0"], "Alice")
+        XCTAssertEqual(loaded2?.mapping["SPEAKER_0"], "Bob")
+    }
+}

@@ -1,0 +1,827 @@
+// swiftlint:disable file_length
+// `@preconcurrency`: AVFoundation types lack Sendable annotations —
+// same gap as AudioMixer.swift; preemptively guarded.
+@preconcurrency import AVFoundation
+import SwiftUI
+
+/// NSTextField subclass that forwards accessibility `set value` (AppleScript)
+/// to the delegate so the SwiftUI Binding stays in sync.
+private final class AutomationTextField: NSTextField {
+    override func setAccessibilityValue(_ value: Any?) {
+        guard let str = value as? String else { return }
+        stringValue = str
+        NotificationCenter.default.post(
+            name: NSControl.textDidChangeNotification, object: self,
+        )
+    }
+}
+
+/// NSTextField wrapper that syncs accessibility `set value` to the Binding.
+/// Standard SwiftUI TextField ignores programmatic accessibility value changes
+/// (e.g. from AppleScript `set value of text field`), which breaks UI automation.
+struct AccessibleTextField: NSViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+    var identifier: String
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = AutomationTextField()
+        field.placeholderString = placeholder
+        field.setAccessibilityIdentifier(identifier)
+        field.bezelStyle = .roundedBezel
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ nsView: NSTextField, context _: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
+    }
+}
+
+/// Format seconds as "Xs" or "M:SS".
+func formattedTime(_ seconds: Double) -> String {
+    let m = Int(seconds) / 60
+    let s = Int(seconds) % 60
+    return m > 0 ? "\(m):\(String(format: "%02d", s))" : "\(s)s"
+}
+
+/// Window that lets the user name speakers after diarization.
+struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
+    let data: PipelineQueue.SpeakerNamingData
+    /// Names of speakers known from previous meetings, surfaced as quick-pick chips
+    /// in addition to the current meeting's participants. Empty array hides the row.
+    let knownSpeakerNames: [String]
+    /// Diarizer mode used to produce `data`. Initial value for the re-run
+    /// mode picker. `nil` for legacy jobs without a recorded mode — the
+    /// picker initialises to `.offline` in that case.
+    let currentDiarizerMode: DiarizerMode?
+    let onComplete: (PipelineQueue.SpeakerNamingResult) -> Void
+
+    /// Window after the dialog appears (or after Re-run produces a fresh `data.revision`)
+    /// during which Confirm and Skip remain disabled. Prevents accidental confirms from
+    /// stray Enter/Escape keystrokes that leak from another app's focus when
+    /// `bringWindowToFront` steals focus mid-keystroke. Historical pipeline_log data
+    /// shows ~19% of speaker-naming sessions exiting within 2-3 s — an isolated cluster
+    /// outside the log-normal human-confirm distribution. See
+    /// `docs/plans/.local/research/2026-05-19-late-speaker-renaming-after-done.md`.
+    static let defaultKeyboardGracePeriod: TimeInterval = 0.75
+
+    let gracePeriod: TimeInterval
+
+    init(
+        data: PipelineQueue.SpeakerNamingData,
+        knownSpeakerNames: [String] = [],
+        currentDiarizerMode: DiarizerMode? = nil,
+        gracePeriod: TimeInterval = Self.defaultKeyboardGracePeriod,
+        onComplete: @escaping (PipelineQueue.SpeakerNamingResult) -> Void,
+    ) {
+        self.data = data
+        self.knownSpeakerNames = knownSpeakerNames
+        self.currentDiarizerMode = currentDiarizerMode
+        self.gracePeriod = gracePeriod
+        self.onComplete = onComplete
+        // Seed `names` and `rerunCount` synchronously so the view renders
+        // its chip rows on first body evaluation (the chips depend on
+        // `index < names.count`). `.onAppear` re-runs the same logic for
+        // belt-and-braces, but this lets ViewInspector tests + tests that
+        // never trigger SwiftUI lifecycle still see the correct surface.
+        let speakerList = Self.computeSpeakers(from: data)
+        _names = State(initialValue: Self.computeInitialNames(speakers: speakerList))
+        let initialMode = currentDiarizerMode ?? .offline
+        _rerunMode = State(initialValue: initialMode)
+        let initialCount = max(2, speakerList.count + 1)
+        _rerunCount = State(initialValue: Self.clampCount(initialCount, for: initialMode))
+        // Initialize the grace-period gate to "active" when the period is positive
+        // so the buttons start disabled. When tests pass gracePeriod = 0 the gate
+        // starts open (no grace) and the unlock task is a no-op.
+        _keyboardGracePeriodActive = State(initialValue: gracePeriod > 0)
+    }
+
+    /// Clamp a desired speaker count to the cap that applies for the
+    /// given mode. Returns at most the upper bound of `rerunCountRange`
+    /// so callers can write the result back into the Stepper without
+    /// risking an out-of-range value on the next frame.
+    /// Pure so tests can pin it without instantiating the view.
+    static func clampCount(_ count: Int, for mode: DiarizerMode) -> Int {
+        max(1, min(count, rerunCountRange(for: mode).upperBound))
+    }
+
+    /// Re-run Stepper range for the given mode.
+    static func rerunCountRange(for mode: DiarizerMode) -> ClosedRange<Int> {
+        1 ... mode.speakerCap
+    }
+
+    @State private var keyboardGracePeriodActive: Bool = true
+    @State private var names: [String] = []
+    /// Job-ID for which this view has already fired `onComplete`. Tracked
+    /// per-job (not just a Bool) so that when the window switches to a
+    /// different pending job, the `Confirm` / `Skip` / `Re-run` buttons
+    /// are responsive again. Previous Bool-only guard could get stuck
+    /// across multi-job switching, leaving the dialog effectively dead.
+    @State private var completedJobID: UUID?
+    @State private var player: AVAudioPlayer?
+    @State private var playingLabel: String?
+    @State private var rerunMode: DiarizerMode = .offline
+    @State private var rerunCount: Int = 2
+    /// Indices of speaker rows where the user clicked "More…" to reveal the full
+    /// known-names list instead of the top-N ranked subset.
+    @State private var knownExpanded: Set<Int> = []
+    /// Whether the secondary "Wrong number of speakers?" disclosure (Re-run
+    /// controls) is expanded. Collapsed by default so naming stays the focus;
+    /// reset on job-switch alongside `knownExpanded`.
+    @State private var rerunExpanded: Bool = false
+    /// Number of "Known:" chips shown by default before "More…" appears.
+    private static let knownChipsCollapsedLimit = 8
+
+    private var speakers: [(label: String, autoName: String?, speakingTime: Double)] {
+        Self.computeSpeakers(from: data)
+    }
+
+    /// Re-run controls: mode picker, speaker-count Stepper, and Re-run button.
+    /// Stepper range narrows in Sortformer mode (1...4); mode-flip clamps
+    /// `rerunCount` to the new range. Re-run posts `.rerunWithMode(mode, count)`
+    /// when the picked mode differs from `currentDiarizerMode`, otherwise the
+    /// legacy `.rerun(count)` form (so consumers that don't care about
+    /// mode-switching stay unaffected).
+    /// Re-run controls collapsed into a secondary disclosure so they don't
+    /// compete with the name fields. `rerunExpanded` is a pure UI-local toggle
+    /// (also reset on job-switch in `resetForCurrentPresentation`). The
+    /// disclosure CONTENT keeps every control + conditional unchanged.
+    private var rerunSection: some View {
+        DisclosureGroup(isExpanded: $rerunExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    // Hide the mode picker for callers that don't track per-job
+                    // diarizer mode (currently the voice-enrollment flow): they
+                    // can't honour `.rerunWithMode`, so a visible-but-inert
+                    // picker would silently discard the user's choice.
+                    if currentDiarizerMode != nil {
+                        rerunModePicker
+                    }
+                    Stepper(
+                        "\(rerunCount) speakers", value: $rerunCount,
+                        in: Self.rerunCountRange(for: rerunMode),
+                    )
+                    .font(.caption)
+                    .accessibilityIdentifier("rerun-stepper")
+                    rerunButton
+                }
+                if currentDiarizerMode != nil, rerunMode == .sortformer {
+                    Text("Sortformer caps at \(DiarizerMode.sortformer.speakerCap) speakers — switch to Offline for larger meetings.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("sortformer-cap-hint")
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Wrong number of speakers?")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var rerunModePicker: some View {
+        Picker("", selection: $rerunMode) {
+            Text("Sortformer").tag(DiarizerMode.sortformer)
+            Text("Offline").tag(DiarizerMode.offline)
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 200)
+        .font(.caption)
+        .accessibilityIdentifier("rerun-mode-picker")
+        .onChange(of: rerunMode) { _, newMode in
+            rerunCount = Self.clampCount(rerunCount, for: newMode)
+        }
+    }
+
+    private var rerunButton: some View {
+        Button("Re-run") {
+            guard completedJobID != data.jobID else { return }
+            completedJobID = data.jobID
+            player?.stop()
+            // `nil` currentDiarizerMode = legacy / enrollment caller that
+            // doesn't track per-job mode → keep the legacy `.rerun(count)`
+            // shape so those consumers stay unaffected. When the caller
+            // provides a mode, always fire `.rerunWithMode` so the picker's
+            // selection is authoritative — even when it matches the
+            // recorded mode. Otherwise lateDiarization would fall back to
+            // the no-arg factory (current global setting), which can differ
+            // from the recorded mode if the user touched Settings between
+            // recording and re-run.
+            if currentDiarizerMode != nil {
+                onComplete(.rerunWithMode(rerunMode, rerunCount))
+            } else {
+                onComplete(.rerun(rerunCount))
+            }
+        }
+        .font(.caption)
+        .accessibilityIdentifier("rerun-button")
+    }
+
+    static func computeSpeakers(
+        from data: PipelineQueue.SpeakerNamingData,
+    ) -> [(label: String, autoName: String?, speakingTime: Double)] {
+        data.mapping.keys.sorted().map { label in
+            let autoName = data.mapping[label]
+            let isAutoNamed = autoName != nil && autoName != label
+            return (
+                label: label,
+                autoName: isAutoNamed ? autoName : nil,
+                speakingTime: data.speakingTimes[label] ?? 0,
+            )
+        }
+    }
+
+    var body: some View {
+        // swiftlint:disable:next closure_body_length
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Name Speakers")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text("\"\(data.meetingTitle)\"")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("Confirm or rename each detected speaker")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollView {
+                VStack(spacing: 16) {
+                    ForEach(Array(speakers.enumerated()), id: \.element.label) { index, speaker in
+                        speakerRow(index: index, speaker: speaker)
+                    }
+                }
+            }
+            .frame(minHeight: 200, maxHeight: 420)
+
+            Divider()
+
+            rerunSection
+
+            HStack(spacing: 12) {
+                Button("Skip") {
+                    guard completedJobID != data.jobID else { return }
+                    completedJobID = data.jobID
+                    onComplete(.skipped)
+                }
+                .keyboardShortcut(.escape)
+                .controlSize(.large)
+                .disabled(keyboardGracePeriodActive)
+                .accessibilityIdentifier("skip-button")
+
+                Spacer()
+
+                Button("Confirm") {
+                    guard completedJobID != data.jobID else { return }
+                    completedJobID = data.jobID
+                    confirm()
+                }
+                .keyboardShortcut(.return)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(keyboardGracePeriodActive)
+                .accessibilityIdentifier("confirm-button")
+            }
+        }
+        .padding(20)
+        .frame(
+            minWidth: 440, idealWidth: 480, maxWidth: 560,
+            minHeight: 360, idealHeight: 520, maxHeight: 760,
+        )
+        .id(data.meetingTitle)
+        .onAppear { resetForCurrentPresentation() }
+        // After Re-run, lateDiarization replaces the SpeakerNamingData for
+        // the same jobID. Watching `data.revision` (a fresh UUID per
+        // instance) fires reliably even when the new mapping happens to be
+        // byte-identical to the previous one — otherwise the per-job
+        // `completedJobID` guard kept Confirm/Skip/Re-run dead.
+        .onChange(of: data.revision) { _, _ in
+            resetForCurrentPresentation()
+        }
+        // Keyboard-grace gate: keep Confirm + Skip disabled for `gracePeriod`
+        // seconds after the dialog appears AND after each Re-run produces a
+        // fresh `data.revision`. The `task(id:)` cancels + restarts when
+        // `data.revision` changes, re-locking the buttons each time.
+        .task(id: data.revision) {
+            guard gracePeriod > 0 else {
+                keyboardGracePeriodActive = false
+                return
+            }
+            keyboardGracePeriodActive = true
+            try? await Task.sleep(for: .seconds(gracePeriod))
+            if !Task.isCancelled {
+                keyboardGracePeriodActive = false
+            }
+        }
+        // No onDisappear → .skipped: in the non-blocking architecture closing
+        // the window (Cmd+Q, click X, app quit) leaves the job in
+        // .speakerNamingPending so the user can re-open later. Explicit Skip
+        // button still calls onComplete(.skipped).
+    }
+
+    /// Re-seed all per-presentation @State from the current `data`. Called
+    /// on first appearance and again whenever `data.mapping` changes (the
+    /// signal that lateDiarization replaced the speakers for this jobID).
+    private func resetForCurrentPresentation() {
+        completedJobID = nil
+        names = Self.computeInitialNames(speakers: speakers)
+        // Re-seed `rerunMode` from the prop so cross-job dialog switches
+        // (same view identity, different data) start with the correct
+        // picker selection instead of inheriting the previous job's mode.
+        // Then clamp the count to the active mode's Stepper range so the
+        // value never sits outside `in:` on first frame (Sortformer caps
+        // at 4 even when the diarizer detected 4 speakers, which would
+        // otherwise compute max(2, 4+1) = 5).
+        let mode = currentDiarizerMode ?? rerunMode
+        rerunMode = mode
+        rerunCount = Self.clampCount(max(2, speakers.count + 1), for: mode)
+        // Indices are speaker-position based; a different speaker count would
+        // leave stale entries pointing at no-longer-rendered rows.
+        knownExpanded.removeAll()
+        // Collapse the secondary Re-run disclosure on job-switch so each new
+        // presentation opens focused on naming.
+        rerunExpanded = false
+    }
+
+    private func speakerRow(
+        index: Int,
+        speaker: (label: String, autoName: String?, speakingTime: Double),
+    ) -> some View {
+        // swiftlint:disable:next closure_body_length
+        GroupBox {
+            // swiftlint:disable:next closure_body_length
+            HStack(alignment: .top, spacing: 12) {
+                // Neutral monochrome swatch with the speaker initial —
+                // purely decorative (no accessibility id, no behaviour).
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.quaternary)
+                    .frame(width: 28, height: 28)
+                    .overlay(
+                        Text(Self.swatchInitial(label: speaker.label, autoName: speaker.autoName))
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.secondary),
+                    )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(speaker.label)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+
+                        if data.audioPath != nil {
+                            Button {
+                                playSpeakerSnippet(label: speaker.label)
+                            } label: {
+                                Image(systemName: playingLabel == speaker.label
+                                    ? "stop.circle.fill" : "play.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("play-\(speaker.label)")
+                        }
+
+                        Spacer()
+                        Text("(\(formattedTime(speaker.speakingTime)))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let autoName = speaker.autoName {
+                        Text("Auto: \(autoName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Unknown")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if index < names.count {
+                        nameField(for: index, label: speaker.label)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 2)
+                        suggestionChips(for: index)
+                    }
+                }
+            }
+            .padding(4)
+        }
+    }
+
+    /// Decorative initial for the row swatch: first character of the auto-name
+    /// when present, otherwise the trailing digits of a `SPEAKER_NN` label
+    /// (falling back to the label's first character). Pure + presentation-only.
+    static func swatchInitial(label: String, autoName: String?) -> String {
+        if let autoName, let first = autoName.first {
+            return String(first).uppercased()
+        }
+        let trailingDigits = String(label.reversed().prefix { $0.isNumber }.reversed())
+        if !trailingDigits.isEmpty {
+            // Drop leading zeros for a compact glyph (e.g. "00" → "0", "01" → "1").
+            return String(Int(trailingDigits) ?? 0)
+        }
+        return label.first.map { String($0).uppercased() } ?? "?"
+    }
+
+    private func nameField(for index: Int, label: String) -> some View {
+        AccessibleTextField(
+            text: $names[index],
+            placeholder: "Name",
+            identifier: "speaker-name-\(label)",
+        )
+    }
+
+    /// Live-filtered chip rows. Typing in the field shrinks both rows to names
+    /// matching the query — typing IS the filter UI, no separate dropdown.
+    /// Same name in multiple rows is allowed (legitimate in dual-track when
+    /// M_ and R_ pick up the same speaker).
+    @ViewBuilder
+    private func suggestionChips(for index: Int) -> some View {
+        let query = index < names.count ? names[index] : ""
+        participantChips(for: index, query: query)
+        knownChips(for: index, query: query)
+    }
+
+    @ViewBuilder
+    private func participantChips(for index: Int, query: String) -> some View {
+        let participants = Self.filterByQuery(names: data.participants, query: query)
+        if !participants.isEmpty {
+            chipRow(names: participants, idPrefix: "participant-name-") { names[index] = $0 }
+        }
+    }
+
+    @ViewBuilder
+    private func knownChips(for index: Int, query: String) -> some View {
+        let known = Self.filterByQuery(names: knownNamesNotInParticipants, query: query)
+        if !known.isEmpty {
+            let autoName = index < speakers.count ? speakers[index].autoName : nil
+            let ranked = Self.rankedKnownNames(
+                known: known, autoName: autoName, participants: data.participants,
+            )
+            let expanded = knownExpanded.contains(index)
+            // Don't bother with the Top-N cap once the user has typed — they're
+            // already looking at a filtered short list.
+            let limit = query.isEmpty ? Self.knownChipsCollapsedLimit : ranked.count
+            let visible = expanded ? ranked : Array(ranked.prefix(limit))
+            let hidden = ranked.count - visible.count
+            let speakerLabel = index < speakers.count ? speakers[index].label : "\(index)"
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Known:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ChipFlowLayout(spacing: 4) {
+                    ForEach(visible, id: \.self) { name in
+                        chipButton(label: name, identifier: "known-name-\(name)") {
+                            names[index] = name
+                        }
+                    }
+                    if hidden > 0 {
+                        chipMoreButton(
+                            label: "More (\(hidden))…",
+                            identifier: "known-more-\(speakerLabel)",
+                        ) { knownExpanded.insert(index) }
+                    } else if expanded, ranked.count > Self.knownChipsCollapsedLimit {
+                        chipMoreButton(
+                            label: "Less",
+                            identifier: "known-less-\(speakerLabel)",
+                        ) { knownExpanded.remove(index) }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Known speakers minus participants (avoids duplicate chips when a known
+    /// speaker is also a meeting participant).
+    private var knownNamesNotInParticipants: [String] {
+        let participantSet = Set(data.participants)
+        return knownSpeakerNames.filter { !participantSet.contains($0) }
+    }
+
+    private func chipRow(
+        names: [String], idPrefix: String, onSelect: @escaping (String) -> Void,
+    ) -> some View {
+        ChipFlowLayout(spacing: 4) {
+            ForEach(names, id: \.self) { name in
+                chipButton(label: name, identifier: "\(idPrefix)\(name)") { onSelect(name) }
+            }
+        }
+    }
+
+    private func chipButton(
+        label: String, identifier: String, action: @escaping () -> Void,
+    ) -> some View {
+        Button(label, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .font(.caption)
+            .accessibilityIdentifier(identifier)
+    }
+
+    private func chipMoreButton(
+        label: String, identifier: String, action: @escaping () -> Void,
+    ) -> some View {
+        Button(label, action: action)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .font(.caption)
+            .accessibilityIdentifier(identifier)
+    }
+
+    /// Play the longest temporally-pure segment of a speaker from the audio file.
+    private func playSpeakerSnippet(label: String) {
+        // Stop if already playing this speaker
+        if playingLabel == label {
+            player?.stop()
+            player = nil
+            playingLabel = nil
+            return
+        }
+
+        guard let audioPath = data.audioPath else { return }
+
+        // Pick the longest pure segment to avoid cross-voice contamination.
+        guard let chosen = Self.selectSampleSegment(for: label, in: data.segments) else { return }
+
+        // Perform file I/O off the main thread
+        Task.detached { [audioPath, chosen] in
+            do {
+                let (samples, sampleRate) = try await AudioMixer.loadAudioAsFloat32(url: audioPath)
+                guard let range = Self.sampleRange(
+                    start: chosen.start,
+                    end: chosen.end,
+                    sampleRate: sampleRate,
+                    totalSamples: samples.count,
+                ) else { return }
+
+                let snippet = Array(samples[range])
+                let tmpPath = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("speaker_\(label).wav")
+                try AudioMixer.saveWAV(samples: snippet, sampleRate: sampleRate, url: tmpPath)
+
+                let newPlayer = try AVAudioPlayer(contentsOf: tmpPath)
+                let duration = newPlayer.duration
+
+                await MainActor.run {
+                    player?.stop()
+                    player = newPlayer
+                    player?.play()
+                    playingLabel = label
+                }
+
+                // Reset icon when done
+                try? await Task.sleep(for: .seconds(duration + 0.1))
+                await MainActor.run {
+                    if playingLabel == label {
+                        playingLabel = nil
+                    }
+                }
+            } catch {
+                // Silently fail — playback is best-effort
+            }
+        }
+    }
+
+    /// Picks the longest-duration segment attributed to `label` so the
+    /// playback snippet is the speaker's most representative sample.
+    /// Returns nil when the speaker has no segments. Pure for testability —
+    /// `playSpeakerSnippet`'s detached I/O path stays unchanged.
+    static func longestSegment(
+        forSpeaker label: String,
+        in segments: [PipelineQueue.SpeakerNamingData.Segment],
+    ) -> PipelineQueue.SpeakerNamingData.Segment? {
+        segments
+            .filter { $0.speaker == label }
+            .max { ($0.end - $0.start) < ($1.end - $1.start) }
+    }
+
+    private func confirm() {
+        player?.stop()
+        let mapping = Self.buildSpeakerMapping(speakers: speakers, names: names)
+        onComplete(.confirmed(mapping))
+    }
+
+    // MARK: - Pure Functions (testable without UI)
+
+    /// Maps a [start, end] time range (seconds) to a clamped half-open sample range,
+    /// rounding down to whole samples. Returns `nil` when the resulting range is
+    /// empty (start >= end after clamping/conversion). Multiplies before truncation
+    /// so fractional starts (e.g. 1.7s) preserve precision; the previous inline code
+    /// did `Int(start) * sampleRate`, which discarded the sub-second offset and shifted
+    /// playback by up to ~1s into a different speaker.
+    nonisolated static func sampleRange(
+        start: TimeInterval,
+        end: TimeInterval,
+        sampleRate: Int,
+        totalSamples: Int,
+    ) -> Range<Int>? {
+        let startSample = max(0, Int(start * Double(sampleRate)))
+        let endSample = min(totalSamples, Int(end * Double(sampleRate)))
+        guard startSample < endSample else { return nil }
+        return startSample ..< endSample
+    }
+
+    /// Picks the longest temporally-pure segment for `label`, falling back to
+    /// `longestSegment` when no pure segment ≥ `minDuration` exists. A segment is
+    /// "pure" when no other speaker has any segment overlapping the window
+    /// `[c.start - purityWindow, c.end + purityWindow]`. Used to avoid
+    /// cross-voice contamination in the speaker-naming dialog playback.
+    static func selectSampleSegment(
+        for label: String,
+        in segments: [PipelineQueue.SpeakerNamingData.Segment],
+        minDuration: TimeInterval = 1.5,
+        purityWindow: TimeInterval = 0.5,
+    ) -> PipelineQueue.SpeakerNamingData.Segment? {
+        let own = segments.filter { $0.speaker == label }
+        guard !own.isEmpty else { return nil }
+        let others = segments.filter { $0.speaker != label }
+        let pure = own
+            .filter { c in
+                (c.end - c.start) >= minDuration
+                    && !others.contains { $0.start < c.end + purityWindow && c.start - purityWindow < $0.end }
+            }
+            .max { ($0.end - $0.start) < ($1.end - $1.start) }
+        return pure ?? longestSegment(forSpeaker: label, in: segments)
+    }
+
+    /// Computes initial text field names from speaker auto-name mappings.
+    static func computeInitialNames(
+        speakers: [(label: String, autoName: String?, speakingTime: Double)],
+    ) -> [String] {
+        speakers.map { $0.autoName ?? "" }
+    }
+
+    /// Filter names against the user's current input. Empty query → unchanged.
+    /// Non-empty → prefix-of-any-token matches first, then contains-substring,
+    /// both case-insensitive, stable within each tier.
+    static func filterByQuery(names: [String], query: String) -> [String] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return names }
+        let needle = trimmed.lowercased()
+        var prefix: [String] = []
+        var contains: [String] = []
+        for name in names {
+            let lower = name.lowercased()
+            if lower.split(separator: " ").contains(where: { $0.hasPrefix(needle) }) {
+                prefix.append(name)
+            } else if lower.contains(needle) {
+                contains.append(name)
+            }
+        }
+        return prefix + contains
+    }
+
+    private enum NameRelevance: Int, Comparable {
+        case autoNameMatch = 0
+        case participantMatch = 1
+        case other = 2
+        static func < (lhs: Self, rhs: Self) -> Bool {
+            lhs.rawValue < rhs.rawValue
+        }
+    }
+
+    /// Sort known names by relevance for the "Known:" chips:
+    /// 1. First-token matches the auto-name (case-insensitive).
+    /// 2. First-token matches a meeting participant.
+    /// 3. Remaining names in input order.
+    /// Stable within each tier.
+    static func rankedKnownNames(
+        known: [String], autoName: String?, participants: [String],
+    ) -> [String] {
+        let autoToken = (autoName.map(firstToken) ?? "").lowercased()
+        let participantTokens = Set(
+            participants.map { firstToken($0).lowercased() }.filter { !$0.isEmpty },
+        )
+
+        func relevance(of name: String) -> NameRelevance {
+            let token = firstToken(name).lowercased()
+            if !autoToken.isEmpty, token == autoToken { return .autoNameMatch }
+            if participantTokens.contains(token) { return .participantMatch }
+            return .other
+        }
+
+        return known.enumerated()
+            .map { (offset: $0.offset, relevance: relevance(of: $0.element), name: $0.element) }
+            .sorted { lhs, rhs in
+                if lhs.relevance != rhs.relevance { return lhs.relevance < rhs.relevance }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.name)
+    }
+
+    private static func firstToken(_ name: String) -> String {
+        name.split(separator: " ").first.map(String.init) ?? name
+    }
+
+    /// Builds the speaker label → user-entered name mapping, skipping empty names.
+    static func buildSpeakerMapping(
+        speakers: [(label: String, autoName: String?, speakingTime: Double)],
+        names: [String],
+    ) -> [String: String] {
+        var mapping: [String: String] = [:]
+        for (index, speaker) in speakers.enumerated() {
+            let name = index < names.count
+                ? names[index].trimmingCharacters(in: .whitespaces) : ""
+            if !name.isEmpty {
+                mapping[speaker.label] = name
+            }
+        }
+        return mapping
+    }
+}
+
+/// Layout that arranges its children left-to-right and wraps to a new row when
+/// the row width is exhausted. Used for the suggestion-chip rows in
+/// `SpeakerNamingView`, where a fixed-width HStack would either overflow or
+/// truncate button labels when the speaker DB grows large.
+struct ChipFlowLayout: Layout {
+    var spacing: CGFloat = 4
+
+    /// Subview intrinsic sizes are cached so `sizeThatFits` and
+    /// `placeSubviews` don't each re-query every child per layout pass.
+    typealias Cache = [CGSize]
+
+    func makeCache(subviews: Subviews) -> Cache {
+        subviews.map { $0.sizeThatFits(.unspecified) }
+    }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        cache = subviews.map { $0.sizeThatFits(.unspecified) }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews _: Subviews, cache: inout Cache) -> CGSize {
+        let containerWidth = proposal.width ?? .infinity
+        return Self.computeLayout(
+            sizes: cache, containerWidth: containerWidth, spacing: spacing,
+        ).totalSize
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        let result = Self.computeLayout(
+            sizes: cache, containerWidth: bounds.width, spacing: spacing,
+        )
+        for (index, sv) in subviews.enumerated() {
+            let pos = result.positions[index]
+            sv.place(
+                at: CGPoint(x: bounds.minX + pos.x, y: bounds.minY + pos.y),
+                proposal: ProposedViewSize(cache[index]),
+            )
+        }
+    }
+
+    /// Pure layout calculation — extracted so the wrapping logic can be
+    /// covered by unit tests without a SwiftUI host.
+    static func computeLayout(
+        sizes: [CGSize], containerWidth: CGFloat, spacing: CGFloat,
+    ) -> (totalSize: CGSize, positions: [CGPoint]) {
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var maxWidth: CGFloat = 0
+        var positions: [CGPoint] = []
+        positions.reserveCapacity(sizes.count)
+
+        for size in sizes {
+            if x > 0, x + size.width > containerWidth {
+                y += rowHeight + spacing
+                x = 0
+                rowHeight = 0
+            }
+            positions.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            maxWidth = max(maxWidth, x - spacing)
+        }
+        // Report the actual content width (capped at the container) so unconstrained
+        // parents (proposal == .infinity) don't get an infinite frame.
+        let width = sizes.isEmpty ? 0 : min(maxWidth, containerWidth)
+        let height = sizes.isEmpty ? 0 : y + rowHeight
+        return (totalSize: CGSize(width: width, height: height), positions: positions)
+    }
+}

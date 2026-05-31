@@ -1,0 +1,237 @@
+name: E2E (Production App)
+
+# Live-recording E2E. Background and rationale: CLAUDE.md > E2E Architecture.
+# Runner prerequisites: scripts/setup-self-hosted-runner.sh.
+
+on:
+  workflow_dispatch:
+  push:
+    # No paths-filter. Stable-tag ruleset requires a *push*-event check-run
+    # on the SHA; `workflow_dispatch`-created check-runs don't satisfy the
+    # gate (GitHub quirk — same name + success, still not counted). So
+    # every main push fires e2e-app to guarantee the check exists on every
+    # SHA a stable tag might point at. Mini Runner #1 is dedicated and
+    # otherwise idle — extra runs on docs-only commits are essentially free.
+    branches: [main]
+  schedule:
+    # 04:30 UTC = 06:30 CEST. Offset from the 03:00 quality-and-safety
+    # cron so concurrent failures are easy to tell apart in `gh run list`.
+    - cron: '30 4 * * *'
+
+# Live-recording E2E mutates host state (deploys the bundle, runs the
+# meeting-simulator which plays audio through the speakers). Two parallel
+# runs would race for the recorder; serialise.
+concurrency:
+  group: e2e-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e-app:
+    # `audio` label pins the job to the runner that has exclusive access
+    # to the BlackHole virtual input device. A second runner on the same
+    # Mini handles other self-hosted workloads in parallel without
+    # racing for the audio stack — see runner labels via
+    # `gh api /repos/{owner}/{repo}/actions/runners`.
+    runs-on: [self-hosted, macOS, ARM64, audio]
+    # Three transcript lanes (transcript, record-only, reimport) at
+    # ~4–6 min each → ~14 min observed. Plus channel-health (~30 s),
+    # silent-recording (~45 s), live-captions (~2 min) → ~17 min wall.
+    # 25 min job budget gives honest margin; each lane has its own
+    # step-timeout below so a hang in lane N surfaces as `timed_out`
+    # on that step (not as an opaque job-level `cancelled`). See
+    # docs/plans/.local/open/2026-05-11-job-timeout-visibility.md.
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/verify-xcode
+
+      # Import the Developer ID Application cert into a temporary keychain
+      # so codesign can find it. Apple roots are in the system trust store
+      # already, so the resulting signature satisfies the dev .app's PPPC
+      # code requirement out of the box — no add-trusted-cert ceremony
+      # needed. If the secret isn't set, the action becomes a no-op and
+      # e2e-app.sh falls back to the self-signed path that
+      # setup-self-hosted-runner.sh installed.
+      - name: Install Developer ID certificate
+        id: dev-id
+        uses: ./.github/actions/install-developer-id
+        with:
+          cert: ${{ secrets.DEVELOPER_ID_CERT }}
+          cert-password: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          keychain-name: e2e-signing.keychain-db
+          # e2e-app.sh shells out to `codesign` directly to re-sign the
+          # deployed bundle; release.yml builds via xcodebuild and doesn't
+          # need this extra role.
+          extra-partition-roles: "codesign:"
+
+      # Hand the keychain path to e2e-app.sh so it can re-sign the
+      # deployed bundle with this cert too. Stable across runs because
+      # Apple Developer ID cert SHA doesn't change — TCC keeps the grant.
+      - name: Export keychain path for e2e-app.sh
+        if: steps.dev-id.outputs.keychain-path != ''
+        run: echo "E2E_SIGNING_KEYCHAIN=${{ steps.dev-id.outputs.keychain-path }}" >> "$GITHUB_ENV"
+
+      # Smoke test codesign before kicking off the ~70 s build. The
+      # find-identity probe in install-developer-id catches missing/
+      # mismatched certs, but `codesign` delegates to trustd for
+      # trust-chain validation — a separate code path that can fail
+      # (partition-list ACL reset, trustd not respawned for this user)
+      # while find-identity still reports "1 valid". Without this,
+      # such drift surfaces only after the build burns ~70 s.
+      - name: Pre-flight codesign smoke test
+        if: env.E2E_SIGNING_KEYCHAIN != ''
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+        run: |
+          TEST_BIN=$(mktemp)
+          trap 'rm -f "$TEST_BIN"' EXIT
+          cp /usr/bin/true "$TEST_BIN"
+          if ! codesign --force --sign "$DEVELOPER_ID" --keychain "$E2E_SIGNING_KEYCHAIN" "$TEST_BIN"; then
+              echo "::error::codesign smoke test failed — likely trustd or partition-list drift on the Mini"
+              echo "::error::Recovery: unlock keychain, respawn trustd for this user, re-apply partition-list ACL, then re-run setup-self-hosted-runner.sh"
+              exit 1
+          fi
+
+      - name: Run live-recording E2E driver
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+        timeout-minutes: 10
+        # `--two-meetings` always: meeting 1 covers fresh-state single-run,
+        # meeting 2 covers cooldown + state reset. ~3 min total wall on Mini
+        # vs ~1 min for single-meeting; signal latency is fine on nightly +
+        # post-merge push triggers. Local dev runs (`bash scripts/e2e-app.sh`)
+        # default to single for fast iteration.
+        run: bash scripts/e2e-app.sh --two-meetings
+
+      # Record-only lane: same recorder path, but WatchLoop short-circuits
+      # before VAD/transcription/diarization/protocol and writes a sidecar
+      # JSON + WAVs to <output>/recordings/ instead. Catches regressions in
+      # the WatchLoop record-only branch, sidecar schema, and partial-move
+      # behavior that the transcript-asserting lane (above) doesn't exercise.
+      # `--no-build` reuses the bundle from the previous step to skip ~30 s
+      # of rebuild/re-sign.
+      # `--keep-recordings` preserves the produced *_mix.wav across the
+      # script's on-exit cleanup so the next step can re-use it instead of
+      # recording a fresh meeting. Saves ~30 s of redundant playback +
+      # capture and silences the second run on the Mini.
+      - name: Run live-recording E2E driver (record-only)
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+        timeout-minutes: 10
+        run: bash scripts/e2e-app.sh --no-build --record-only --keep-recordings
+
+      # Re-import lane: feeds the WAV from the previous step back into the
+      # "Open from Recording" pipeline via POST /action/enqueueFile and
+      # asserts the resulting transcript contains the fixture's spoken
+      # keyword. Catches three failure classes the lanes above miss in
+      # isolation:
+      #   - Recorder writes a malformed WAV (record-only would still pass).
+      #   - AudioMixer.loadAudioAsFloat32 3-tier fallback regresses
+      #     (only fixture-tested today, never live).
+      #   - Live capture is silent or garbled (transcript lane uses the
+      #     fixture WAV directly, doesn't exercise the recorder output).
+      # `--reimport-latest` reuses the WAV from the previous step instead
+      # of re-recording one. Recorder-correctness coverage is preserved
+      # because the previous step already exercised the recorder under
+      # this run's binary.
+      - name: Run live-recording E2E driver (re-import recorded WAV)
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+        timeout-minutes: 10
+        run: bash scripts/e2e-app.sh --no-build --reimport-latest
+
+      # Sortformer-mode naming-dialog lane (Phase 1 of issue #165, PR #325):
+      # flips `AppSettings.diarizerMode` to `.sortformer` via UserDefaults
+      # pre-pop, runs one meeting, asserts that the speaker-naming dialog
+      # actually fires with N>=1 speakers — meaning `DiarizationResult.embeddings`
+      # is non-nil end-to-end. Pre-PR-#325 Sortformer mode returned
+      # `embeddings: nil` which silently broke the naming flow (issue #109);
+      # the env-gated assertion in `scripts/e2e-app.sh` would have caught it.
+      # `--no-build` reuses the dev .app from the first step; only the
+      # UserDefaults flip + meeting trigger differ. Adds ~30s to total lane.
+      - name: Run live-recording E2E driver (Sortformer naming dialog)
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+          MTT_DIARIZER_MODE: sortformer
+          MTT_EXPECT_NAMING_SPEAKERS_MIN: "1"
+        timeout-minutes: 10
+        run: bash scripts/e2e-app.sh --no-build
+
+      # Channel-health indicator e2e (issue #258): launches the dev
+      # app with `MEETINGTRANSCRIBER_DEBUG_FORCE_MIC_SILENT=1` so
+      # `AppState.micSilentActive` is set at init, then asserts the
+      # flag surfaces in `/state.channelHealth` via the RPC server.
+      # Validates the env-hook → AppState → SwiftUI scene body →
+      # MenuBarIcon render → RPC observability chain. Does NOT touch
+      # the real audio path (CATapDescription → LevelPublisher →
+      # polling task) — that's tracked as a follow-up live-audio e2e.
+      - name: Run channel-health indicator E2E
+        timeout-minutes: 3
+        run: bash scripts/e2e-channel-health.sh --no-build --screenshot
+
+      - name: Upload channel-health menubar screenshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: channel-health-menubar
+          path: /tmp/e2e-channel-health-menubar.png
+          if-no-files-found: ignore
+
+      # Silent-recording detector e2e (PR #295): drives the real
+      # production polling chain — meeting-simulator plays the fixture
+      # at volume=0 so the CATapDescription tap captures buffers of
+      # all-zero content, AppState's 10 Hz polling task accumulates
+      # both-silent ticks, and after 30 s of sustained silence
+      # `SilentRecordingMonitor` fires `.started` which the script
+      # asserts via `/state.channelHealth.recordingSilent`. Unlike
+      # `e2e-channel-health.sh` above, this does NOT use a
+      # FORCE-flag env hook — reverting `activeRecorder = recorder`
+      # in `WatchLoop.handleMeeting` or removing the monitor wiring
+      # in AppState makes this step fail. Closes the polling-chain
+      # bypass gap from #286.
+      # `--no-build` reuses the already-deployed bundle + the
+      # meeting-simulator + mt-cli built during the earlier lanes.
+      - name: Run silent-recording detector E2E
+        timeout-minutes: 3
+        run: bash scripts/e2e-silent-recording.sh --no-build
+
+      # Live-transcription overlay e2e (PR #318): asserts on the
+      # in-flight LiveCaptionsState exposed at `/state.liveCaptions.
+      # recentFinals` rather than the post-pipeline transcript path
+      # the first three lanes already cover. Pre-sets the production
+      # UserDefaults the toggle reads — no debug env-var shortcut —
+      # so a regression in the recorder → live-sink → controller →
+      # streaming-transcriber → engine wiring chain surfaces here.
+      # The fixture-based xctest E2E in
+      # `app/MeetingTranscriber/Tests/LiveTranscriptionE2ETests.swift`
+      # covers everything from `LiveTranscriptionController` inward;
+      # this lane covers the parts outside the xctest harness (CATap
+      # tap, AudioCaptureSession, recorder live-sink wiring).
+      # `--no-build` reuses the deployed bundle from the earlier lanes.
+      - name: Run live-transcription overlay E2E
+        timeout-minutes: 5
+        run: bash scripts/e2e-live-captions.sh --no-build
+
+      - name: Upload live-captions simulator log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-captions-simulator.log
+          path: /tmp/e2e-live-captions-sim.log
+          if-no-files-found: ignore
+
+      # Best-effort: capture the simulator's stdout for post-mortem if
+      # the driver failed before tearing it down.
+      - name: Upload simulator log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: meeting-simulator.log
+          path: /tmp/e2e-app-sim.log
+          if-no-files-found: ignore
+
+      - name: Cleanup signing keychain
+        if: always() && env.E2E_SIGNING_KEYCHAIN != ''
+        run: security delete-keychain "$E2E_SIGNING_KEYCHAIN" 2>/dev/null || true

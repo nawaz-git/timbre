@@ -1,0 +1,334 @@
+#!/usr/bin/env swift
+// Generates animated GIFs of the menu bar icon animations for documentation.
+// Usage: swift scripts/generate_menu_bar_gifs.swift
+// Output: docs/menu-bar-*.gif
+
+import AppKit
+import ImageIO
+import UniformTypeIdentifiers
+
+// MARK: - Drawing Constants (mirrored from MenuBarIcon.swift)
+
+// Native 18pt constants — identical to MenuBarIcon.swift
+let barWidth: CGFloat = 2.2
+let barSpacing: CGFloat = 3.6
+let barCount = 5
+let defaultBarHeights: [CGFloat] = [0.25, 0.50, 0.75, 0.45, 0.30]
+let lineHeight: CGFloat = 1.4
+let lineSpacingVal: CGFloat = 2.8
+let lineWidths: [CGFloat] = [0.70, 0.55, 0.65, 0.50, 0.40]
+let lineLeftInset: CGFloat = 0.12
+let frameCount = 6
+
+func barsLayout(in rect: NSRect) -> (left: CGFloat, centerY: CGFloat) {
+    let barsWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * (barSpacing - barWidth)
+    return (left: (rect.width - barsWidth) / 2, centerY: rect.height / 2)
+}
+
+func textLayout(in rect: NSRect) -> (top: CGFloat, left: CGFloat) {
+    let linesHeight = CGFloat(barCount) * lineHeight + CGFloat(barCount - 1) * (lineSpacingVal - lineHeight)
+    return (top: rect.height / 2 + linesHeight / 2, left: rect.width * lineLeftInset)
+}
+
+// MARK: - Drawing Functions
+
+let recordingFrames: [[CGFloat]] = [
+    [0.25, 0.50, 0.75, 0.45, 0.30],
+    [0.40, 0.30, 0.65, 0.70, 0.25],
+    [0.20, 0.60, 0.40, 0.55, 0.50],
+    [0.50, 0.45, 0.70, 0.25, 0.40],
+    [0.30, 0.65, 0.50, 0.60, 0.20],
+    [0.45, 0.35, 0.55, 0.40, 0.65],
+]
+
+func drawIdle(in rect: NSRect) {
+    let layout = barsLayout(in: rect)
+    for i in 0 ..< barCount {
+        let x = layout.left + CGFloat(i) * barSpacing
+        let barH = rect.height * defaultBarHeights[i]
+        let barRect = NSRect(x: x, y: layout.centerY - barH / 2, width: barWidth, height: barH)
+        NSBezierPath(roundedRect: barRect, xRadius: barWidth / 2, yRadius: barWidth / 2).fill()
+    }
+}
+
+func drawRecording(in rect: NSRect, frame: Int) {
+    let heights = recordingFrames[frame % recordingFrames.count]
+    let layout = barsLayout(in: rect)
+    for i in 0 ..< barCount {
+        let x = layout.left + CGFloat(i) * barSpacing
+        let barH = rect.height * heights[i]
+        let barRect = NSRect(x: x, y: layout.centerY - barH / 2, width: barWidth, height: barH)
+        NSBezierPath(roundedRect: barRect, xRadius: barWidth / 2, yRadius: barWidth / 2).fill()
+    }
+}
+
+let transcribeMorphSteps: [CGFloat] = [0.0, 0.15, 0.35, 0.6, 0.85, 1.0]
+
+func drawTranscribing(in rect: NSRect, frame: Int) {
+    let h = rect.height
+    let t = transcribeMorphSteps[frame % transcribeMorphSteps.count]
+    let bars = barsLayout(in: rect)
+    let text = textLayout(in: rect)
+
+    for i in 0 ..< barCount {
+        let srcX = bars.left + CGFloat(i) * barSpacing
+        let srcH = h * defaultBarHeights[i]
+        let srcY = bars.centerY - srcH / 2
+
+        let tgtX = text.left
+        let tgtW = rect.width * lineWidths[i]
+        let tgtY = text.top - CGFloat(i) * lineSpacingVal - lineHeight
+
+        let x = srcX + (tgtX - srcX) * t
+        let y = srcY + (tgtY - srcY) * t
+        let rw = barWidth + (tgtW - barWidth) * t
+        let rh = srcH + (lineHeight - srcH) * t
+        let radius = min(rw, rh) / 2
+
+        NSBezierPath(
+            roundedRect: NSRect(x: x, y: y, width: rw, height: rh),
+            xRadius: radius,
+            yRadius: radius,
+        ).fill()
+    }
+}
+
+let diarizeSplitSteps: [CGFloat] = [0.0, 0.2, 0.5, 0.8, 1.0, 0.8]
+
+func drawDiarizing(in rect: NSRect, frame: Int) {
+    let h = rect.height
+    let t = diarizeSplitSteps[frame % diarizeSplitSteps.count]
+    let layout = barsLayout(in: rect)
+
+    let maxShift: CGFloat = 2.5
+    let verticalSep: CGFloat = 1.5
+
+    for i in 0 ..< barCount {
+        let isGroupA = i.isMultiple(of: 2)
+        let barH = h * defaultBarHeights[i]
+        let x = layout.left + CGFloat(i) * barSpacing + (isGroupA ? -maxShift : maxShift) * t
+        let y = layout.centerY - barH / 2 + (isGroupA ? verticalSep : -verticalSep) * t
+
+        NSBezierPath(
+            roundedRect: NSRect(x: x, y: y, width: barWidth, height: barH),
+            xRadius: barWidth / 2,
+            yRadius: barWidth / 2,
+        ).fill()
+    }
+}
+
+func drawProtocol(in rect: NSRect, frame: Int) {
+    let text = textLayout(in: rect)
+    let visibleLines = (frame % frameCount) + 1
+
+    for i in 0 ..< min(visibleLines, barCount) {
+        let lineW = rect.width * lineWidths[i]
+        let lineY = text.top - CGFloat(i) * lineSpacingVal - lineHeight
+        NSBezierPath(
+            roundedRect: NSRect(x: text.left, y: lineY, width: lineW, height: lineHeight),
+            xRadius: lineHeight / 2,
+            yRadius: lineHeight / 2,
+        ).fill()
+    }
+}
+
+// Red circle with white "!" in the bottom-right corner.
+// Mirrors MenuBarIcon.drawExclamationBadge — used for the permission-problem overlay.
+func drawExclamationBadge(in rect: NSRect) {
+    let size: CGFloat = 7.0
+    let margin: CGFloat = 0.5
+    let cx = rect.maxX - size / 2 - margin
+    let cy = rect.minY + size / 2 + margin
+
+    NSColor.systemRed.setFill()
+    NSBezierPath(
+        ovalIn: NSRect(x: cx - size / 2, y: cy - size / 2, width: size, height: size),
+    ).fill()
+
+    NSColor.white.setFill()
+
+    let stemW: CGFloat = 1.3
+    let stemH: CGFloat = 2.8
+    let stemY = cy + size / 2 - 1.8 - stemH
+    NSBezierPath(
+        roundedRect: NSRect(x: cx - stemW / 2, y: stemY, width: stemW, height: stemH),
+        xRadius: stemW / 2, yRadius: stemW / 2,
+    ).fill()
+
+    let dotSize: CGFloat = 1.3
+    let dotY = cy - size / 2 + 1.0
+    NSBezierPath(ovalIn: NSRect(x: cx - dotSize / 2, y: dotY, width: dotSize, height: dotSize)).fill()
+}
+
+// Tint the top or bottom half of the icon red — mirrors
+// `MenuBarIcon.drawTintedHalf`. Caller passes the body draw closure;
+// we save graphics state, clip to the requested half, set red fill,
+// run the body, restore. The +0.5 fudge closes the AA seam on the
+// center line, matching the production implementation.
+enum Half { case top, bottom }
+
+func drawTintedHalf(in rect: NSRect, half: Half, body: () -> Void) {
+    guard let ctx = NSGraphicsContext.current else { return }
+    ctx.saveGraphicsState()
+    defer { ctx.restoreGraphicsState() }
+    let centerY = rect.height / 2
+    let clip = switch half {
+    case .top: NSRect(x: 0, y: centerY - 0.5, width: rect.width, height: rect.height - centerY + 0.5)
+    case .bottom: NSRect(x: 0, y: 0, width: rect.width, height: centerY + 0.5)
+    }
+    NSBezierPath(rect: clip).setClip()
+    NSColor.systemRed.setFill()
+    body()
+}
+
+// Plain red dot in the bottom-right corner (no exclamation glyph).
+// Mirrors MenuBarIcon.drawRecordOnlyBadge — used for the record-only overlay.
+func drawRecordOnlyBadge(in rect: NSRect) {
+    let size: CGFloat = 5.0
+    let margin: CGFloat = 0.5
+    let cx = rect.maxX - size / 2 - margin
+    let cy = rect.minY + size / 2 + margin
+
+    NSColor.systemRed.setFill()
+    NSBezierPath(
+        ovalIn: NSRect(x: cx - size / 2, y: cy - size / 2, width: size, height: size),
+    ).fill()
+}
+
+// MARK: - Rendering
+
+let nativeSize: CGFloat = 18
+let pixelSize = 100
+let scaleFactor = CGFloat(pixelSize) / nativeSize
+
+func renderFrame(draw: (NSRect) -> Void) -> CGImage {
+    let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: pixelSize,
+        pixelsHigh: pixelSize,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0,
+    )! // swiftlint:disable:this force_unwrapping
+
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+
+    // Fill white background at pixel size
+    let fullRect = NSRect(x: 0, y: 0, width: CGFloat(pixelSize), height: CGFloat(pixelSize))
+    NSColor.white.setFill()
+    fullRect.fill()
+
+    // Scale coordinate system: draw at native 18pt, output at 100px
+    // swiftlint:disable:next legacy_objc_type
+    let transform = NSAffineTransform()
+    transform.scale(by: scaleFactor)
+    transform.concat()
+
+    let nativeRect = NSRect(x: 0, y: 0, width: nativeSize, height: nativeSize)
+    NSColor.black.setFill()
+    draw(nativeRect)
+
+    NSGraphicsContext.restoreGraphicsState()
+    return rep.cgImage! // swiftlint:disable:this force_unwrapping
+}
+
+func writeGIF(name: String, frames: [CGImage], delay: Double = 0.4) {
+    let scriptDir = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
+    let docsDir = scriptDir.deletingLastPathComponent().appendingPathComponent("docs")
+    try! FileManager.default.createDirectory(at: docsDir, withIntermediateDirectories: true) // swiftlint:disable:this force_try
+    let url = docsDir.appendingPathComponent(name) as CFURL
+
+    let properties: CFDictionary = [
+        kCGImagePropertyGIFDictionary: [
+            kCGImagePropertyGIFLoopCount: 0,
+        ],
+    ] as CFDictionary
+
+    let frameProperties: CFDictionary = [
+        kCGImagePropertyGIFDictionary: [
+            kCGImagePropertyGIFDelayTime: delay,
+        ],
+    ] as CFDictionary
+
+    // swiftlint:disable:next force_unwrapping
+    let dest = CGImageDestinationCreateWithURL(url, UTType.gif.identifier as CFString, frames.count, nil)!
+    CGImageDestinationSetProperties(dest, properties)
+
+    for frame in frames {
+        CGImageDestinationAddImage(dest, frame, frameProperties)
+    }
+
+    CGImageDestinationFinalize(dest)
+    print("  Generated: docs/\(name)")
+}
+
+// MARK: - Generate
+
+print("Generating menu bar icon GIFs...")
+
+// Idle (static, single frame shown twice for visibility)
+let idleFrame = renderFrame { drawIdle(in: $0) }
+writeGIF(name: "menu-bar-idle.gif", frames: [idleFrame, idleFrame], delay: 1.0)
+
+// Recording
+let recFrames = (0 ..< frameCount).map { i in renderFrame { drawRecording(in: $0, frame: i) } }
+writeGIF(name: "menu-bar-recording.gif", frames: recFrames)
+
+// Transcribing
+let transFrames = (0 ..< frameCount).map { i in renderFrame { drawTranscribing(in: $0, frame: i) } }
+writeGIF(name: "menu-bar-transcribing.gif", frames: transFrames)
+
+// Diarizing
+let diarFrames = (0 ..< frameCount).map { i in renderFrame { drawDiarizing(in: $0, frame: i) } }
+writeGIF(name: "menu-bar-diarizing.gif", frames: diarFrames)
+
+// Protocol
+let protoFrames = (0 ..< frameCount).map { i in renderFrame { drawProtocol(in: $0, frame: i) } }
+writeGIF(name: "menu-bar-protocol.gif", frames: protoFrames)
+
+// Permission problem (static: idle waveform with red exclamation badge overlay).
+// Shown whenever Mic, Screen Recording, or Accessibility is denied or broken.
+let permissionFrame = renderFrame { rect in
+    drawIdle(in: rect)
+    drawExclamationBadge(in: rect)
+}
+
+writeGIF(name: "menu-bar-permission.gif", frames: [permissionFrame, permissionFrame], delay: 1.0)
+
+// Record-only mode (static: idle waveform with red dot overlay).
+// Shown while watching when AppSettings.recordOnly is enabled.
+let recordOnlyFrame = renderFrame { rect in
+    drawIdle(in: rect)
+    drawRecordOnlyBadge(in: rect)
+}
+
+writeGIF(name: "menu-bar-record-only.gif", frames: [recordOnlyFrame, recordOnlyFrame], delay: 1.0)
+
+// Channel-silent (app-audio dead): recording animation with the bottom
+// half of the waveform tinted red — same overlay path
+// `MenuBarIcon.image(..., appSilentOverlay:)` uses in production.
+let appSilentFrames = (0 ..< frameCount).map { i in
+    renderFrame { rect in
+        drawRecording(in: rect, frame: i)
+        drawTintedHalf(in: rect, half: .bottom) { drawRecording(in: rect, frame: i) }
+    }
+}
+
+writeGIF(name: "menu-bar-channel-silent-app.gif", frames: appSilentFrames)
+
+// Channel-silent (mic dead): same animation, top half tinted red.
+let micSilentFrames = (0 ..< frameCount).map { i in
+    renderFrame { rect in
+        drawRecording(in: rect, frame: i)
+        drawTintedHalf(in: rect, half: .top) { drawRecording(in: rect, frame: i) }
+    }
+}
+
+writeGIF(name: "menu-bar-channel-silent-mic.gif", frames: micSilentFrames)
+
+print("Done!")

@@ -1,0 +1,103 @@
+import Foundation
+
+/// Thin HTTP client for the running Meeting Transcriber app's debug RPC server.
+/// Reads the bearer token from disk at the same path the app writes it to.
+struct RPCClient {
+    let baseURL: URL
+    let token: String
+
+    enum RPCError: Error, CustomStringConvertible {
+        case appNotRunning(URL)
+        case http(status: Int, body: String)
+        case missingToken(URL)
+
+        var description: String {
+            switch self {
+            case let .appNotRunning(url):
+                "Meeting Transcriber app is not running on \(url.absoluteString) " +
+                    "(or MEETINGTRANSCRIBER_DEBUG_RPC=1 was not set when it launched)"
+
+            case let .http(status, body):
+                "RPC returned HTTP \(status): \(body)"
+
+            case let .missingToken(url):
+                "RPC token not found at \(url.path) — start the app with " +
+                    "MEETINGTRANSCRIBER_DEBUG_RPC=1 first"
+            }
+        }
+    }
+
+    /// Default app data dir on macOS. Mirrors `AppPaths.dataDir` in the app —
+    /// duplicated here so mt-cli has no dependency on the app's source.
+    static let defaultTokenURL: URL = {
+        let appSupport = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+        return appSupport
+            .appendingPathComponent("MeetingTranscriber")
+            .appendingPathComponent(".rpc-token")
+    }()
+
+    // Hardcoded literal — URL(string:) cannot fail on a constant valid URL.
+    static let defaultBaseURL = URL(string: "http://127.0.0.1:9876")!
+
+    /// Per-request timeout. Without this the CLI hangs forever against a
+    /// wedged server (paused process, lost connection mid-stream). Short
+    /// enough that a human notices, generous enough that a slow `/state`
+    /// snapshot off a heavily loaded app doesn't trip it.
+    static let requestTimeoutSeconds: TimeInterval = 5
+
+    /// `/screenshot` renders a window image and is allowed a longer budget;
+    /// the rest of the API is fast.
+    static let screenshotTimeoutSeconds: TimeInterval = 15
+
+    static func loadDefault() throws -> Self {
+        let url = defaultTokenURL
+        guard let data = try? Data(contentsOf: url),
+              let token = String(data: data, encoding: .utf8)?
+              .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty
+        else {
+            throw RPCError.missingToken(url)
+        }
+        return Self(baseURL: defaultBaseURL, token: token)
+    }
+
+    func get(_ path: String, timeout: TimeInterval = requestTimeoutSeconds) async throws -> Data {
+        try await request("GET", path: path, body: nil, timeout: timeout)
+    }
+
+    func post(
+        _ path: String, json: [String: Any], timeout: TimeInterval = requestTimeoutSeconds,
+    ) async throws -> Data {
+        let body = try JSONSerialization.data(withJSONObject: json)
+        return try await request("POST", path: path, body: body, timeout: timeout)
+    }
+
+    private func request(
+        _ method: String, path: String, body: Data?, timeout: TimeInterval,
+    ) async throws -> Data {
+        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+        req.httpMethod = method
+        req.timeoutInterval = timeout
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let body {
+            req.httpBody = body
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse else { return data }
+            if (200 ..< 300).contains(http.statusCode) {
+                return data
+            }
+            throw RPCError.http(
+                status: http.statusCode,
+                body: String(data: data, encoding: .utf8) ?? "",
+            )
+        } catch let error as URLError where error.code == .cannotConnectToHost {
+            throw RPCError.appNotRunning(baseURL)
+        }
+    }
+}

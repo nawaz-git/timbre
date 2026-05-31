@@ -1,0 +1,172 @@
+import CoreGraphics
+import Foundation
+import os.log
+
+private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "MeetingDetector")
+
+/// Polls window list to detect active meeting windows.
+///
+/// Uses CGWindowListCopyWindowInfo to read on-screen windows.
+/// Requires Screen Recording permission.
+@Observable
+class MeetingDetector: MeetingDetecting {
+    private let patterns: [AppMeetingPattern]
+    private let confirmationCount: Int
+    private var consecutiveHits: [String: Int] = [:]
+    private var cooldownUntil: [String: Date] = [:]
+    private let cooldownDuration: TimeInterval = 5 // brief cooldown to avoid re-detecting the same meeting
+
+    /// Pre-compiled regex for each pattern to avoid re-compilation on every poll.
+    private let compiledMeetingPatterns: [String: [NSRegularExpression]]
+    private let compiledIdlePatterns: [String: [NSRegularExpression]]
+
+    /// Closure that provides the window list. Defaults to CGWindowListCopyWindowInfo.
+    /// Override in tests to inject mock window data.
+    var windowListProvider: () -> [[String: Any]] = MeetingDetector.systemWindowList
+
+    init(patterns: [AppMeetingPattern], confirmationCount: Int = 2) {
+        self.patterns = patterns
+        self.confirmationCount = confirmationCount
+
+        var meeting: [String: [NSRegularExpression]] = [:]
+        var idle: [String: [NSRegularExpression]] = [:]
+        for p in patterns {
+            meeting[p.appName] = p.meetingPatterns.compactMap { pattern in
+                do {
+                    return try NSRegularExpression(pattern: pattern)
+                } catch {
+                    logger.error("Invalid meeting regex for \(p.appName): \(pattern) — \(error.localizedDescription)")
+                    return nil
+                }
+            }
+            idle[p.appName] = p.idlePatterns.compactMap { pattern in
+                do {
+                    return try NSRegularExpression(pattern: pattern)
+                } catch {
+                    logger.error("Invalid idle regex for \(p.appName): \(pattern) — \(error.localizedDescription)")
+                    return nil
+                }
+            }
+        }
+        self.compiledMeetingPatterns = meeting
+        self.compiledIdlePatterns = idle
+    }
+
+    /// Single poll: check all windows against all patterns.
+    ///
+    /// Returns a `DetectedMeeting` only after `confirmationCount` consecutive
+    /// positive detections for the same app.
+    func checkOnce() -> DetectedMeeting? {
+        let windows = windowListProvider()
+        var hitsThisRound: Set<String> = []
+        // Track first matching window per pattern for returning DetectedMeeting
+        var firstMatch: [String: (title: String, window: [String: Any])] = [:]
+
+        for window in windows {
+            for pattern in patterns {
+                // Skip apps in cooldown (just handled a meeting)
+                if let until = cooldownUntil[pattern.appName], Date() < until {
+                    continue
+                }
+                // Only count each pattern once per poll (prevents over-counting
+                // when multiple windows match the same app)
+                guard !hitsThisRound.contains(pattern.appName) else { continue }
+
+                if let title = matchWindow(window, pattern: pattern) {
+                    hitsThisRound.insert(pattern.appName)
+                    firstMatch[pattern.appName] = (title, window)
+                    consecutiveHits[pattern.appName, default: 0] += 1
+                }
+            }
+        }
+
+        // Check if any pattern reached confirmation threshold
+        for (appName, hits) in consecutiveHits {
+            if hits >= confirmationCount, let match = firstMatch[appName],
+               let pattern = patterns.first(where: { $0.appName == appName }) {
+                let pid = match.window["kCGWindowOwnerPID"] as? Int32 ?? 0
+
+                return DetectedMeeting(
+                    pattern: pattern,
+                    windowTitle: match.title,
+                    ownerName: match.window["kCGWindowOwnerName"] as? String ?? "",
+                    windowPID: pid,
+                )
+            }
+        }
+
+        // Reset counters for apps that had no hit this round
+        for appName in consecutiveHits.keys where !hitsThisRound.contains(appName) {
+            consecutiveHits[appName] = 0
+        }
+
+        return nil
+    }
+
+    /// Check if a previously detected meeting is still active.
+    func isMeetingActive(_ meeting: DetectedMeeting) -> Bool {
+        let windows = windowListProvider()
+        for window in windows where matchWindow(window, pattern: meeting.pattern) != nil {
+            return true
+        }
+        return false
+    }
+
+    /// Reset confirmation counters and start cooldown for the given app.
+    func reset(appName: String? = nil) {
+        consecutiveHits.removeAll()
+        if let appName {
+            cooldownUntil[appName] = Date().addingTimeInterval(cooldownDuration)
+        }
+    }
+
+    // MARK: - Private
+
+    /// Match a window dict against a meeting pattern. Returns the title if matched.
+    private func matchWindow(_ window: [String: Any], pattern: AppMeetingPattern) -> String? {
+        guard let owner = window["kCGWindowOwnerName"] as? String,
+              pattern.ownerNames.contains(owner) else {
+            return nil
+        }
+
+        guard let title = window["kCGWindowName"] as? String, !title.isEmpty else {
+            return nil
+        }
+
+        // Check minimum size
+        if let bounds = window["kCGWindowBounds"] as? [String: Any] {
+            let width = bounds["Width"] as? CGFloat ?? 0
+            let height = bounds["Height"] as? CGFloat ?? 0
+            if width < pattern.minWindowWidth || height < pattern.minWindowHeight {
+                return nil
+            }
+        }
+
+        // Skip idle patterns (pre-compiled)
+        let range = NSRange(title.startIndex..., in: title)
+        if let idleRegexes = compiledIdlePatterns[pattern.appName] {
+            for regex in idleRegexes where regex.firstMatch(in: title, range: range) != nil {
+                return nil
+            }
+        }
+
+        // Match meeting patterns (pre-compiled)
+        if let meetingRegexes = compiledMeetingPatterns[pattern.appName] {
+            for regex in meetingRegexes where regex.firstMatch(in: title, range: range) != nil {
+                return title
+            }
+        }
+
+        return nil
+    }
+
+    /// Default window list provider using CGWindowListCopyWindowInfo.
+    static func systemWindowList() -> [[String: Any]] {
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements], kCGNullWindowID,
+        ) as? [[String: Any]] else {
+            return []
+        }
+        return windowList
+    }
+}

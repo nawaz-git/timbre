@@ -1,0 +1,234 @@
+name: Build & Release DMG
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Mirror of CI's path filter — see ci.yml for the full rationale. Push to
+  # main, version tags, and workflow_dispatch fall through to `code = 'true'`
+  # so they always build.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      code: ${{ steps.filter.outputs.code || 'true' }}
+    steps:
+      # Needed so dorny/paths-filter can read .github/filters.yml from the
+      # workspace; see ci.yml for the same dance.
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@v6
+      - if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # `every` is required for the exclusion-style filter — without it,
+          # the v4 default `some` makes `**` match every file and the `!…`
+          # negations never apply, silently building DMGs for docs-only PRs.
+          predicate-quantifier: every
+          filters: .github/filters.yml
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-26  # Apple Silicon runner (Swift 6.0+)
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        variant: [homebrew, appstore]
+        include:
+          - variant: homebrew
+            build-flags: ""
+            dmg-prefix: "MeetingTranscriber"
+          - variant: appstore
+            build-flags: "--appstore --no-notarize"
+            dmg-prefix: "MeetingTranscriber-AppStore"
+    name: build (${{ matrix.variant }})
+    permissions:
+      contents: write  # For creating GitHub releases
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-tags: true
+
+      # Same SPM cache key as ci.yml — release builds reuse the test
+      # matrix's resolved artifacts. ML models aren't loaded by
+      # build_release.sh, so skip the model cache + prewarm.
+      - uses: ./.github/actions/setup-swift-test
+        with:
+          cache-key-suffix: ${{ matrix.variant }}
+          cache-models: "false"
+
+      - name: Install Developer ID certificate
+        id: dev-id
+        uses: ./.github/actions/install-developer-id
+        with:
+          cert: ${{ secrets.DEVELOPER_ID_CERT }}
+          cert-password: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+
+      - name: Build .app and DMG
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: |
+          # Tag builds: use tag as version and staple notarization for offline Gatekeeper
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            BUILD_VERSION="--version=${GITHUB_REF_NAME#v}"
+            STAPLE_FLAG="--staple"
+          fi
+          if [ "${{ matrix.variant }}" = "homebrew" ] && [ -n "${DEVELOPER_ID:-}" ]; then
+            ./scripts/build_release.sh $STAPLE_FLAG ${BUILD_VERSION:-}
+          else
+            ./scripts/build_release.sh ${{ matrix.build-flags }} --no-notarize ${BUILD_VERSION:-}
+          fi
+
+      - name: Get version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(cat VERSION | tr -d '[:space:]')
+          fi
+          PRERELEASE=$([[ "${GITHUB_REF_NAME}" == *-* ]] && echo true || echo false)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Compute DMG SHA256
+        if: matrix.variant == 'homebrew'
+        id: sha
+        run: |
+          DMG=".build/release/${{ matrix.dmg-prefix }}-${{ steps.version.outputs.version }}.dmg"
+          SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "DMG SHA256: $SHA"
+
+      - name: Upload DMG as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.dmg-prefix }}-${{ steps.version.outputs.version }}.dmg
+          path: .build/release/${{ matrix.dmg-prefix }}-${{ steps.version.outputs.version }}.dmg
+          retention-days: 3
+
+      - name: Find previous release tag for changelog
+        if: matrix.variant == 'homebrew' && startsWith(github.ref, 'refs/tags/v')
+        id: prev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          if [[ "$CURRENT_TAG" == *-* ]]; then
+            # Prerelease (RC): find the immediately preceding tag (RC or stable)
+            TAG=$(git tag --sort=-v:refname | awk -v cur="$CURRENT_TAG" 'found {print; exit} $0 == cur {found=1}')
+          else
+            # Stable release: find previous stable release only
+            TAG=$(gh release list --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty' 2>/dev/null || echo "")
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: matrix.variant == 'homebrew' && startsWith(github.ref, 'refs/tags/v')
+        # SHA-pinned: this is the highest-privilege third-party action in
+        # release.yml — runs with DEVELOPER_ID_CERT, APP_PASSWORD,
+        # TAP_REPO_TOKEN, APPLE_ID. SHA pin (vs tag pin) means a hijacked
+        # v1 tag cannot retarget us to a malicious commit. Dependabot
+        # bumps the SHA + comment in lockstep.
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd  # v1.21.0
+        with:
+          artifacts: .build/release/${{ matrix.dmg-prefix }}-${{ steps.version.outputs.version }}.dmg
+          generateReleaseNotes: true
+          generateReleaseNotesPreviousTag: ${{ steps.prev.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          body: |
+            ## MeetingTranscriber ${{ steps.version.outputs.version }}${{ steps.version.outputs.prerelease == 'true' && ' (Pre-release)' || '' }}
+
+            ### Installation
+
+            **Via Homebrew (${{ steps.version.outputs.prerelease == 'true' && 'Beta channel' || 'recommended' }}):**
+            ```bash
+            brew tap pasrom/meeting-transcriber
+            brew install --cask ${{ steps.version.outputs.prerelease == 'true' && 'meeting-transcriber@beta' || 'meeting-transcriber' }}
+            ```
+
+            ${{ steps.version.outputs.prerelease == 'true' && '> Release candidate from the **beta channel**. The stable and beta casks conflict — uninstall one before installing the other.' || '' }}
+
+            **Manual:**
+            1. Download the DMG below
+            2. Mount it and drag MeetingTranscriber to Applications
+
+            ### SHA256
+            ```
+            ${{ steps.sha.outputs.sha256 }}
+            ```
+
+      # Gate stays loud: tap-update failure must fail the release —
+      # otherwise `brew upgrade` silently keeps users on the prior version.
+      - name: Update Homebrew tap with new version and SHA256
+        id: tap-update
+        if: matrix.variant == 'homebrew' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.TAP_REPO_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA="${{ steps.sha.outputs.sha256 }}"
+          PRERELEASE="${{ steps.version.outputs.prerelease }}"
+
+          DMG=".build/release/MeetingTranscriber-${VERSION}.dmg"
+
+          # Upload DMG to public tap repo (main repo is private)
+          PRERELEASE_FLAG=""
+          [ "$PRERELEASE" = "true" ] && PRERELEASE_FLAG="--prerelease"
+
+          gh release create "v${VERSION}" "$DMG" \
+            --repo pasrom/homebrew-meeting-transcriber \
+            --title "v${VERSION}" \
+            --notes "DMG for Homebrew Cask distribution" \
+            $PRERELEASE_FLAG \
+            || gh release upload "v${VERSION}" "$DMG" \
+              --repo pasrom/homebrew-meeting-transcriber --clobber
+
+          # Clone the tap repo and update the appropriate Cask formula
+          git clone https://x-access-token:${GH_TOKEN}@github.com/pasrom/homebrew-meeting-transcriber.git /tmp/tap
+          cd /tmp/tap
+
+          if [ "$PRERELEASE" = "true" ]; then
+            CASK="Casks/meeting-transcriber@beta.rb"
+          else
+            CASK="Casks/meeting-transcriber.rb"
+          fi
+
+          # Seed beta cask from source repo if it doesn't exist in tap yet
+          if [ ! -f "$CASK" ]; then
+            mkdir -p "$(dirname "$CASK")"
+            cp "${GITHUB_WORKSPACE}/$CASK" "$CASK"
+          fi
+
+          sed -i '' "s/version \".*\"/version \"${VERSION}\"/" "$CASK"
+          sed -i '' "s/sha256 \".*\"/sha256 \"${SHA}\"/" "$CASK"
+
+          echo "Updated Cask formula ($CASK):"
+          cat "$CASK"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$CASK"
+          git commit -m "Update $(basename "$CASK" .rb) to v${VERSION}"
+          git push
+
+      - name: Cleanup keychain
+        if: always() && steps.dev-id.outputs.keychain-path != ''
+        run: security delete-keychain "${{ steps.dev-id.outputs.keychain-path }}" 2>/dev/null || true

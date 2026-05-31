@@ -1,0 +1,107 @@
+# Codecov configuration — see https://docs.codecov.com/docs/codecov-yaml
+#
+# Coverage is soft-gated: we report numbers per PR but don't block merge.
+# Once a stable baseline emerges (~2–4 weeks), tighten `target` / `threshold`.
+# Until then, "auto" + a generous threshold avoids false-positive PR breakage.
+
+codecov:
+  require_ci_to_pass: true
+  notify:
+    # Wait for all uploads (homebrew + appstore + audiotap) before
+    # commenting on a PR. Avoids flapping status while uploads stagger.
+    after_n_builds: 3
+
+coverage:
+  precision: 1
+  round: down
+  range: "60...85"
+  status:
+    project:
+      default:
+        target: auto
+        # PRs may not drop project coverage by more than 2 percentage points
+        # vs. the base commit. Generous on purpose — many hardware-boundary
+        # paths (AudioTapLib, CATapDescription, AVAudioEngine) are not
+        # unit-testable, so legitimate changes there will dilute the number.
+        threshold: 2%
+        # `informational: true` would make status purely advisory. Keeping
+        # it strict so the codecov check shows up red on a real regression,
+        # but the threshold is wide enough that day-to-day work isn't hit.
+    patch:
+      default:
+        # New / changed code in a PR must be ≥50% covered. Hardware paths
+        # are excluded via `ignore` below, so this targets logic only.
+        target: 50%
+        threshold: 10%
+
+comment:
+  layout: "reach, diff, flags, files"
+  # `once`: post a single comment per PR and edit it in place on re-runs.
+  # `default` would post a new comment on every push and force-push, which
+  # is noisy with a 3-upload fan-in (one comment per upload otherwise).
+  behavior: once
+  require_changes: true   # only comment when coverage actually moved
+
+flags:
+  homebrew:
+    paths:
+      - app/MeetingTranscriber/Sources/
+    # `carryforward: true` keeps the last known coverage for a flag when
+    # one matrix leg fails to upload — prevents a transient upload error
+    # from showing as a 100 % coverage drop.
+    carryforward: true
+  appstore:
+    paths:
+      - app/MeetingTranscriber/Sources/
+    carryforward: true
+  # AudioTapLib SPM library uploaded by the audiotap CI step. Lives in
+  # its own flag because the test suite is in `tools/audiotap/Tests/`,
+  # not the app's xctest bundle. Same library binary regardless of the
+  # homebrew/appstore variant, so we upload it once (homebrew leg only)
+  # and rely on `carryforward` for non-CI events.
+  audiotap:
+    paths:
+      - tools/audiotap/Sources/
+    carryforward: true
+
+# Files that are not unit-testable in xctest (hardware, generated, tests,
+# tooling) or that would distort the coverage signal. Reviewed line-by-line.
+ignore:
+  - "app/MeetingTranscriber/Tests/**/*"
+  - "app/MeetingTranscriber/Sources/Info.plist"
+  - "app/MeetingTranscriber/Sources/Assets.xcassets/**/*"
+  # @main SwiftUI scene shell — NSOpenPanel / NSWorkspace bindings, no
+  # mock-point, exercised end-to-end by e2e-app.yml (live recording).
+  - "app/MeetingTranscriber/Sources/MeetingTranscriberApp.swift"
+  # Pure AVAudioEngine wrapper — hardware-bound, exercised by e2e-app.yml.
+  - "app/MeetingTranscriber/Sources/MicRecorder.swift"
+  # AudioTapLib hardware-bound paths — exercised by e2e-app.yml (live
+  # recording with BlackHole), not by xctest. The rest of `tools/audiotap/`
+  # is covered by its own test suite and uploaded under the `audiotap` flag.
+  - "tools/audiotap/Sources/AppAudioCapture.swift"
+  - "tools/audiotap/Sources/MicCaptureHandler.swift"
+  - "tools/audiotap/Sources/AudioCaptureSession.swift"
+  # SwiftUI overlay + NSPanel wrapper. The pure opacity math is extracted
+  # to LiveCaptionsState.opacity(at:) and unit-tested there; what remains
+  # is NSEvent global/local monitors, NSScreen frame checks, UserDefaults
+  # position persistence, and a SwiftUI TimelineView body — none of which
+  # has an xctest mock-point. Exercised end-to-end by e2e-live-captions.sh.
+  - "app/MeetingTranscriber/Sources/LiveCaptionsOverlay.swift"
+  - "app/MeetingTranscriber/Sources/LiveCaptionsWindowController.swift"
+  # WeSpeaker post-hoc embedding extraction for Sortformer mode (Phase 1
+  # of #165). Pulls a 150 MB CoreML model pair (pyannote_segmentation +
+  # wespeaker_v2) the default xctest lane can't realistically download.
+  # Exercised end-to-end by SortformerEmbeddingsE2ETests under the
+  # RUN_QUALITY_TESTS=1 gate. The pure helpers (mask-builder, resampler,
+  # centroid aggregator) stay in FluidDiarizer.swift and ARE covered by
+  # the default lane.
+  # Codecov treats path entries as anchored regex (see https://docs.codecov.com/docs/ignoring-paths).
+  # `+` is a regex metachar ("one or more"), so the raw filename would
+  # accidentally match `FluidDiarizerrSortformerEmbeddings.swift` etc.
+  # and miss the real file. Backslash-escape with `\\+` to match the
+  # literal `+`.
+  - "app/MeetingTranscriber/Sources/FluidDiarizer\\+SortformerEmbeddings.swift"
+  # CLI-only / tools targets — separate test suites, not part of the app.
+  - "tools/meeting-simulator/**/*"
+  - "tools/mt-cli/**/*"
+  - "scripts/**/*"

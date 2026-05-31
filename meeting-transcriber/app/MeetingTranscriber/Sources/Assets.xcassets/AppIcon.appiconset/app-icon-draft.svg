@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#5B8DEF"/>
+      <stop offset="50%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="docFill" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F4F4F8"/>
+    </linearGradient>
+    <filter id="docShadow" x="-5%" y="-3%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="6" stdDeviation="18" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+    <clipPath id="docClip">
+      <path d="M310,160 L610,160 L714,264 L714,864 Q714,884 694,884 L330,884 Q310,884 310,864 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="228" ry="228" fill="url(#bg)"/>
+
+  <!-- Document shape with folded corner -->
+  <g filter="url(#docShadow)">
+    <path d="M310,160 L610,160 L714,264 L714,864 Q714,884 694,884 L330,884 Q310,884 310,864 Z" fill="url(#docFill)"/>
+    <!-- Folded corner -->
+    <path d="M610,160 L610,244 Q610,264 630,264 L714,264 Z" fill="#D5D5E0"/>
+  </g>
+
+  <!-- Waveform bars - thick and bold -->
+  <g clip-path="url(#docClip)">
+    <rect x="358" y="320" width="28" height="100" rx="14" fill="#4F46E5"/>
+    <rect x="400" y="280" width="28" height="180" rx="14" fill="#6366F1"/>
+    <rect x="442" y="250" width="28" height="240" rx="14" fill="#4F46E5"/>
+    <rect x="484" y="290" width="28" height="160" rx="14" fill="#7C3AED"/>
+    <rect x="526" y="235" width="28" height="270" rx="14" fill="#4F46E5"/>
+    <rect x="568" y="270" width="28" height="200" rx="14" fill="#6366F1"/>
+    <rect x="610" y="300" width="28" height="140" rx="14" fill="#7C3AED"/>
+    <rect x="652" y="260" width="28" height="220" rx="14" fill="#4F46E5"/>
+  </g>
+
+  <!-- Divider line -->
+  <line x1="358" y1="535" x2="680" y2="535" stroke="#C4C4D0" stroke-width="3"/>
+
+  <!-- Text lines - thick and visible -->
+  <rect x="358" y="580" width="310" height="22" rx="11" fill="#4F46E5" opacity="0.85"/>
+  <rect x="358" y="626" width="260" height="22" rx="11" fill="#6366F1" opacity="0.70"/>
+  <rect x="358" y="672" width="290" height="22" rx="11" fill="#4F46E5" opacity="0.80"/>
+  <rect x="358" y="718" width="220" height="22" rx="11" fill="#6366F1" opacity="0.65"/>
+  <rect x="358" y="764" width="270" height="22" rx="11" fill="#4F46E5" opacity="0.55"/>
+  <rect x="358" y="810" width="190" height="22" rx="11" fill="#6366F1" opacity="0.45"/>
+</svg>

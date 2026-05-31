@@ -1,0 +1,77 @@
+name: E2E Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "Transcription engine filter (WhisperKit, Parakeet, Qwen3, WatchLoop, or all)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - WhisperKit
+          - Parakeet
+          - Qwen3
+          - WatchLoop
+  push:
+    # Trigger on every main push so the engine E2E run produces a status
+    # check on the same SHA that a future `v*` tag will point at. Tag
+    # rulesets can then gate on this check without falling into the
+    # chicken-and-egg of "tag fires e2e.yml, tag rejected because e2e.yml
+    # hasn't run yet." No paths-filter: the test is cheap on the Mini
+    # (~2-3 min, generic-label runner), so the few wasted runs on
+    # docs-only commits are not worth the complexity of keeping the
+    # filter in sync across workflows.
+    #
+    # No `tags: ["v*"]` here either: a tag push on the same SHA as a prior
+    # main push would NOT be cancelled by the concurrency group (different
+    # `github.ref` between `refs/heads/main` and `refs/tags/v…`), so it
+    # would fire a duplicate engine E2E run that the tag ruleset already
+    # has covered via the main-push check-run.
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: [self-hosted, macOS, ARM64]
+    # Cold-cache runs download three multi-GB models (WhisperKit ~1 GB,
+    # Parakeet ~50 MB, Qwen3 ~1.75 GB); hot runs <10 min. 30 min job
+    # budget covers worst-case cold download. The `Run E2E tests` step
+    # below has a 25 min step-timeout so a hang surfaces as `timed_out`
+    # — see docs/plans/.local/open/2026-05-11-job-timeout-visibility.md.
+    timeout-minutes: 30
+    env:
+      E2E_ENABLED: "1"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/verify-xcode
+
+      - name: Resolve test filter
+        id: filter
+        run: |
+          ENGINE="${{ github.event.inputs.engine || 'all' }}"
+          if [ "$ENGINE" = "all" ]; then
+            FILTER="E2E"
+          else
+            FILTER="${ENGINE}E2E"
+          fi
+          echo "filter=$FILTER" >> "$GITHUB_OUTPUT"
+          echo "Running E2E tests with filter: $FILTER"
+
+      # No actions/cache here: the self-hosted Mini has persistent disk
+      # between runs, so the SPM `.build` directory and the on-disk model
+      # caches (~/Documents/huggingface, ~/Library/Application Support/
+      # FluidAudio) are already populated. actions/cache would re-download
+      # via HTTPS on hit and waste the multi-GB upload on miss — the
+      # latter timed out the post-action on a real run (5.6 GB → GitHub).
+      - name: Run E2E tests
+        timeout-minutes: 25
+        run: |
+          cd app/MeetingTranscriber
+          swift test --filter '${{ steps.filter.outputs.filter }}'

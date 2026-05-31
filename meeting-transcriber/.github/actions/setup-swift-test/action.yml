@@ -1,0 +1,91 @@
+name: "Setup Swift test environment"
+description: >
+  Checks out the repo, restores SPM and ML-model caches keyed off
+  `Package.resolved`, and pre-warms the ML model cache on a cache miss.
+  Used by every job that runs `swift test` against engines that load
+  WhisperKit / FluidAudio / Qwen3 weights, so the boilerplate lives in
+  one place instead of being copy-pasted per job.
+
+inputs:
+  cache-key-suffix:
+    description: >
+      Distinguishes parallel SPM caches by compile-flag set. Pick a stable
+      string like `homebrew`, `appstore`, `tsan`, `asan`, or `quality`.
+      Different suffixes get independent caches; same suffix can share.
+    required: true
+  swift-flags:
+    description: >
+      Extra arguments forwarded to the pre-warm `swift test` invocation
+      (e.g. `-Xswiftc -DAPPSTORE`). Sanitizer flags are intentionally NOT
+      applied to the pre-warm — the model loader doesn't need them, and
+      sanitized builds are slower to warm.
+    required: false
+    default: ""
+  cache-models:
+    description: >
+      Cache the ML model directories and pre-warm them on cache miss.
+      Set to `false` for build-only jobs (release.yml) that don't load
+      models — skips both the cache restore and the prewarm step.
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    # Caller is responsible for `actions/checkout` before invoking this
+    # action — GitHub loads `./.github/actions/...` from the workspace, so
+    # the repo must already be present.
+    - name: Cache SPM dependencies
+      uses: actions/cache@v5
+      with:
+        path: app/MeetingTranscriber/.build
+        key: spm-${{ runner.os }}-${{ inputs.cache-key-suffix }}-${{ hashFiles('app/MeetingTranscriber/Package.resolved') }}
+        restore-keys: spm-${{ runner.os }}-${{ inputs.cache-key-suffix }}-
+
+    # Cache the WhisperKit (HuggingFace) + FluidAudio model files. The
+    # HuggingFace download client races on cold-cache concurrent loads of
+    # the same variant; pre-warming sequentially populates the cache so
+    # the parallel run can hit it. After the first successful CI run the
+    # cache is populated and the preload step is skipped.
+    #
+    # The cache key also hashes `ModelPreloadTests.swift` so that adding a
+    # new pre-warm test (a new model FluidAudio downloads from a separate
+    # HF repo, e.g. Silero VAD) invalidates the cache and forces a fresh
+    # pre-warm. Without that, a `Package.resolved` that hasn't changed
+    # would let a stale cache from before the new model was added persist,
+    # and the un-pre-warmed model would race + hit HF rate limits under
+    # parallel xctest.
+    - name: Cache ML models
+      id: model-cache
+      if: inputs.cache-models == 'true'
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/Documents/huggingface
+          ~/Library/Application Support/FluidAudio
+        key: ml-models-${{ runner.os }}-${{ hashFiles('app/MeetingTranscriber/Package.resolved', 'app/MeetingTranscriber/Tests/ModelPreloadTests.swift') }}-v1
+        restore-keys: ml-models-${{ runner.os }}-
+
+    # Pre-warm step has no per-step `timeout-minutes` — composite actions
+    # don't support it. Callers should set `timeout-minutes` on the
+    # outer `uses: ./.github/actions/setup-swift-test` step to bound the
+    # cold-cache HuggingFace + FluidAudio download.
+    #
+    # `pipefail` ensures a crashing `swift test` propagates through `tee`
+    # (otherwise the step would report success and the grep below would
+    # match the partial start-of-suite output). Log file is per-job under
+    # $RUNNER_TEMP so parallel self-hosted jobs don't race on /tmp. The
+    # grep is a belt-and-braces detector for the silent no-op that occurs
+    # if `ModelPreloadTests` is ever renamed/removed.
+    - name: Pre-warm model cache (cache miss only)
+      if: inputs.cache-models == 'true' && steps.model-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd app/MeetingTranscriber
+        LOG="$RUNNER_TEMP/prewarm.log"
+        swift test --filter ModelPreloadTests ${{ inputs.swift-flags }} 2>&1 | tee "$LOG"
+        if ! grep -q "Test Suite 'ModelPreloadTests' started" "$LOG"; then
+          echo "::error::Pre-warm filter matched zero tests — has ModelPreloadTests been renamed or removed?"
+          exit 1
+        fi

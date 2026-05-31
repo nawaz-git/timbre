@@ -1,0 +1,454 @@
+import AVFoundation
+@testable import MeetingTranscriber
+import XCTest
+
+@MainActor
+final class WhisperKitE2ETests: XCTestCase {
+    // MARK: - stripWhisperTokens (no model needed, always run)
+
+    func testStripWhisperTokensStartOfTranscript() {
+        let input = "<|startoftranscript|>Hello world"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Hello world")
+    }
+
+    func testStripWhisperTokensEndOfText() {
+        let input = "Hello world<|endoftext|>"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Hello world")
+    }
+
+    func testStripWhisperTokensLanguageTag() {
+        let input = "<|en|>Hello world"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Hello world")
+    }
+
+    func testStripWhisperTokensGermanLanguageTag() {
+        let input = "<|de|>Hallo Welt"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Hallo Welt")
+    }
+
+    func testStripWhisperTokensTimestampTokens() {
+        let input = "<|0.00|>Hello<|2.50|> world<|5.00|>"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Hello world")
+    }
+
+    func testStripWhisperTokensMultipleTokens() {
+        let input = "<|startoftranscript|><|en|><|0.00|>Hello world<|2.50|><|endoftext|>"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Hello world")
+    }
+
+    func testStripWhisperTokensNoTokens() {
+        let input = "Plain text without any tokens"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Plain text without any tokens")
+    }
+
+    func testStripWhisperTokensEmptyString() {
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(""), "")
+    }
+
+    func testStripWhisperTokensOnlyTokens() {
+        let input = "<|startoftranscript|><|en|><|endoftext|>"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "")
+    }
+
+    func testStripWhisperTokensPreservesNormalAngleBrackets() {
+        let input = "2 < 3 and 5 > 4"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "2 < 3 and 5 > 4")
+    }
+
+    func testStripWhisperTokensTranslateToken() {
+        let input = "<|translate|>Some text"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Some text")
+    }
+
+    func testStripWhisperTokensTranscribeToken() {
+        let input = "<|transcribe|>Some text"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Some text")
+    }
+
+    func testStripWhisperTokensNotimeStampsToken() {
+        let input = "<|notimestamps|>Some text"
+        XCTAssertEqual(WhisperKitEngine.stripWhisperTokens(input), "Some text")
+    }
+
+    func testStripWhisperTokensMixedContent() {
+        let input = "<|0.00|>Guten Tag,<|1.20|> wie geht es Ihnen?<|3.50|>"
+        let result = WhisperKitEngine.stripWhisperTokens(input)
+        XCTAssertEqual(result, "Guten Tag, wie geht es Ihnen?")
+        XCTAssertFalse(result.contains("<|"))
+        XCTAssertFalse(result.contains("|>"))
+    }
+
+    // MARK: - Verify transcript output has no special tokens
+
+    func testTranscriptOutputContainsNoSpecialTokens() {
+        // Simulate what transcribe() does: strip tokens then trim
+        let rawSegments = [
+            "<|startoftranscript|><|de|><|0.00|>Hallo zusammen<|2.50|>",
+            "<|2.50|>Wie geht es euch?<|5.00|>",
+            "<|5.00|>Gut, danke.<|7.00|><|endoftext|>",
+        ]
+
+        for raw in rawSegments {
+            let cleaned = WhisperKitEngine.stripWhisperTokens(raw)
+                .trimmingCharacters(in: .whitespaces)
+            XCTAssertFalse(
+                cleaned.contains("<|"),
+                "Cleaned text should not contain '<|': \(cleaned)",
+            )
+            XCTAssertFalse(
+                cleaned.contains("|>"),
+                "Cleaned text should not contain '|>': \(cleaned)",
+            )
+        }
+    }
+
+    // MARK: - Resample 48kHz -> 16kHz (no model needed)
+
+    func testResample48kTo16k() {
+        // Generate a simple sine wave at 48kHz
+        let sourceRate = 48000
+        let targetRate = 16000
+        let duration = 1.0 // 1 second
+        let sampleCount = Int(duration * Double(sourceRate))
+
+        var samples = [Float](repeating: 0, count: sampleCount)
+        let frequency: Float = 440.0 // A4
+        for i in 0 ..< sampleCount {
+            samples[i] = sin(2 * .pi * frequency * Float(i) / Float(sourceRate))
+        }
+
+        let resampled = AudioMixer.resample(samples, from: sourceRate, to: targetRate)
+
+        // Output should have approximately targetRate samples for 1 second
+        let expectedCount = Int(duration * Double(targetRate))
+        XCTAssertEqual(
+            resampled.count,
+            expectedCount,
+            "Resampled should have \(expectedCount) samples, got \(resampled.count)",
+        )
+        XCTAssertFalse(resampled.isEmpty)
+    }
+
+    func testResamplePreservesSignalEnergy() {
+        let sourceRate = 48000
+        let targetRate = 16000
+        let sampleCount = sourceRate // 1 second
+
+        // Generate a 440Hz sine wave
+        var samples = [Float](repeating: 0, count: sampleCount)
+        for i in 0 ..< sampleCount {
+            samples[i] = sin(2 * .pi * 440 * Float(i) / Float(sourceRate))
+        }
+
+        let resampled = AudioMixer.resample(samples, from: sourceRate, to: targetRate)
+
+        // Typed-binding split — the single-expression `sqrt(map.reduce / Float(...))`
+        // trips `-warn-long-expression-type-checking` on the CI mini under load.
+        let sourceSquared: [Float] = samples.map { $0 * $0 }
+        let sourceSum: Float = sourceSquared.reduce(0, +)
+        let sourceRMS: Float = sqrt(sourceSum / Float(samples.count))
+
+        let targetSquared: [Float] = resampled.map { $0 * $0 }
+        let targetSum: Float = targetSquared.reduce(0, +)
+        let targetRMS: Float = sqrt(targetSum / Float(resampled.count))
+
+        // RMS should be similar (within 10%)
+        XCTAssertEqual(
+            Double(targetRMS),
+            Double(sourceRMS),
+            accuracy: Double(sourceRMS) * 0.1,
+            "Resampled signal RMS should be close to original",
+        )
+    }
+
+    // MARK: - Integration: transcribeSegments with real audio (slow, needs model)
+
+    func testTranscribeSegmentsWithFixture() async throws {
+        // This test downloads a WhisperKit model (~1GB) - skip in CI
+        try skipIfCIWithoutE2EOptIn("requires WhisperKit model download")
+
+        let fixture = fixtureURL()
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: fixture.path),
+            "Test fixture not found at \(fixture.path)",
+        )
+
+        let engine = WhisperKitEngine()
+        engine.modelVariant = "openai_whisper-small"
+        engine.language = "de"
+
+        await engine.loadModel()
+        XCTAssertEqual(engine.modelState, .loaded, "Model should be loaded")
+
+        let segments = try await engine.transcribeSegments(audioPath: fixture)
+
+        XCTAssertFalse(segments.isEmpty, "Should produce at least one segment")
+
+        // Verify no segment contains Whisper special tokens
+        for segment in segments {
+            XCTAssertFalse(
+                segment.text.contains("<|"),
+                "Segment text should not contain '<|': \(segment.text)",
+            )
+            XCTAssertFalse(
+                segment.text.contains("|>"),
+                "Segment text should not contain '|>': \(segment.text)",
+            )
+        }
+
+        // Verify timestamps are non-negative and ordered
+        for segment in segments {
+            XCTAssertGreaterThanOrEqual(segment.start, 0, "Start should be non-negative")
+            XCTAssertGreaterThanOrEqual(segment.end, segment.start, "End should be >= start")
+        }
+
+        // Verify text is non-empty after stripping
+        for segment in segments {
+            XCTAssertFalse(segment.text.isEmpty, "Segment text should not be empty")
+        }
+    }
+
+    func testTranscribeSegmentsHallucinationFilter() async throws {
+        // This test downloads a WhisperKit model (~1GB) - skip in CI
+        try skipIfCIWithoutE2EOptIn("requires WhisperKit model download")
+
+        let fixture = fixtureURL()
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: fixture.path),
+            "Test fixture not found at \(fixture.path)",
+        )
+
+        let engine = WhisperKitEngine()
+        engine.modelVariant = "openai_whisper-small"
+        engine.language = "de"
+
+        await engine.loadModel()
+        XCTAssertEqual(engine.modelState, .loaded, "Model should be loaded")
+
+        let segments = try await engine.transcribeSegments(audioPath: fixture)
+
+        // Verify no consecutive segments have identical text (hallucination filter)
+        for i in 1 ..< segments.count {
+            XCTAssertNotEqual(
+                segments[i].text, segments[i - 1].text,
+                "Consecutive segments should not have identical text (hallucination)",
+            )
+        }
+    }
+
+    func testFullDualSourcePipeline() async throws {
+        // This test downloads a WhisperKit model (~1GB) - skip in CI
+        try skipIfCIWithoutE2EOptIn("requires WhisperKit model download")
+
+        let fixture = fixtureURL()
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: fixture.path),
+            "Test fixture not found at \(fixture.path)",
+        )
+
+        // Load fixture, resample 48kHz->16kHz, save as temp file, then transcribe
+        let samples = try AudioMixer.loadAudioFileAsFloat32(url: fixture)
+        XCTAssertFalse(samples.isEmpty, "Should load samples from fixture")
+
+        // Determine source sample rate from AVAudioFile
+        let file = try AVAudioFile(forReading: fixture)
+        let sourceSampleRate = Int(file.processingFormat.sampleRate)
+
+        // Resample to 16kHz if needed
+        let targetRate = 16000
+        let resampled: [Float]
+        if sourceSampleRate != targetRate {
+            resampled = AudioMixer.resample(samples, from: sourceSampleRate, to: targetRate)
+            XCTAssertFalse(resampled.isEmpty, "Resampled audio should not be empty")
+        } else {
+            resampled = samples
+        }
+
+        // Save resampled audio to temp file
+        let tmpDir = try makeTempDirectory(prefix: "whisperkit_e2e")
+
+        let tmpWAV = tmpDir.appendingPathComponent("resampled_16k.wav")
+        try AudioMixer.saveWAV(samples: resampled, sampleRate: targetRate, url: tmpWAV)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tmpWAV.path))
+
+        // Transcribe the resampled file
+        let engine = WhisperKitEngine()
+        engine.modelVariant = "openai_whisper-small"
+        engine.language = "de"
+
+        await engine.loadModel()
+        XCTAssertEqual(engine.modelState, .loaded, "Model should be loaded")
+
+        let transcript = try await engine.transcribe(audioPath: tmpWAV)
+
+        XCTAssertFalse(transcript.isEmpty, "Transcript should not be empty")
+
+        // Verify no special tokens in output
+        XCTAssertFalse(transcript.contains("<|"), "Transcript should not contain '<|'")
+        XCTAssertFalse(transcript.contains("|>"), "Transcript should not contain '|>'")
+
+        // Verify timestamp format
+        let lines = transcript.components(separatedBy: "\n")
+        XCTAssertGreaterThan(lines.count, 0, "Should have at least one line")
+        for line in lines where !line.isEmpty {
+            XCTAssertTrue(
+                line.hasPrefix("["),
+                "Each line should start with timestamp bracket: \(line)",
+            )
+        }
+    }
+
+    // MARK: - Multi-format E2E (resample + transcribe from MP3/M4A/MP4)
+
+    /// Transcribe a multi-format file end-to-end: load → resample → transcribe → verify.
+    /// Returns the transcript for cross-format comparison.
+    private func transcribeFixture(_ filename: String, engine: WhisperKitEngine) async throws -> String {
+        let fixture = fixtureURL(filename)
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: fixture.path),
+            "Fixture \(filename) not found",
+        )
+
+        let tmpDir = try makeTempDirectory(prefix: "multiformat_e2e")
+
+        // resampleFile uses loadAudioAsFloat32 → AVAudioFile or AVAsset fallback
+        let resampled16k = tmpDir.appendingPathComponent("resampled_16k.wav")
+        try await AudioMixer.resampleFile(from: fixture, to: resampled16k, targetRate: 16000)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: resampled16k.path))
+
+        // Verify output is 16kHz
+        let outFile = try AVAudioFile(forReading: resampled16k)
+        XCTAssertEqual(Int(outFile.processingFormat.sampleRate), 16000)
+
+        let transcript = try await engine.transcribe(audioPath: resampled16k)
+        XCTAssertFalse(transcript.isEmpty, "\(filename): transcript should not be empty")
+        XCTAssertFalse(transcript.contains("<|"), "\(filename): no special tokens")
+        return transcript
+    }
+
+    /// Keywords expected in the transcript (from the fixture's TTS content).
+    /// The fixture contains: "Guten Tag, willkommen zum Projekt Meeting",
+    /// "Danke ... aktuellen Status berichten", "Wie läuft die Entwicklung",
+    /// "Entwicklung läuft nach Plan ... Zeitplan".
+    /// We check case-insensitively for key words that WhisperKit reliably recognizes.
+    private let expectedKeywords = [
+        "willkommen", "Projekt", "Status", "Entwicklung", "Zeitplan",
+    ]
+
+    private func assertTranscriptContent(_ transcript: String, format: String) {
+        let lower = transcript.lowercased()
+        var matched = 0
+        for keyword in expectedKeywords where lower.contains(keyword.lowercased()) {
+            matched += 1
+        }
+        // At least 3 of 5 keywords should appear (TTS + compression may cause minor variations)
+        XCTAssertGreaterThanOrEqual(
+            matched, 3,
+            "\(format): expected at least 3 of \(expectedKeywords) in transcript, found \(matched). Transcript:\n\(transcript)",
+        )
+    }
+
+    // MARK: - Issue #256: Polish audio must transcribe as Polish, not English
+
+    /// E2E reproduction of issue #256. The bug reporter (Polish speaker) saw
+    /// most of their meeting "translated to English" because:
+    ///   1. `AppSettings.whisperLanguage` defaults to `"de"`, so a fresh-install
+    ///      Polish user gets German forced as language hint on Polish audio.
+    ///   2. The escape is to pick a different language — but `whisperLanguages`
+    ///      did not include `pl`, so the only option was empty/Auto-detect,
+    ///      which large-v3 drifts to English on Polish.
+    ///
+    /// This test exercises the "explicit Polish" path that becomes available
+    /// once Polish is added to the picker: with `engine.language = "pl"` and
+    /// a Polish-language fixture, the transcript should contain Polish-
+    /// specific characters and recognisable Polish words rather than English.
+    func testPolishAudioTranscribesAsPolishWithExplicitLanguage() async throws {
+        try skipIfCIWithoutE2EOptIn("requires WhisperKit model download")
+
+        let fixture = fixtureURL("polish_sample.wav")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: fixture.path),
+            "Polish fixture not found at \(fixture.path)",
+        )
+
+        let engine = WhisperKitEngine()
+        engine.modelVariant = "openai_whisper-small"
+        engine.language = "pl"
+
+        await engine.loadModel()
+        XCTAssertEqual(engine.modelState, .loaded, "Model should be loaded")
+
+        let transcript = try await engine.transcribe(audioPath: fixture)
+        XCTAssertFalse(transcript.isEmpty, "Polish transcript should not be empty")
+
+        let lower = transcript.lowercased()
+
+        // Polish letters that don't occur in English at all. `ó` is shared with
+        // other Romance/Slavic languages but never with English. Threshold ≥ 2:
+        // the 13s TTS fixture utters multiple words containing distinct
+        // diacritics, so any honest Polish transcript hits at least two; ≥ 3
+        // would be brittle against the small model dropping one diacritic.
+        let polishDiacritics: [Character] = ["\u{0105}", "\u{0107}", "\u{0119}", "\u{0142}", "\u{0144}", "\u{00F3}", "\u{015B}", "\u{017A}", "\u{017C}"]
+        let diacriticsFound = polishDiacritics.filter { lower.contains($0) }
+        XCTAssertGreaterThanOrEqual(
+            diacriticsFound.count, 2,
+            "Polish transcript should contain Polish-specific diacritics " +
+                "(found: \(diacriticsFound)). Transcript:\n\(transcript)",
+        )
+
+        // Words from the fixture's TTS content (substrings tolerant of TTS variations).
+        // Threshold ≥ 2 same rationale as diacritics — small model may drop
+        // one word but not most.
+        let polishWordRoots = ["dzi\u{0119}kuj", "witam", "projekt", "spotkaniu", "pytania", "plan"]
+        let matchedRoots = polishWordRoots.filter { lower.contains($0) }
+        XCTAssertGreaterThanOrEqual(
+            matchedRoots.count, 2,
+            "Polish transcript should contain at least 2 Polish word stems from " +
+                "\(polishWordRoots). Found \(matchedRoots). Transcript:\n\(transcript)",
+        )
+
+        // Negative guard: transcript must not be predominantly English.
+        // If WhisperKit drifted to translate-as-English, common English filler
+        // words would dominate. Two or more strict matches → likely English.
+        // The fixture script is pure Polish with no English brand names or
+        // loanwords, so the leading-space-bounded filler check has no false-
+        // positive vector here. If a future fixture mixes languages, this
+        // threshold needs revisiting.
+        let englishFillers = [" the ", " and ", " this ", " our ", " thank "]
+        let englishHits = englishFillers.filter { lower.contains($0) }
+        XCTAssertLessThanOrEqual(
+            englishHits.count, 1,
+            "Polish transcript looks like English (matches: \(englishHits)). " +
+                "Transcript:\n\(transcript)",
+        )
+    }
+
+    func testTranscribeMultiFormatContent() async throws {
+        try skipIfCIWithoutE2EOptIn("requires WhisperKit model download")
+
+        let engine = WhisperKitEngine()
+        engine.modelVariant = "openai_whisper-small"
+        engine.language = "de"
+        await engine.loadModel()
+        XCTAssertEqual(engine.modelState, .loaded)
+
+        // Each entry covers one ingestion path:
+        //   - WAV/MP3/M4A/MP4 ride the AVAudioFile/AVAsset tier of `AudioMixer`
+        //   - MKV/WebM/OGG only decode through the FFmpegHelper fallback,
+        //     so they're skipped on hosts without ffmpeg installed.
+        let stem = "two_speakers_de"
+        let formats: [(ext: String, label: String)] = [
+            ("wav", "WAV"), ("mp3", "MP3"), ("m4a", "M4A"), ("mp4", "MP4"),
+            ("mkv", "MKV"), ("webm", "WebM"), ("ogg", "OGG"),
+        ]
+
+        for entry in formats {
+            if FFmpegHelper.ffmpegOnlyExtensions.contains(entry.ext), !FFmpegHelper.isAvailable {
+                continue
+            }
+            let transcript = try await transcribeFixture("\(stem).\(entry.ext)", engine: engine)
+            assertTranscriptContent(transcript, format: entry.label)
+        }
+    }
+}

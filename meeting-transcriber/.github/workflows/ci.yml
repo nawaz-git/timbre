@@ -1,0 +1,182 @@
+name: CI
+
+on:
+  push:
+    branches: [main, mac]
+  pull_request:
+    branches: [main]
+  # Manual re-run knob (e.g. to re-trigger lint after a SwiftFormat config
+  # bump). Background-QA jobs (sanitizer, quality) live in
+  # `quality-and-safety.yml` with their own dispatch UI.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Detect whether anything outside docs/markdown changed. The filter only runs
+  # for PR events; for push/tag/dispatch the step is skipped, leaving the step
+  # output empty, and the job output falls back to 'true' so the full suite
+  # always runs on non-PR triggers. Skipped required checks count as success
+  # in branch protection, so docs-only PRs stay mergeable.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      code: ${{ steps.filter.outputs.code || 'true' }}
+    steps:
+      # Needed so dorny/paths-filter can read .github/filters.yml from the
+      # workspace; the action otherwise hits the GitHub API for the file
+      # list but still needs the filter definition locally.
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@v6
+      - if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # `every` is required for the exclusion-style filter in
+          # .github/filters.yml: with the v4 default `some`, the `**`
+          # catch-all alone marks every file as matched and the `!…`
+          # negations never actually exclude anything, so docs-only PRs
+          # still trigger the full build/test suite.
+          predicate-quantifier: every
+          filters: .github/filters.yml
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-26
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install tools
+        run: brew install swiftformat swiftlint
+      # SwiftFormat path list lives in scripts/lint.sh; calling it keeps CI and
+      # local lint runs aligned. SwiftLint stays an explicit step to use the
+      # github-actions-logging reporter (annotations in the PR diff).
+      - name: SwiftFormat
+        run: bash scripts/lint.sh --format-only
+      - name: SwiftLint
+        run: swiftlint lint --strict --reporter github-actions-logging
+      - name: Build script regression tests
+        run: bash scripts/tests/test_build_release_signing.sh
+      - name: Cancel run on failure
+        if: failure()
+        uses: ./.github/actions/cancel-on-failure
+
+  analyze:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install SwiftLint
+        run: brew install swiftlint
+      - name: Build & Analyze
+        run: |
+          cd app/MeetingTranscriber
+          xcodebuild -scheme MeetingTranscriber -destination 'platform=macOS' build-for-testing 2>&1 | tee /tmp/xcodebuild.log
+          cd "$GITHUB_WORKSPACE"
+          swiftlint analyze --strict --compiler-log-path /tmp/xcodebuild.log --reporter github-actions-logging
+      - name: Cancel run on failure
+        if: failure()
+        uses: ./.github/actions/cancel-on-failure
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-26
+    # 25 min job-timeout = 20 min setup (cold cache) + ~5 min margin. The
+    # `Swift tests` step below has its own 18 min step-timeout so a hang
+    # surfaces as `timed_out` (clearly distinguishable from cancellation),
+    # not the opaque `cancelled` a bare job-timeout produces. See
+    # docs/plans/.local/open/2026-05-11-job-timeout-visibility.md.
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: write
+    strategy:
+      # Both Homebrew and AppStore variants must pass; one failing leg
+      # shouldn't kill the other's diagnostic output.
+      fail-fast: false
+      matrix:
+        variant: [homebrew, appstore]
+        include:
+          - variant: homebrew
+            swift-flags: ""
+          - variant: appstore
+            swift-flags: "-Xswiftc -DAPPSTORE"
+    name: test (${{ matrix.variant }})
+    steps:
+      - uses: actions/checkout@v6
+      # 20 min covers SPM + ML cache restore plus the cold-cache pre-warm
+      # download; well below the 25 min job timeout so a hung download
+      # surfaces as a step failure, not a job-timeout.
+      - uses: ./.github/actions/setup-swift-test
+        timeout-minutes: 20
+        with:
+          cache-key-suffix: ${{ matrix.variant }}
+          swift-flags: ${{ matrix.swift-flags }}
+      # 18 min step-timeout on the actual tests: typical hot-cache run is
+      # 5–7 min, so this is ~3× margin while still failing fast as
+      # `timed_out` (not `cancelled`) when a single test hangs.
+      # `--enable-code-coverage` adds ~10–15 % runtime and writes a
+      # `default.profdata` next to the xctest bundle.
+      - name: Swift tests
+        timeout-minutes: 18
+        run: cd app/MeetingTranscriber && swift test --parallel --enable-code-coverage --skip ModelPreloadTests ${{ matrix.swift-flags }}
+      # Skipping on test failure is intentional — we never want a stale
+      # coverage snapshot uploaded as if it were green.
+      - uses: ./.github/actions/export-lcov
+        if: success()
+        with:
+          package-dir: app/MeetingTranscriber
+          flag: ${{ matrix.variant }}
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Cancel run on failure
+        if: failure()
+        uses: ./.github/actions/cancel-on-failure
+
+  # AudioTapLib SPM library lives in `tools/audiotap/` and has its own
+  # test suite (`tools/audiotap/Tests/`). Runs as its own top-level job
+  # in parallel with `test` so wall-clock isn't gated by the app suite.
+  # No matrix — the library is variant-agnostic (no -DAPPSTORE path),
+  # so a single upload + `carryforward` in `.codecov.yml` is sufficient.
+  audiotap-coverage:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-26
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+      # No ML model dependencies — a plain SPM cache keyed off the
+      # manifest is enough to drop cold-compile cost on repeat runs.
+      - uses: actions/cache@v5
+        with:
+          path: tools/audiotap/.build
+          key: audiotap-spm-${{ runner.os }}-${{ hashFiles('tools/audiotap/Package.swift') }}
+          restore-keys: |
+            audiotap-spm-${{ runner.os }}-
+      - name: Swift tests
+        timeout-minutes: 5
+        run: cd tools/audiotap && swift test --parallel --enable-code-coverage
+      - uses: ./.github/actions/export-lcov
+        if: success()
+        with:
+          package-dir: tools/audiotap
+          flag: audiotap
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Cancel run on failure
+        if: failure()
+        uses: ./.github/actions/cancel-on-failure

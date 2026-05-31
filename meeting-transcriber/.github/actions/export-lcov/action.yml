@@ -1,0 +1,38 @@
+name: "Export LCOV + upload to Codecov"
+description: >
+  Runs `scripts/export-lcov.sh` to convert the given SPM package's
+  `default.profdata` into an LCOV file, then uploads it to codecov
+  under the given flag. Caller must have already run
+  `swift test --enable-code-coverage` in `package-dir`.
+
+inputs:
+  package-dir:
+    description: SPM package directory containing the test build output (relative to repo root).
+    required: true
+  flag:
+    description: codecov flag to upload under (e.g. homebrew, appstore, audiotap).
+    required: true
+  codecov-token:
+    description: codecov upload token.
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    # Inputs are surfaced as env vars rather than substituted directly
+    # into the bash body — keeps the shell side template-free and
+    # avoids the GH-Actions-templating-in-bash injection footgun.
+    - name: Export LCOV
+      shell: bash
+      env:
+        PACKAGE_DIR: ${{ inputs.package-dir }}
+        OUTPUT_PATH: ${{ github.workspace }}/coverage-${{ inputs.flag }}.lcov
+      run: ./scripts/export-lcov.sh "$PACKAGE_DIR" "$OUTPUT_PATH"
+    - name: Upload to Codecov
+      uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24 # v5.4.3
+      with:
+        token: ${{ inputs.codecov-token }}
+        files: coverage-${{ inputs.flag }}.lcov
+        flags: ${{ inputs.flag }}
+        fail_ci_if_error: false
+        verbose: true
