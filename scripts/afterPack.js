@@ -1,42 +1,77 @@
 /**
  * electron-builder afterPack hook (v0.19+).
  *
- * Rebrands the bundled Swift helper from "MeetingTranscriber" to
- * "Mintr Engine" — file paths, executable name, and (critically) the
- * CFBundleIdentifier. The bundle id change forces macOS to treat the
- * helper as a completely independent app from Mintr (different TCC
- * principal, no parent-process attribution), which is what finally
- * fixes the v0.12 → v0.18 PermissionHealthCheck failure chain.
+ * Two jobs, in order:
  *
- * Why this is a build-time mutation rather than a source rename in the
- * sibling Swift project: that project is its own codebase and we don't
- * want to fork its identity. We rebadge purely the artifacts copied
- * into Mintr.app via electron-builder's extraResources clause, leaving
- * the upstream MeetingTranscriber project unchanged.
+ *   A. REBRAND the bundled Swift helper from "MeetingTranscriber" to
+ *      "Timbre Engine" — file paths, executable name, and (critically) the
+ *      CFBundleIdentifier (ai.nawaz.mintr-engine). The bundle id change forces
+ *      macOS to treat the helper as a completely independent app from Mintr
+ *      (different TCC principal, no parent-process attribution), which is what
+ *      finally fixes the v0.12 → v0.18 PermissionHealthCheck failure chain.
  *
- * Steps:
- *   1. Locate the copied helper at <appOutDir>/Mintr.app/Contents/
- *      Resources/MeetingTranscriber.app
- *   2. Rename the inner binary: Contents/MacOS/MeetingTranscriber
- *      → Contents/MacOS/MintrEngine
- *   3. Patch Info.plist:
- *        CFBundleIdentifier   = ai.nawaz.mintr-engine
- *        CFBundleName         = Mintr Engine
- *        CFBundleDisplayName  = Mintr Engine
- *        CFBundleExecutable   = MintrEngine
- *   4. Rename the .app bundle directory:
- *      MeetingTranscriber.app → MintrEngine.app
- *   5. Re-sign so codesign verification still passes after the rewrite.
- *      The original signature is invalidated by any byte-level change
- *      inside the bundle, and the hardened runtime refuses to load an app
- *      whose code signature doesn't match its current contents.
- *      When MINTR_SIGN_IDENTITY is set (see dev/scripts/setup-signing.sh)
- *      we re-sign with that STABLE identity so the cdhash-independent
- *      Designated Requirement stays constant across rebuilds and TCC grants
- *      persist; otherwise we fall back to ad-hoc (`--sign -`).
+ *   B. SIGN THE ENTIRE BUNDLE INSIDE-OUT. electron-builder is configured with
+ *      `identity: null` (it refuses self-signed identities — see
+ *      electron-builder.js), so ALL code signing is delegated here. The bundle
+ *      ships with Electron's nested helper .apps, frameworks and dylibs still
+ *      ad-hoc / linker-signed (flags=0x20002, "Sealed Resources=none"). If we
+ *      only re-sign the engine + the OUTER Timbre.app (as this script used to),
+ *      the outer --force re-seal writes a proper v2 resource-sealed
+ *      CodeDirectory that RAISES the verification bar, and then
+ *      `codesign --verify --deep --strict` walks into the first ad-hoc helper
+ *      and fails:
+ *          "code has no resources but signature indicates they must be present
+ *           In subcomponent: …/Timbre Helper (GPU).app"
+ *      An INVALID deep signature + the com.apple.quarantine xattr a downloaded
+ *      DMG carries = the macOS "Timbre is damaged and can't be opened" dialog.
  *
- * If any step throws we DO NOT swallow the error — let electron-builder
- * fail the whole build so we don't ship a half-rebranded DMG.
+ *      The fix is to sign EVERY nested signable component, DEEPEST-FIRST, so
+ *      that when the outer bundle is finally sealed it hashes children that are
+ *      each already validly signed. Order is load-bearing: `codesign --force`
+ *      on a parent seals a hash of each child's CURRENT signature into the
+ *      parent CodeDirectory, so any child re-signed AFTER its parent silently
+ *      invalidates that parent. Signing order (leaves → root):
+ *
+ *        L0  loose Mach-O leaves (not inside a .app of their own):
+ *              Electron Framework …/Helpers/chrome_crashpad_handler
+ *              Squirrel        …/Resources/ShipIt
+ *              Resources/bin/mt-batch   (the bundled Swift CLI)
+ *            plus the dylibs bundled inside Electron Framework's Libraries/.
+ *        L1  the *.framework bundles — sign the REAL versioned dir
+ *            (Versions/A), never the top-level <Name>.framework symlink nor
+ *            Versions/Current. Electron Framework is signed AFTER its dylibs.
+ *        L2  the four nested Electron helper .apps (the step this script used
+ *            to omit entirely) — signed with the SAME entitlements file
+ *            (entitlementsInherit == build/entitlements.mac.plist).
+ *        L3  the rebranded MintrEngine.app — kept on
+ *            --preserve-metadata=entitlements so its upstream audio / JIT /
+ *            automation entitlements survive (do NOT re-declare at dev tier).
+ *        L4  the OUTER Timbre.app, LAST, WITH --entitlements
+ *            build/entitlements.mac.plist, and NEVER with --deep.
+ *
+ * Why a build-time mutation rather than a source rename in the sibling Swift
+ * project: that project is its own codebase and we don't want to fork its
+ * identity. We rebadge purely the artifacts copied into Timbre.app via
+ * electron-builder's extraResources clause, leaving upstream MeetingTranscriber
+ * unchanged.
+ *
+ * Signing tiers:
+ *   - DEV (default): self-signed "Mintr Dev Signing" (MINTR_SIGN_IDENTITY),
+ *     hardenedRuntime OFF. NO `--options runtime`, NO `--timestamp`: a
+ *     self-signed cert has no trusted TSA chain, and hardened runtime + the
+ *     engine's allow-jit / allow-unsigned-executable-memory entitlements would
+ *     kill the app at launch ("code signature invalid").
+ *   - DEVELOPER-ID (future, opt-in via MINTR_HARDENED_RUNTIME=1 or a real
+ *     "Developer ID Application: …" identity): adds `--options runtime` and
+ *     `--timestamp` at EVERY level for notarization. Flipping that env (and
+ *     hardenedRuntime=true in electron-builder.js) is all that's needed — the
+ *     inside-out order is identical.
+ *   - AD-HOC fallback (MINTR_SIGN_IDENTITY unset, e.g. CI smoke builds): every
+ *     component is still signed inside-out with `--sign -` so the bundle still
+ *     deep-verifies. (TCC grants won't persist for ad-hoc — see the warning.)
+ *
+ * If any step throws we DO NOT swallow the error — let electron-builder fail
+ * the whole build so we never ship a half-signed / half-rebranded DMG.
  */
 
 const fs = require('fs')
@@ -50,166 +85,402 @@ const NEW_EXEC_NAME = 'MintrEngine'
 const NEW_BUNDLE_ID = 'ai.nawaz.mintr-engine'
 const NEW_DISPLAY_NAME = 'Timbre Engine'
 
+const CODESIGN = '/usr/bin/codesign'
+const PLISTBUDDY = '/usr/libexec/PlistBuddy'
+
 /**
- * Patch a binary plist (Info.plist) via PlistBuddy — preserves the
- * binary-encoded format the bundle ships with (changing to text would
- * break LaunchServices' fast bundle-id index on some macOS versions).
+ * Resolve the entitlements plist used for the outer app AND the helpers
+ * (electron-builder.js sets BOTH `entitlements` and `entitlementsInherit` to
+ * the same file). We look in the project root first (the cwd electron-builder
+ * runs from), then fall back to a couple of common locations so the script is
+ * robust to where it's invoked. Throws if it can't be found — signing the
+ * outer app without entitlements is exactly the bug we're fixing, so a missing
+ * file must fail loudly rather than silently sign without it.
  */
-function plistSet(plistPath, key, value) {
-  execFileSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${value}`, plistPath], {
+function resolveEntitlements(context) {
+  const candidates = [
+    path.resolve(process.cwd(), 'build', 'entitlements.mac.plist'),
+    // projectDir is set by electron-builder's packager when available.
+    context &&
+      context.packager &&
+      context.packager.info &&
+      context.packager.info.projectDir &&
+      path.resolve(context.packager.info.projectDir, 'build', 'entitlements.mac.plist'),
+    path.resolve(__dirname, '..', 'build', 'entitlements.mac.plist')
+  ].filter(Boolean)
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  throw new Error(
+    `[afterPack] entitlements file not found. Looked in:\n  - ${candidates.join('\n  - ')}`
+  )
+}
+
+/**
+ * Decide whether to harden + timestamp. DEFAULT (self-signed dev tier) is OFF.
+ * Turned ON when the build explicitly opts in via MINTR_HARDENED_RUNTIME=1 OR
+ * when the configured identity is a real Developer ID cert (whose name starts
+ * with "Developer ID Application:"), since those are the only cases where a
+ * trusted TSA chain exists and hardened runtime can actually launch.
+ */
+function isHardenedTier(identity) {
+  if (process.env.MINTR_HARDENED_RUNTIME === '1') return true
+  if (identity && /^Developer ID Application:/i.test(identity)) return true
+  return false
+}
+
+/**
+ * Build the codesign argv for one component.
+ *
+ *   signSpec   the `--sign` value: a real identity name, or '-' for ad-hoc.
+ *   targetPath the component to sign.
+ *   opts.entitlements        absolute path to an --entitlements plist (apps).
+ *   opts.preserveEntitlements true → --preserve-metadata=entitlements (engine).
+ *   opts.hardened            true → add --options runtime + --timestamp.
+ *
+ * We NEVER pass --deep: --deep re-signs children with the PARENT's args
+ * (wrong/no entitlements for helpers, would clobber the engine's preserved
+ * entitlements) and Apple deprecates it for signing. Each component is signed
+ * explicitly instead.
+ */
+function codesignArgs(signSpec, targetPath, opts = {}) {
+  const args = ['--force', '--sign', signSpec]
+  if (opts.hardened) {
+    // Hardened runtime + a secure timestamp — Developer-ID / notarization tier
+    // only. Harmless flags are intentionally omitted at the self-signed tier.
+    args.push('--options', 'runtime', '--timestamp')
+  }
+  if (opts.preserveEntitlements) {
+    // Reuse whatever entitlements are already embedded (engine: keep upstream
+    // MeetingTranscriber's audio/JIT/automation set without re-declaring).
+    args.push('--preserve-metadata=entitlements')
+  } else if (opts.entitlements) {
+    args.push('--entitlements', opts.entitlements)
+  }
+  args.push(targetPath)
+  return args
+}
+
+/**
+ * Sign a single component. Uses execFileSync (argv array, NO shell) so paths
+ * containing spaces and parentheses — "Timbre Helper (GPU).app" — are passed
+ * verbatim with no quoting/escaping concerns. Errors propagate (no try/catch).
+ */
+function sign(signSpec, targetPath, opts, label) {
+  console.log(`[afterPack]   sign ${label || ''}${label ? ' — ' : ''}${targetPath}`)
+  execFileSync(CODESIGN, codesignArgs(signSpec, targetPath, opts), {
     stdio: ['ignore', 'pipe', 'pipe']
   })
 }
 
 /**
- * Re-sign the renamed engine bundle. When MINTR_SIGN_IDENTITY is set we use
- * that stable identity (the TCC re-grant-loop fix); otherwise we fall back to
- * ad-hoc (`--sign -`), preserving the previous build behaviour for CI / other
- * devs who haven't run dev/scripts/setup-signing.sh.
- *
- * For the stable self-signed identity we drop `--deep` (the engine bundle has
- * no nested code today, and `--deep` can fight electron-builder's own signing
- * of the outer Mintr.app) and drop `--options runtime` (hardened runtime is
- * off for the self-signed dev tier — see electron-builder.config.js). The
- * ad-hoc path keeps the original `--force --deep --sign -` recipe verbatim.
- * Both keep `--preserve-metadata=entitlements` so the engine's audio
- * entitlements survive the re-sign.
+ * Patch a binary plist (Info.plist) via PlistBuddy — preserves the
+ * binary-encoded format the bundle ships with (changing to text would break
+ * LaunchServices' fast bundle-id index on some macOS versions).
  */
-function resignEngine(bundlePath) {
-  const identity = process.env.MINTR_SIGN_IDENTITY
-  if (identity) {
-    console.log(`[afterPack] re-signing renamed helper with identity "${identity}"`)
-    execFileSync(
-      '/usr/bin/codesign',
-      ['--force', '--sign', identity, '--preserve-metadata=entitlements', bundlePath],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
+function plistSet(plistPath, key, value) {
+  execFileSync(PLISTBUDDY, ['-c', `Set :${key} ${value}`, plistPath], {
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+}
+
+/**
+ * Re-sign the renamed engine bundle. The original signature is invalidated by
+ * both the binary rename and the plist edits, so this MUST run after the
+ * rebrand. We keep --preserve-metadata=entitlements so the engine's audio /
+ * mic / automation / JIT entitlements survive (it's the one bundle that uses
+ * its own upstream entitlements, NOT build/entitlements.mac.plist).
+ *
+ * We drop --deep (the engine is a single-executable bundle with no nested
+ * signables — verified) and, at the self-signed dev tier, --options runtime
+ * (hardened runtime is off — see electron-builder.js). The ad-hoc fallback
+ * (MINTR_SIGN_IDENTITY unset) signs with `--sign -`, same preserve flag.
+ */
+function resignEngine(bundlePath, signSpec, hardened, isAdhoc) {
+  if (isAdhoc) {
+    // No stable identity → ad-hoc. Intentional for CI smoke builds, but a LOCAL
+    // install of an ad-hoc bundle gets a fresh cdhash with no stable Designated
+    // Requirement, so it inherits NONE of the user's existing TCC grants
+    // (Screen Recording, Microphone, Automation) — the app then looks
+    // completely broken (no meeting detection, no audio, no screen video), all
+    // silently. Warn loudly so it's never mistaken for a code bug. For a
+    // permission-stable build run dev/scripts/setup-signing.sh once, then
+    // `MINTR_SIGN_IDENTITY="Mintr Dev Signing" npm run dist:mac`.
+    console.warn(
+      '\n' +
+        '╔════════════════════════════════════════════════════════════════════╗\n' +
+        '║  [afterPack] ⚠  AD-HOC SIGNING — MINTR_SIGN_IDENTITY is not set.     ║\n' +
+        '║  Every component is still signed inside-out (so the bundle still     ║\n' +
+        '║  deep-verifies), but with a fresh cdhash that inherits NO TCC grants ║\n' +
+        '║  (Screen Recording / Microphone / Automation). A local install will  ║\n' +
+        '║  appear totally broken. For a permission-stable build, export        ║\n' +
+        '║  MINTR_SIGN_IDENTITY="Mintr Dev Signing" (see dev/scripts/           ║\n' +
+        '║  setup-signing.sh). Ad-hoc is fine ONLY for CI smoke builds.         ║\n' +
+        '╚════════════════════════════════════════════════════════════════════╝\n'
     )
-    return
+  } else {
+    console.log(`[afterPack] re-signing renamed helper with identity "${signSpec}"`)
   }
-  // No stable identity → ad-hoc. This is intentional for CI smoke builds, but
-  // a LOCAL install of an ad-hoc bundle gets a fresh cdhash with no stable
-  // Designated Requirement, so it inherits NONE of the user's existing TCC
-  // grants (Screen Recording, Microphone, Automation). The app then looks
-  // completely broken: no meeting detection, no audio capture, no screen
-  // video — all silently. Warn loudly so this is never mistaken for a code
-  // bug. To produce a permission-stable build run dev/scripts/setup-signing.sh
-  // once, then `MINTR_SIGN_IDENTITY="Mintr Dev Signing" npm run dist:mac`.
-  console.warn(
-    '\n' +
-      '╔════════════════════════════════════════════════════════════════════╗\n' +
-      '║  [afterPack] ⚠  AD-HOC SIGNING — MINTR_SIGN_IDENTITY is not set.     ║\n' +
-      '║  The engine will get a fresh cdhash and inherit NO TCC grants        ║\n' +
-      '║  (Screen Recording / Microphone / Automation). A local install will  ║\n' +
-      '║  appear totally broken. For a permission-stable build, export        ║\n' +
-      '║  MINTR_SIGN_IDENTITY="Mintr Dev Signing" (see dev/scripts/           ║\n' +
-      '║  setup-signing.sh). Ad-hoc is fine ONLY for CI smoke builds.         ║\n' +
-      '╚════════════════════════════════════════════════════════════════════╝\n'
+  sign(signSpec, bundlePath, { preserveEntitlements: true, hardened }, 'engine')
+}
+
+/**
+ * Enumerate the loose Mach-O executables that live OUTSIDE any .app bundle of
+ * their own and therefore must be signed individually as leaves. These are not
+ * traversed by `codesign --verify --deep --strict` on the outer .app (it only
+ * walks bundles), so if they're left ad-hoc the app can pass deep-strict yet
+ * still be REJECTED by notarytool. We sign them regardless of tier.
+ *
+ * Dynamically resolved (paths checked for existence) so the list survives
+ * Electron / Squirrel version bumps; missing entries are skipped.
+ */
+function looseMachOLeaves(appPath) {
+  const leaves = []
+
+  // a) Electron Framework's bundled GPU/EGL/ffmpeg/etc dylibs (NOT the
+  //    vk_swiftshader_icd.json resource alongside them). These must be signed
+  //    BEFORE the Electron Framework versioned dir that seals them.
+  const electronLibs = path.join(
+    appPath,
+    'Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries'
   )
-  execFileSync(
-    '/usr/bin/codesign',
-    ['--force', '--deep', '--sign', '-', '--preserve-metadata=entitlements', bundlePath],
-    { stdio: ['ignore', 'pipe', 'pipe'] }
+  if (fs.existsSync(electronLibs)) {
+    for (const entry of fs.readdirSync(electronLibs)) {
+      if (entry.endsWith('.dylib')) leaves.push(path.join(electronLibs, entry))
+    }
+  }
+
+  // b) The crashpad handler bundled inside Electron Framework's Helpers/.
+  const crashpad = path.join(
+    appPath,
+    'Contents/Frameworks/Electron Framework.framework/Versions/A/Helpers/chrome_crashpad_handler'
   )
+  if (fs.existsSync(crashpad)) leaves.push(crashpad)
+
+  // c) Squirrel's ShipIt autoupdate helper.
+  const shipIt = path.join(
+    appPath,
+    'Contents/Frameworks/Squirrel.framework/Versions/A/Resources/ShipIt'
+  )
+  if (fs.existsSync(shipIt)) leaves.push(shipIt)
+
+  // d) The bundled Swift CLI under Resources/bin.
+  const mtBatch = path.join(appPath, 'Contents/Resources/bin/mt-batch')
+  if (fs.existsSync(mtBatch)) leaves.push(mtBatch)
+
+  return leaves
+}
+
+/**
+ * Enumerate the *.framework bundles in Contents/Frameworks, returning the REAL
+ * versioned path to sign (Versions/A) — never the top-level <Name>.framework
+ * symlink nor Versions/Current. Electron Framework is sorted LAST so it's
+ * signed after its internal dylibs (which we sign as leaves first).
+ *
+ * Dynamic (reads the directory) so new/renamed frameworks are picked up.
+ */
+function frameworkVersionedPaths(appPath) {
+  const frameworksDir = path.join(appPath, 'Contents/Frameworks')
+  if (!fs.existsSync(frameworksDir)) return []
+
+  const result = []
+  for (const entry of fs.readdirSync(frameworksDir)) {
+    if (!entry.endsWith('.framework')) continue
+    const versionsDir = path.join(frameworksDir, entry, 'Versions')
+    if (!fs.existsSync(versionsDir)) continue
+    // Pick the concrete version directory (real dir, not the "Current"
+    // symlink). Almost always "A"; resolve generically to be safe.
+    const versions = fs
+      .readdirSync(versionsDir)
+      .filter((v) => {
+        if (v === 'Current') return false
+        const full = path.join(versionsDir, v)
+        return fs.lstatSync(full).isDirectory() && !fs.lstatSync(full).isSymbolicLink()
+      })
+      .sort()
+    if (versions.length === 0) continue
+    // Prefer "A" if present, else the last sorted real version.
+    const chosen = versions.includes('A') ? 'A' : versions[versions.length - 1]
+    result.push(path.join(versionsDir, chosen))
+  }
+
+  // Sort Electron Framework last (it links the dylibs we sign as leaves; its
+  // seal must come after them). Everything else order-independent.
+  result.sort((a, b) => {
+    const aElectron = a.includes('Electron Framework.framework') ? 1 : 0
+    const bElectron = b.includes('Electron Framework.framework') ? 1 : 0
+    return aElectron - bElectron
+  })
+  return result
+}
+
+/**
+ * Enumerate the nested Electron helper .app bundles in Contents/Frameworks
+ * (the four "Timbre Helper*.app"). Dynamic so a future Electron version that
+ * adds/renames a helper is still covered. Each has no nested signables of its
+ * own (verified) so signing the .app directly is sufficient.
+ */
+function helperApps(appPath) {
+  const frameworksDir = path.join(appPath, 'Contents/Frameworks')
+  if (!fs.existsSync(frameworksDir)) return []
+  return fs
+    .readdirSync(frameworksDir)
+    .filter((entry) => entry.endsWith('.app'))
+    .map((entry) => path.join(frameworksDir, entry))
 }
 
 exports.default = async function afterPack(context) {
-  // Only rebadge on darwin packages — the engine helper is macOS-only.
+  // Only rebadge + sign on darwin packages — the engine helper is macOS-only
+  // and codesign is a macOS tool.
   if (context.electronPlatformName !== 'darwin') return
 
   const { appOutDir, packager } = context
-  const productName = packager.appInfo.productFilename // "Mintr"
-  const resourcesDir = path.join(appOutDir, `${productName}.app`, 'Contents', 'Resources')
+  const productName = packager.appInfo.productFilename // "Timbre"
+  const outerApp = path.join(appOutDir, `${productName}.app`)
+  const resourcesDir = path.join(outerApp, 'Contents', 'Resources')
 
   const oldAppPath = path.join(resourcesDir, OLD_APP_NAME)
   const newAppPath = path.join(resourcesDir, NEW_APP_NAME)
 
-  if (!fs.existsSync(oldAppPath)) {
-    // Nothing to do — either the extraResources didn't land the helper,
-    // or this is a follow-up build where the rename already happened.
-    // The second case is fine (idempotent), the first is a build-config
-    // problem the user will notice via the missing helper at runtime.
-    if (fs.existsSync(newAppPath)) {
-      console.log(`[afterPack] helper already renamed at ${newAppPath} — skipping`)
-      return
-    }
-    console.warn(
-      `[afterPack] expected bundled helper at ${oldAppPath} not found; skipping rebrand`
-    )
-    return
-  }
-
-  console.log(`[afterPack] rebranding ${oldAppPath} → MintrEngine.app`)
-
-  // Step 1: rename the inner executable. Must happen BEFORE renaming
-  // the outer .app folder, because we reference paths inside the old
-  // folder name first.
-  const oldExec = path.join(oldAppPath, 'Contents', 'MacOS', OLD_EXEC_NAME)
-  const newExec = path.join(oldAppPath, 'Contents', 'MacOS', NEW_EXEC_NAME)
-  if (fs.existsSync(oldExec)) {
-    fs.renameSync(oldExec, newExec)
-  } else if (!fs.existsSync(newExec)) {
-    throw new Error(`[afterPack] inner executable missing: ${oldExec}`)
-  }
-
-  // Step 2: patch the Info.plist. Order matters only insofar as later
-  // keys may reference earlier ones — none do, so we apply all four
-  // in any order.
-  const plistPath = path.join(oldAppPath, 'Contents', 'Info.plist')
-  plistSet(plistPath, 'CFBundleIdentifier', NEW_BUNDLE_ID)
-  // PlistBuddy handles spaces by treating the rest of the line as the
-  // value, so quoting isn't needed but doesn't hurt either.
-  plistSet(plistPath, 'CFBundleName', NEW_DISPLAY_NAME)
-  // CFBundleDisplayName may not exist as a top-level key in the source
-  // plist; use `Add` then `Set` with try/catch for robustness.
-  try {
-    execFileSync(
-      '/usr/libexec/PlistBuddy',
-      ['-c', `Add :CFBundleDisplayName string ${NEW_DISPLAY_NAME}`, plistPath],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    )
-  } catch {
-    // Key already exists — Set instead.
-    plistSet(plistPath, 'CFBundleDisplayName', NEW_DISPLAY_NAME)
-  }
-  plistSet(plistPath, 'CFBundleExecutable', NEW_EXEC_NAME)
-
-  // Step 3: rename the outer .app folder. This is the user-visible
-  // name in Finder and the path that Mintr's backend.ts spawns.
-  fs.renameSync(oldAppPath, newAppPath)
-
-  // Step 4: re-sign the helper. The original signature is invalidated by
-  // both the binary rename and the plist edits. Without re-signing, macOS
-  // would refuse to launch the helper. Uses MINTR_SIGN_IDENTITY when set,
-  // else ad-hoc; preserves existing entitlements either way.
-  resignEngine(newAppPath)
-
-  console.log(`[afterPack] rebrand complete: ${newAppPath}`)
-  console.log(`            bundle id: ${NEW_BUNDLE_ID}`)
-  console.log(`            display name: ${NEW_DISPLAY_NAME}`)
-
-  // Step 5: sign the OUTER Mintr.app with the stable identity too.
-  //
-  // electron-builder won't do this — it rejects self-signed identities and
-  // we've set `identity: null` in electron-builder.js. So we sign the outer
-  // app ourselves, HERE, because afterPack runs after the app is fully
-  // packed (asar + helpers + the just-rebranded MintrEngine all in place)
-  // but before the DMG is built. Signing top-level (no --deep — the inner
-  // MintrEngine + Electron framework keep their own signatures) is enough
-  // for TCC: the principal is the main executable's Designated Requirement,
-  // which becomes stable across rebuilds under MINTR_SIGN_IDENTITY → Mintr's
-  // OWN grants (Screen Recording probe, Chrome Automation) also persist.
-  // Skipped when MINTR_SIGN_IDENTITY is unset (ad-hoc build keeps Electron's
-  // default ad-hoc signature).
+  // ───────────────────────────────────────────────────────────────────────
+  // Signing tier resolution.
+  //   identity set   → self-signed dev tier (default) OR Developer-ID tier
+  //                    (if the name is a Developer ID cert / hardened opt-in).
+  //   identity unset → ad-hoc (`--sign -`), still signed inside-out.
+  // ───────────────────────────────────────────────────────────────────────
   const identity = process.env.MINTR_SIGN_IDENTITY
-  if (identity) {
-    const outerApp = path.join(appOutDir, `${productName}.app`)
-    console.log(`[afterPack] signing outer ${productName}.app with "${identity}"`)
-    execFileSync(
-      '/usr/bin/codesign',
-      ['--force', '--sign', identity, outerApp],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    )
-    console.log(`[afterPack] outer app signed: ${outerApp}`)
+  const isAdhoc = !identity
+  const signSpec = identity || '-'
+  const hardened = isHardenedTier(identity)
+  const entitlements = resolveEntitlements(context)
+
+  console.log(
+    `[afterPack] signing tier: ${
+      isAdhoc ? 'ad-hoc' : `identity "${identity}"`
+    } | hardenedRuntime=${hardened ? 'ON' : 'OFF'}`
+  )
+  console.log(`[afterPack] entitlements: ${entitlements}`)
+
+  // ───────────────────────────────────────────────────────────────────────
+  // PART A — REBRAND the bundled engine (MeetingTranscriber → MintrEngine).
+  // ───────────────────────────────────────────────────────────────────────
+  if (!fs.existsSync(oldAppPath)) {
+    // Either extraResources didn't land the helper, or this is a follow-up
+    // build where the rename already happened (idempotent — fine). If neither
+    // the old nor new bundle exists it's a build-config problem; we still fall
+    // through to sign whatever IS in the bundle so the outer app deep-verifies.
+    if (fs.existsSync(newAppPath)) {
+      console.log(`[afterPack] helper already renamed at ${newAppPath} — skipping rebrand`)
+    } else {
+      console.warn(
+        `[afterPack] expected bundled helper at ${oldAppPath} not found; skipping rebrand`
+      )
+    }
+  } else {
+    console.log(`[afterPack] rebranding ${oldAppPath} → MintrEngine.app`)
+
+    // A.1: rename the inner executable. Must happen BEFORE renaming the outer
+    // .app folder, because we reference paths inside the old folder name first.
+    const oldExec = path.join(oldAppPath, 'Contents', 'MacOS', OLD_EXEC_NAME)
+    const newExec = path.join(oldAppPath, 'Contents', 'MacOS', NEW_EXEC_NAME)
+    if (fs.existsSync(oldExec)) {
+      fs.renameSync(oldExec, newExec)
+    } else if (!fs.existsSync(newExec)) {
+      throw new Error(`[afterPack] inner executable missing: ${oldExec}`)
+    }
+
+    // A.2: patch the Info.plist. None of these keys reference each other, so
+    // any order is fine.
+    const plistPath = path.join(oldAppPath, 'Contents', 'Info.plist')
+    plistSet(plistPath, 'CFBundleIdentifier', NEW_BUNDLE_ID)
+    plistSet(plistPath, 'CFBundleName', NEW_DISPLAY_NAME)
+    // CFBundleDisplayName may not exist as a top-level key — Add, else Set.
+    try {
+      execFileSync(
+        PLISTBUDDY,
+        ['-c', `Add :CFBundleDisplayName string ${NEW_DISPLAY_NAME}`, plistPath],
+        { stdio: ['ignore', 'pipe', 'pipe'] }
+      )
+    } catch {
+      plistSet(plistPath, 'CFBundleDisplayName', NEW_DISPLAY_NAME)
+    }
+    plistSet(plistPath, 'CFBundleExecutable', NEW_EXEC_NAME)
+
+    // A.3: rename the outer .app folder. This is the user-visible name in
+    // Finder and the path Mintr's backend.ts spawns. Guard the partial-re-run
+    // case where a stale MintrEngine.app already sits beside a freshly-extracted
+    // MeetingTranscriber.app — fs.renameSync onto a non-empty dir throws
+    // ENOTEMPTY, so clear the stale target first to keep the rebrand deterministic.
+    if (fs.existsSync(newAppPath)) {
+      fs.rmSync(newAppPath, { recursive: true, force: true })
+    }
+    fs.renameSync(oldAppPath, newAppPath)
+
+    console.log(`[afterPack] rebrand complete: ${newAppPath}`)
+    console.log(`            bundle id: ${NEW_BUNDLE_ID}`)
+    console.log(`            display name: ${NEW_DISPLAY_NAME}`)
   }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // PART B — SIGN INSIDE-OUT (deepest leaves → outer app, NEVER --deep).
+  //
+  // Order is load-bearing: `codesign --force` on a parent seals a hash of each
+  // child's CURRENT signature into the parent CodeDirectory. Sign any child
+  // AFTER its parent and the parent's sealed child-hash no longer matches →
+  // `--verify --deep --strict` fails again. So we go strictly leaves → root.
+  // ───────────────────────────────────────────────────────────────────────
+
+  // L0 — loose Mach-O leaves (dylibs in Electron Framework, crashpad handler,
+  // ShipIt, mt-batch). Plain Mach-O → no entitlements, no inherit. These must
+  // precede their containing framework (L1).
+  console.log('[afterPack] L0: signing loose Mach-O leaves')
+  for (const leaf of looseMachOLeaves(outerApp)) {
+    sign(signSpec, leaf, { hardened }, 'leaf')
+  }
+
+  // L1 — frameworks (sign the versioned dir, not the symlink). No entitlements.
+  // Electron Framework is sorted last so it's sealed after its dylibs (L0).
+  console.log('[afterPack] L1: signing frameworks (Versions/A)')
+  for (const fw of frameworkVersionedPaths(outerApp)) {
+    sign(signSpec, fw, { hardened }, 'framework')
+  }
+
+  // L2 — the four nested Electron helper .apps (THE STEP THIS SCRIPT USED TO
+  // OMIT). Apply the SAME entitlements file electron-builder uses for
+  // entitlementsInherit (build/entitlements.mac.plist). They link the Electron
+  // Framework so they MUST come after L0–L1.
+  console.log('[afterPack] L2: signing nested helper .apps (entitlements inherit)')
+  for (const helper of helperApps(outerApp)) {
+    sign(signSpec, helper, { entitlements, hardened }, 'helper')
+  }
+
+  // L3 — the rebranded engine. Kept on --preserve-metadata=entitlements so its
+  // upstream audio/JIT/automation entitlements survive; it's a single-exec
+  // bundle with no nested signables. Must be valid BEFORE the outer seal.
+  // (If the engine wasn't bundled in this build, skip — nothing to sign.)
+  if (fs.existsSync(newAppPath)) {
+    console.log('[afterPack] L3: signing engine (preserve entitlements)')
+    resignEngine(newAppPath, signSpec, hardened, isAdhoc)
+  } else {
+    console.warn('[afterPack] L3: MintrEngine.app not present — skipping engine signing')
+  }
+
+  // L4 — the OUTER app, LAST, WITH the full entitlements file (this is what
+  // electron-builder would have done via `entitlements:`). It must be the FINAL
+  // signature because the outer seal hashes every already-signed nested
+  // component; re-signing any child afterwards would invalidate it. NO --deep.
+  // Identifier stays ai.nawaz.meeting-transcriber (inherited from Info.plist —
+  // we never pass -i). For ad-hoc builds the warning above already fired.
+  console.log(`[afterPack] L4: signing outer ${productName}.app (entitlements, LAST)`)
+  sign(signSpec, outerApp, { entitlements, hardened }, 'outer')
+
+  console.log('[afterPack] signing complete (inside-out).')
+  console.log(`            outer app:  ${outerApp}`)
+  console.log(`            engine app: ${newAppPath}`)
   console.log(`            executable: ${path.join(newAppPath, 'Contents/MacOS', NEW_EXEC_NAME)}`)
+  console.log(
+    '[afterPack] verify with: codesign --verify --deep --strict --verbose=4 ' +
+      `'${outerApp}'`
+  )
 }
