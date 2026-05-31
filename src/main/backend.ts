@@ -9,8 +9,8 @@ import { globalSpeakersDBPath } from './settings'
 /**
  * Resolve the path to the bundled `mt-batch` Swift CLI.
  *
- * In dev: `../meeting-transcriber/tools/mt-batch/.build/release/mt-batch`
- *   relative to the electron project root.
+ * In dev: `meeting-transcriber/tools/mt-batch/.build/release/mt-batch`
+ *   relative to the electron project root (engine is vendored in-repo, monorepo).
  * In packaged app: `<Resources>/bin/mt-batch` — placed there by
  *   electron-builder via `extraResources` in `electron-builder.yml`.
  */
@@ -20,7 +20,6 @@ export function resolveBatchBinary(): string {
   }
   return join(
     app.getAppPath(),
-    '..',
     'meeting-transcriber',
     'tools',
     'mt-batch',
@@ -58,7 +57,6 @@ export function resolveLiveRecorderApp(): string | null {
         // Release bundle from `./scripts/build_release.sh --no-notarize`
         join(
           app.getAppPath(),
-          '..',
           'meeting-transcriber',
           '.build',
           'release',
@@ -67,7 +65,6 @@ export function resolveLiveRecorderApp(): string | null {
         // Dev bundle from `./scripts/run_app.sh --build-only`
         join(
           app.getAppPath(),
-          '..',
           'meeting-transcriber',
           'app',
           'MeetingTranscriber',

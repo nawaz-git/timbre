@@ -45,19 +45,21 @@ module.exports = {
   ],
   asarUnpack: ['resources/**'],
 
-  // Bundle Swift artefacts from the sibling repo:
+  // Bundle Swift artefacts from the vendored engine (now in-repo at
+  // `meeting-transcriber/` — monorepo layout; was the sibling
+  // `../meeting-transcriber` before the engine was merged in via git subtree):
   //   - mt-batch CLI: file-import transcription pipeline (always required)
   //   - MeetingTranscriber.app: live recording engine with Google Meet detection
   // Both paths must exist at `dist:mac` time. Missing paths are a warning at
   // build time and a runtime "engine not bundled" message in the UI.
   extraResources: [
     {
-      from: '../meeting-transcriber/tools/mt-batch/.build/release/mt-batch',
+      from: 'meeting-transcriber/tools/mt-batch/.build/release/mt-batch',
       to: 'bin/mt-batch',
       filter: ['**/*']
     },
     {
-      from: '../meeting-transcriber/.build/release/MeetingTranscriber.app',
+      from: 'meeting-transcriber/.build/release/MeetingTranscriber.app',
       to: 'MeetingTranscriber.app',
       filter: ['**/*']
     }

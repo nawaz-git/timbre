@@ -10,10 +10,9 @@
 #   5. Install Timbre.app to /Applications and launch it.
 #   6. Print the first-launch permission-grant checklist.
 #
-# REQUIRED SIBLING LAYOUT (electron-builder reads ../meeting-transcriber):
-#   <parent>/
-#     meeting-transcriber/            (ENGINE — Swift SPM)
-#     meeting-transcriber-electron/   (ELECTRON — this repo)
+# MONOREPO LAYOUT (electron-builder reads the in-repo engine at meeting-transcriber/):
+#   meeting-transcriber-electron/     (this repo — the Timbre app)
+#     meeting-transcriber/            (ENGINE — Swift SPM, vendored in via git subtree)
 #
 # Run from the ELECTRON repo:
 #   bash dev/scripts/setup-new-mac.sh
@@ -22,11 +21,11 @@
 
 set -euo pipefail
 
-# --- Locate the two sibling repos -------------------------------------------
+# --- Locate the repo + the vendored engine ----------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ELECTRON_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"          # .../meeting-transcriber-electron
+ELECTRON_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"          # .../meeting-transcriber-electron (repo root)
 PARENT_DIR="$(cd "$ELECTRON_DIR/.." && pwd)"
-ENGINE_DIR="$PARENT_DIR/meeting-transcriber"            # .../meeting-transcriber
+ENGINE_DIR="$ELECTRON_DIR/meeting-transcriber"          # engine vendored INSIDE the repo (monorepo)
 
 KEYCHAIN="$HOME/Library/Keychains/mintr-dev.keychain-db"
 KEYCHAIN_PASS="mintr-dev"
@@ -40,10 +39,10 @@ echo "=========================================================="
 
 # --- 0. Preconditions --------------------------------------------------------
 if [ ! -d "$ENGINE_DIR" ]; then
-  echo "ERROR: engine repo not found at $ENGINE_DIR"
-  echo "       Clone it as a SIBLING with the EXACT name 'meeting-transcriber':"
-  echo "         cd \"$PARENT_DIR\" && git clone https://github.com/nawaz-git/timbre-engine.git meeting-transcriber"
-  echo "       (electron-builder.js reads ../meeting-transcriber/.build/release/MeetingTranscriber.app)"
+  echo "ERROR: vendored engine not found at $ENGINE_DIR"
+  echo "       The engine lives INSIDE this repo at 'meeting-transcriber/' (monorepo)."
+  echo "       If it's missing, your checkout is incomplete — re-checkout the repo."
+  echo "       (electron-builder.js reads meeting-transcriber/.build/release/MeetingTranscriber.app)"
   exit 1
 fi
 
