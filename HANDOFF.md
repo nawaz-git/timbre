@@ -9,6 +9,15 @@ bundled headless Swift engine.
 This document travels in **both** repos so the handoff is self-contained from
 either checkout.
 
+> **⚠️ Update — monorepo (2026-05-31):** The engine and app are now a **single
+> repo**. The Swift engine was vendored into the app repo at
+> `meeting-transcriber/` (merged via `git subtree`, full history preserved), and
+> the build reads it from there. The two-repo **sibling** instructions below
+> (§2 and §4) are **historical** — you no longer clone the engine separately;
+> it's already in `meeting-transcriber/`. Everything else (signing model, build
+> recipe, permissions) still applies — just run the engine commands inside the
+> `meeting-transcriber/` subfolder instead of a sibling directory.
+
 ---
 
 ## 1. What Timbre is

@@ -1,21 +1,20 @@
 # Contributing to Timbre
 
 Thanks for your interest in improving Timbre! This is a macOS-only,
-Apple-Silicon, on-device app made of two repos (the Electron app **timbre** and the
-Swift engine **timbre-engine**).
+Apple-Silicon, on-device app. It's a **monorepo**: the Electron app **timbre**
+with the Swift engine vendored in at `meeting-transcriber/`.
 
 ## Getting set up
 
-1. Clone **both** repos as siblings — the app build reads the engine from
-   `../meeting-transcriber`:
+1. Clone the repo — the Swift engine is vendored in at `meeting-transcriber/`
+   (no separate clone needed); the app build reads it from there:
    ```
-   <parent>/
-     meeting-transcriber/            # nawaz-git/timbre-engine
-     meeting-transcriber-electron/   # nawaz-git/timbre
+   timbre/                           # nawaz-git/timbre (this repo)
+     meeting-transcriber/            # the Swift engine (vendored in-repo)
    ```
 2. Run the one-shot bring-up:
    ```bash
-   cd meeting-transcriber-electron && bash dev/scripts/setup-new-mac.sh
+   cd timbre && bash dev/scripts/setup-new-mac.sh
    ```
    See [`HANDOFF.md`](./HANDOFF.md) for prerequisites, the signing model, and the
    manual build recipe.
@@ -24,7 +23,7 @@ Swift engine **timbre-engine**).
 
 - **App (this repo):** `npm run dev` (electron-vite), `npm run typecheck`,
   `npm run lint`.
-- **Engine (`../meeting-transcriber`):** `cd app/MeetingTranscriber && swift build`,
+- **Engine (`meeting-transcriber/`):** `cd meeting-transcriber/app/MeetingTranscriber && swift build`,
   `swift test --parallel`. Run a release build (`swift build -c release`) before
   pushing — it surfaces Swift 6 strict-concurrency (`Sendable`) issues that debug
   builds tolerate.

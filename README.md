@@ -68,20 +68,18 @@ The capture work runs in a bundled background engine, so most prompts mention
 
 ## Build from source
 
-Timbre is two repositories that **must be cloned as siblings** (the app build reads
-the engine from `../meeting-transcriber`):
+Timbre is a **monorepo**: the Electron app is at the repo root and the Swift
+engine is vendored in at `meeting-transcriber/` (the app build reads the engine
+from there — no separate clone needed):
 
 ```
-<parent>/
-  meeting-transcriber/            # the Swift engine  → nawaz-git/timbre-engine
-  meeting-transcriber-electron/   # the Timbre app    → nawaz-git/timbre (this repo)
+timbre/                           # the Timbre app    → nawaz-git/timbre (this repo)
+  meeting-transcriber/            # the Swift engine  (vendored in-repo)
 ```
 
 ```bash
-mkdir -p ~/Projects && cd ~/Projects
-git clone https://github.com/nawaz-git/timbre-engine.git meeting-transcriber
-git clone https://github.com/nawaz-git/timbre.git          meeting-transcriber-electron
-cd meeting-transcriber-electron
+git clone https://github.com/nawaz-git/timbre.git
+cd timbre
 bash dev/scripts/setup-new-mac.sh   # mints a signing cert, builds engine + app, installs
 ```
 
