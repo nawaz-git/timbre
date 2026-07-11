@@ -10,6 +10,7 @@ import {
   stopLiveRecorder,
   type BatchEvent
 } from './backend'
+import { noteUserWatchStart, noteUserWatchStop } from './engineSupervisor'
 
 interface State {
   state: RecordingState
@@ -57,10 +58,18 @@ function getMainWindow(): BrowserWindow | null {
 }
 
 export async function startWatching(): Promise<RecordingStatus> {
+  // Tell the supervisor the user wants the engine up (before the async start, so
+  // a heartbeat-absent tick during boot is covered by the startup grace). This
+  // also resets the restart-storm guard + clears any prior give-up — the
+  // "startWatching consults the supervisor" seam.
+  noteUserWatchStart()
   const result = await startLiveRecorder()
   if (!result.ok) {
     internal.state = 'idle'
     internal.lastError = result.message
+    // Start failed — the engine is not expected up, so the supervisor must not
+    // try to relaunch it.
+    noteUserWatchStop()
     return getStatus()
   }
   internal.state = 'watching'
@@ -71,6 +80,10 @@ export async function startWatching(): Promise<RecordingStatus> {
 }
 
 export function stopWatching(): RecordingStatus {
+  // Tell the supervisor the engine is being stopped ON PURPOSE so it doesn't
+  // race a relaunch against this teardown. Set synchronously, before the
+  // fire-and-forget stop below.
+  noteUserWatchStop()
   // Fire-and-forget: the graceful engine stop (SIGTERM → escalation) can take
   // up to ~8 s, so we don't block the UI on it. `stopLiveRecorder` handles its
   // own errors and never rejects. The state flips to idle optimistically.

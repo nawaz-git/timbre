@@ -19,6 +19,13 @@ import { setRecordingActiveProvider, startChromeProbe, stopChromeProbe } from '.
 import { writeEngineConfig } from './engineConfig'
 import { onStatusChange, startWatching } from './recording'
 import { isRecordingActive, startCaptureWatchdog, stopCaptureWatchdog } from './captureWatchdog'
+import { readEngineHeartbeat, startLiveRecorder, stopEngineGracefully } from './backend'
+import {
+  getRecordingHeartbeat,
+  startEngineSupervisor,
+  stopEngineSupervisor,
+  type SuperviseReason
+} from './engineSupervisor'
 
 // `mt-audio://` MUST be registered as privileged before app.whenReady().
 // Without this, the renderer's <audio src="mt-audio://..."> gets blocked by
@@ -291,10 +298,32 @@ app.whenReady().then(async () => {
   createTray()
 
   // Teach the Chrome probe when a recording is active so it can back off its
-  // AppleScript cadence mid-meeting. Fallback signal for now (the captureWatchdog
-  // live-meeting placeholder); swap the provider for the engine heartbeat's
-  // `recording` state once that file is written. Set before any probe starts.
-  setRecordingActiveProvider(isRecordingActive)
+  // AppleScript cadence mid-meeting. Prefer the engine heartbeat's explicit
+  // `recording` state (cached by the supervisor's 5 s read); fall back to the
+  // captureWatchdog live-meeting placeholder when the heartbeat is absent or
+  // stale. This is the ONE call site that owns the seam — chromeProbe stays
+  // ignorant of both the heartbeat and captureWatchdog (no import cycle).
+  setRecordingActiveProvider(() => {
+    const hb = getRecordingHeartbeat()
+    if (hb?.state === 'recording') return true
+    return isRecordingActive()
+  })
+
+  // Engine supervisor: the ONLY auto-restart authority. Reads the heartbeat
+  // every 5 s and gracefully restarts a wedged/dead engine through the same
+  // stop + reuse-aware relaunch the user-action start path uses (bounded by
+  // backoff + a 3/hour cap). Started before auto-watch so its startup grace
+  // covers the engine's first boot.
+  startEngineSupervisor({
+    readHeartbeat: readEngineHeartbeat,
+    restartEngine: async (reason: SuperviseReason) => {
+      // Distinct-reason graceful escalation (the exported stop helper), then the reuse-aware
+      // relaunch — which no-ops its own reuse gate against the just-killed
+      // engine and re-`open`s a fresh one.
+      await stopEngineGracefully(reason)
+      await startLiveRecorder()
+    }
+  })
 
   // Chrome probe is only useful while we're actively watching, so start
   // and stop it in tandem with the engine state. We do this in the main
@@ -354,4 +383,5 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   stopChromeProbe()
   stopCaptureWatchdog()
+  stopEngineSupervisor()
 })
