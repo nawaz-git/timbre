@@ -227,12 +227,63 @@ export async function createMeetingFolder(
  */
 let liveProcess: ChildProcess | null = null
 
+/**
+ * In-flight graceful-stop escalation, if any. `startLiveRecorder` serialises
+ * behind it so a stop-then-immediately-start sequence never reuses or
+ * relaunches over an engine that is still shutting down. Set by
+ * `stopLiveRecorder`, cleared when its escalation resolves.
+ */
+let pendingStop: Promise<void> | null = null
+
 export function isLiveActive(): boolean {
   return liveProcess !== null && !liveProcess.killed
 }
 
 /**
- * Hard-kill any existing MeetingTranscriber helper process.
+ * Binary-path patterns matching every engine helper we might have to signal:
+ * the v0.19+ rebranded `MintrEngine` and any pre-v0.19 `MeetingTranscriber`
+ * helper still alive from an older install (including a standalone
+ * `/Applications` copy). Shared by `forceKillEngine` (pkill) and
+ * `isEngineAlive` (pgrep) so the two can't target different process sets.
+ */
+const ENGINE_PROCESS_PATTERNS = [
+  'MintrEngine.app/Contents/MacOS/MintrEngine',
+  'MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber'
+] as const
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * True if any engine helper is currently running. Uses `pgrep -f` against the
+ * same binary-path patterns `forceKillEngine` targets, so "is it alive?" and
+ * "kill it" always agree on what "it" is.
+ */
+export function isEngineAlive(): boolean {
+  for (const pattern of ENGINE_PROCESS_PATTERNS) {
+    try {
+      const result = spawnSync('/usr/bin/pgrep', ['-f', pattern], {
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      // pgrep exits 0 when at least one process matched.
+      if (result.status === 0) return true
+    } catch (err) {
+      console.warn(`[live-recorder] pgrep ${pattern} failed`, err)
+    }
+  }
+  return false
+}
+
+export type EngineSignal = 'SIGTERM' | 'SIGKILL'
+
+/**
+ * Force-signal every engine helper on the system (renamed from the old
+ * `killLiveRecorderSync`).
+ *
+ * Parameterised by signal so one function serves both rungs of
+ * `stopEngineGracefully`: SIGTERM (graceful — the engine's own SIGTERM handler
+ * finalizes the in-flight recording, see the Swift side) and SIGKILL (last
+ * resort). The default SIGTERM preserves the historic kill-then-relaunch
+ * behaviour of the onboarding / restart-helper callers.
  *
  * Critical for fresh TCC state. macOS caches Screen Recording / Mic
  * permission at process launch — granting the permission *afterwards*
@@ -241,37 +292,31 @@ export function isLiveActive(): boolean {
  * after the user granted permission in System Settings, writing zero
  * audio for the whole window.
  *
- * v0.15+: kills ANY MeetingTranscriber Mach-O the user has running, not
+ * v0.15+: signals ANY MeetingTranscriber Mach-O the user has running, not
  * just the bundled one. With LaunchServices dedup, v0.12-v0.14 sometimes
  * left a *standalone* /Applications/MeetingTranscriber.app helper running
  * with stale TCC. We're the only thing on the system that should be
  * launching this binary, so killing siblings is safe and prevents a
  * surprise zombie process from grabbing audio output.
  */
-export function killLiveRecorderSync(): { killed: number } {
+export function forceKillEngine(signal: EngineSignal = 'SIGTERM'): { killed: number } {
   let killed = 0
-  // First: kill anything we own a handle to (the cheap path).
+  // First: signal anything we own a handle to (the cheap path).
   if (liveProcess && liveProcess.pid && !liveProcess.killed) {
     try {
-      liveProcess.kill('SIGTERM')
+      liveProcess.kill(signal)
       killed += 1
     } catch (err) {
       console.warn('[live-recorder] direct kill failed', err)
     }
   }
-  // Second: belt-and-suspenders pkill of every helper binary path on
-  // the system. We match TWO patterns to catch both the v0.19+ rebranded
-  // helper (MintrEngine.app/Contents/MacOS/MintrEngine) and any
-  // pre-v0.19 helper still alive from a previous install (the legacy
-  // MeetingTranscriber.app path, including a user's standalone install
-  // in /Applications). On an upgrade, we want both classes gone.
-  const patterns = [
-    'MintrEngine.app/Contents/MacOS/MintrEngine',
-    'MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber'
-  ]
-  for (const pattern of patterns) {
+  // Second: belt-and-suspenders pkill of every helper binary path on the
+  // system (rebranded + legacy). pkill takes the signal name without the
+  // "SIG" prefix, e.g. -TERM / -KILL.
+  const pkillFlag = `-${signal.replace(/^SIG/, '')}`
+  for (const pattern of ENGINE_PROCESS_PATTERNS) {
     try {
-      const result = spawnSync('/usr/bin/pkill', ['-f', pattern], {
+      const result = spawnSync('/usr/bin/pkill', [pkillFlag, '-f', pattern], {
         stdio: ['ignore', 'pipe', 'pipe']
       })
       if (result.status === 0) killed += 1
@@ -281,6 +326,77 @@ export function killLiveRecorderSync(): { killed: number } {
   }
   liveProcess = null
   return { killed }
+}
+
+/** Milliseconds the engine gets to self-exit via its SIGTERM handler before we SIGKILL. */
+const ENGINE_TERM_GRACE_MS = 8000
+/** Poll cadence while waiting for the engine to exit. */
+const ENGINE_POLL_MS = 500
+
+export type EscalationAction = 'sigterm' | 'wait' | 'sigkill' | 'done'
+
+/**
+ * Pure escalation policy for a graceful engine stop. Given the time elapsed
+ * since the stop began and whether any engine helper is still alive, decide the
+ * next action. The driver acts once on each transition ('sigterm' at t=0,
+ * 'sigkill' at the grace boundary) and merely 'wait's in between:
+ *
+ *   t = 0            → 'sigterm'  (engine's SIGTERM handler finalizes + exits)
+ *   0 < t < GRACE    → 'wait'     (give the graceful teardown time)
+ *   t >= GRACE       → 'sigkill'  (last resort)
+ *   engine gone      → 'done'
+ */
+export function nextEscalationStep(elapsedMs: number, alive: boolean): EscalationAction {
+  if (!alive) return 'done'
+  if (elapsedMs <= 0) return 'sigterm'
+  if (elapsedMs < ENGINE_TERM_GRACE_MS) return 'wait'
+  return 'sigkill'
+}
+
+/**
+ * Stop the engine gracefully with kill escalation, replacing the old fixed
+ * 250 ms fuse. Sends SIGTERM (the engine finalizes its recording via the Swift
+ * SIGTERM handler), polls for exit up to ENGINE_TERM_GRACE_MS, then SIGKILL as
+ * a last resort. Resolves once the engine is gone (or SIGKILL was issued).
+ *
+ * We deliberately lead with SIGTERM rather than an AppleScript `quit`: quit
+ * routes through AppKit's default terminate, which the engine does NOT
+ * intercept to finalize a recording, so it could fast-exit and drop an
+ * in-flight one — the very case this path exists to protect. SIGTERM is what
+ * triggers the engine's graceful finalize, and `pkill -f` reaches the helper by
+ * path with no PID needed (the same reach the AppleScript-by-name quit had).
+ */
+export async function stopEngineGracefully(
+  reason: string
+): Promise<{ ok: true; finalAction: EscalationAction }> {
+  console.log(`[live-recorder] graceful stop (reason=${reason})`)
+  const started = Date.now()
+  let termSent = false
+
+  for (;;) {
+    const alive = isEngineAlive()
+    const action = nextEscalationStep(Date.now() - started, alive)
+
+    if (action === 'done') {
+      console.log(`[live-recorder] engine exited gracefully (reason=${reason})`)
+      return { ok: true, finalAction: 'done' }
+    }
+    if (action === 'sigterm') {
+      if (!termSent) {
+        termSent = true
+        console.log('[live-recorder] escalation: SIGTERM')
+        forceKillEngine('SIGTERM')
+      }
+    } else if (action === 'sigkill') {
+      console.warn(
+        `[live-recorder] escalation: SIGKILL after ${ENGINE_TERM_GRACE_MS} ms (reason=${reason})`
+      )
+      forceKillEngine('SIGKILL')
+      await delay(ENGINE_POLL_MS)
+      return { ok: true, finalAction: 'sigkill' }
+    }
+    await delay(ENGINE_POLL_MS)
+  }
 }
 
 /**
@@ -334,7 +450,7 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
   // process's TCC entries, so a 4-hour-old helper that booted before
   // permission was granted is dead weight — silently failing to read
   // window titles for as long as it lives.
-  killLiveRecorderSync()
+  forceKillEngine()
 
   // Step 2: launch via `/usr/bin/open -n <bundled-app> --args --auto-watch`.
   //
@@ -405,33 +521,23 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
 }
 
 /**
- * Stop the bundled MeetingTranscriber.app helper. Best-effort AppleScript
- * quit first (so it can finalise any in-flight recording cleanly), then
- * a hard `pkill` as belt-and-suspenders. Both are non-blocking from the
- * caller's perspective — the helper has 250ms to exit gracefully before
- * we force-kill it.
+ * Stop the bundled engine helper gracefully. Kicks off the SIGTERM → (8 s) →
+ * SIGKILL escalation (`stopEngineGracefully`), replacing the old fixed 250 ms
+ * fuse so a mid-finalize engine gets time to write its trailing WAV + pipeline
+ * snapshot before we ever force-kill it. The escalation is tracked in
+ * `pendingStop` so a subsequent `startLiveRecorder` serialises behind it and
+ * never reuses / relaunches over a dying engine. Self-contained error handling:
+ * it never rejects, so callers may fire-and-forget.
  */
-export function stopLiveRecorder(): { ok: boolean; message?: string } {
-  // 1) Polite AppleScript quit. Lets the helper close any open files
-  //    and write its trailing transcript/metadata. We send the quit
-  //    to BOTH application names — v0.19+ "MintrEngine" and the legacy
-  //    "MeetingTranscriber" — so this works whether the user is on the
-  //    rebranded build or upgrading from an older one.
-  for (const appName of ['MintrEngine', 'MeetingTranscriber']) {
-    spawn(
-      '/usr/bin/osascript',
-      ['-e', `tell application "${appName}" to quit`],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    )
-  }
-  // 2) Hard-kill the bundled binary 250ms later. If the AppleScript
-  //    quit landed, this finds no process and is a no-op. If it didn't
-  //    (helper was hung, frozen on TCC-denied syscall, etc.), this
-  //    guarantees the slot is free so the next startLiveRecorder can
-  //    launch a fresh process with current permissions.
-  setTimeout(() => {
-    killLiveRecorderSync()
-  }, 250)
+export async function stopLiveRecorder(reason = 'user-stop'): Promise<{ ok: boolean }> {
+  const run = stopEngineGracefully(reason)
+    .then(() => {})
+    .catch((err) => {
+      console.warn('[live-recorder] graceful stop failed', err)
+    })
+  pendingStop = run
+  await run
+  if (pendingStop === run) pendingStop = null
   liveProcess = null
   return { ok: true }
 }

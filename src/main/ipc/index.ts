@@ -372,7 +372,7 @@ export function registerIpcHandlers(): void {
     // flips recording state to 'idle' which would cancel the Chrome
     // probe — so we call backend directly here, bypassing the
     // higher-level state machine.
-    const { killLiveRecorderSync, startLiveRecorder } = await import('../backend')
+    const { forceKillEngine, startLiveRecorder } = await import('../backend')
     // TICKET-003: reset the watchdog BEFORE we kill the helper so the
     // renderer sees the cleared `helperPermissionLikely` push first,
     // then the kill/respawn happens. Without this, the red banner
@@ -380,7 +380,7 @@ export function registerIpcHandlers(): void {
     // watchdog only un-alarms on meeting-id change.
     const { resetCaptureWatchdog } = await import('../captureWatchdog')
     resetCaptureWatchdog()
-    killLiveRecorderSync()
+    forceKillEngine()
     // Tiny pause so the OS reaps the killed PID before macOS `open`
     // tries to "reactivate" it (which would no-op against the same
     // bundle id).

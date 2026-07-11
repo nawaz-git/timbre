@@ -71,7 +71,10 @@ export function startWatching(): RecordingStatus {
 }
 
 export function stopWatching(): RecordingStatus {
-  stopLiveRecorder()
+  // Fire-and-forget: the graceful engine stop (SIGTERM → escalation) can take
+  // up to ~8 s, so we don't block the UI on it. `stopLiveRecorder` handles its
+  // own errors and never rejects. The state flips to idle optimistically.
+  void stopLiveRecorder()
   internal.state = 'idle'
   internal.startedAt = undefined
   internal.title = undefined
