@@ -15,10 +15,10 @@ import { registerIpcHandlers } from './ipc'
 import { findEngineAudioForPrefix, findEngineVideoForPrefix, liveRecordingsRoot } from './meetings'
 import { readSettings } from './settings'
 import { createTray, setMainWindowFactory } from './tray'
-import { startChromeProbe, stopChromeProbe } from './chromeProbe'
+import { setRecordingActiveProvider, startChromeProbe, stopChromeProbe } from './chromeProbe'
 import { writeEngineConfig } from './engineConfig'
 import { onStatusChange, startWatching } from './recording'
-import { startCaptureWatchdog, stopCaptureWatchdog } from './captureWatchdog'
+import { isRecordingActive, startCaptureWatchdog, stopCaptureWatchdog } from './captureWatchdog'
 
 // `mt-audio://` MUST be registered as privileged before app.whenReady().
 // Without this, the renderer's <audio src="mt-audio://..."> gets blocked by
@@ -289,6 +289,12 @@ app.whenReady().then(async () => {
   // the window so the first menu rebuild has a window to point at when
   // the user clicks "Show Mintr".
   createTray()
+
+  // Teach the Chrome probe when a recording is active so it can back off its
+  // AppleScript cadence mid-meeting. Fallback signal for now (the captureWatchdog
+  // live-meeting placeholder); swap the provider for the engine heartbeat's
+  // `recording` state once that file is written. Set before any probe starts.
+  setRecordingActiveProvider(isRecordingActive)
 
   // Chrome probe is only useful while we're actively watching, so start
   // and stop it in tandem with the engine state. We do this in the main

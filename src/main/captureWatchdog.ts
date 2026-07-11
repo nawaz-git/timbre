@@ -147,6 +147,27 @@ export function getLivePlaceholder(): LivePlaceholder | null {
 }
 
 /**
+ * Best-available proxy for "a meeting is being recorded right now", used by the
+ * Chrome probe to back off its AppleScript cadence so it stops firing Apple
+ * Events into the meeting browser mid-call.
+ *
+ * A live placeholder means a Meet has been visible past the detection delay
+ * (`LIVE_PLACEHOLDER_DELAY_MS`) — i.e. long enough that the engine is recording
+ * it. It survives the meeting (the engine's in-flight temp files are
+ * timestamp-named, so they don't match the placeholder's meeting id and clear
+ * it), and drops when the tab closes — exactly the window we want to stay quiet.
+ *
+ * This is the fallback the probe uses until the engine heartbeat lands: once
+ * `engine_heartbeat.json` carries an explicit `recording` state (see
+ * backend.ts `EngineHeartbeat`), the wiring in `index.ts` should prefer
+ * `heartbeat.state === 'recording'` and fall back to this only when the
+ * heartbeat is absent/stale.
+ */
+export function isRecordingActive(): boolean {
+  return state.livePlaceholder !== null
+}
+
+/**
  * Begin watching the live + import folders and start the watchdog tick.
  * Safe to call repeatedly — second+ calls are no-ops.
  */

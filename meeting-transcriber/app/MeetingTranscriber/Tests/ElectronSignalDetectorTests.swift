@@ -59,6 +59,34 @@ final class ElectronSignalDetectorTests: XCTestCase {
         XCTAssertNil(makeDetector(now: { now }).checkOnce())
     }
 
+    /// The default `staleAfter` was widened to 45 s so the adaptive Electron
+    /// probe — which slows to ~15 s once a recording is underway — can't be
+    /// mistaken for a dead writer mid-meeting. A 30 s-old signal must stay live
+    /// (it was stale under the old 12 s default); a 50 s-old one must age out.
+    func testDefaultStaleAfterToleratesSlowRecordingCadence() {
+        let now = Date()
+        func detectorWithDefaultStale() -> ElectronSignalDetector {
+            ElectronSignalDetector(signalFile: signalFile, now: { now }, pidResolver: { _ in 9001 })
+        }
+        write("""
+        {"meetingId":"abc-defg-hij","browserBundleId":"com.google.Chrome",
+         "updatedAt":\((now.timeIntervalSince1970 - 30) * 1000)}
+        """)
+        XCTAssertNotNil(
+            detectorWithDefaultStale().checkOnce(),
+            "30s-old signal must be fresh under the 45s default",
+        )
+
+        write("""
+        {"meetingId":"abc-defg-hij","browserBundleId":"com.google.Chrome",
+         "updatedAt":\((now.timeIntervalSince1970 - 50) * 1000)}
+        """)
+        XCTAssertNil(
+            detectorWithDefaultStale().checkOnce(),
+            "50s-old signal must age out under the 45s default",
+        )
+    }
+
     func testBrowserNotRunningReturnsNil() {
         write("""
         {"meetingId":"abc-defg-hij","browserBundleId":"com.google.Chrome","updatedAt":\(Date().timeIntervalSince1970 * 1000)}
