@@ -25,6 +25,21 @@ public class MicCaptureHandler: @unchecked Sendable {
     private let liveSink: LiveAudioSink?
     private var isRecording = false
     private var isRestarting = false
+    /// Serial queue that owns the debounced restart. Shared with the app tap
+    /// (injected by `AudioCaptureSession`) so mic-engine rebuilds and tap
+    /// rebuilds serialize with each other instead of churning the HAL
+    /// concurrently during a Bluetooth storm. All coalescer/restart work runs
+    /// here; the listeners hop onto it.
+    private let captureControl: DispatchQueue
+    /// Schedules the coalesced restart after a delay. Injectable for tests;
+    /// defaults to `captureControl.asyncAfter`.
+    private let restartScheduler: (TimeInterval, DispatchWorkItem) -> Void
+    /// Pure debounce decision — collapses a burst of input-device notifications
+    /// into a single restart. Touched only on `captureControl`.
+    private var restartCoalescer = MicRestartCoalescer()
+    /// Currently-scheduled debounce timer, cancelled + replaced on each new
+    /// notification. Touched only on `captureControl`.
+    private var pendingRestart: DispatchWorkItem?
     private var deviceChangeListener: AudioObjectPropertyListenerBlock?
     private var configChangeObserver: NSObjectProtocol?
     private var selectedDeviceUID: String?
@@ -62,10 +77,18 @@ public class MicCaptureHandler: @unchecked Sendable {
         outputURL: URL,
         debugLogging: Bool = false,
         liveSink: LiveAudioSink? = nil,
+        captureControl: DispatchQueue? = nil,
+        restartScheduler: ((TimeInterval, DispatchWorkItem) -> Void)? = nil,
     ) {
         self.outputURL = outputURL
         self.debugLogging = debugLogging
         self.liveSink = liveSink
+        let control = captureControl
+            ?? DispatchQueue(label: "audiotap.control.mic", qos: .userInitiated)
+        self.captureControl = control
+        self.restartScheduler = restartScheduler ?? { delay, item in
+            control.asyncAfter(deadline: .now() + delay, execute: item)
+        }
     }
 
     deinit {
@@ -295,7 +318,41 @@ public class MicCaptureHandler: @unchecked Sendable {
         handleDeviceChange()
     }
 
+    /// Called from the device-change / config-change listeners (on the main
+    /// queue). Hops onto `captureControl` so the coalescer and the restart
+    /// serialize with the tap lifecycle and never race the listeners.
     private func handleDeviceChange() {
+        captureControl.async { [weak self] in
+            guard let self else { return }
+            self.applyCoalescer(self.restartCoalescer.handle(.deviceChanged(at: Date())))
+        }
+    }
+
+    private func applyCoalescer(_ action: MicRestartCoalescer.Action) {
+        switch action {
+        case .ignore:
+            break
+        case let .scheduleDebounce(at):
+            scheduleDebounce(at: at)
+        case .restart:
+            evaluateAndRestart()
+        }
+    }
+
+    private func scheduleDebounce(at deadline: Date) {
+        pendingRestart?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.applyCoalescer(self.restartCoalescer.handle(.debounceElapsed(at: Date())))
+        }
+        pendingRestart = item
+        let delay = max(0, deadline.timeIntervalSinceNow)
+        restartScheduler(delay, item)
+    }
+
+    /// Re-evaluate the restart decision at fire time — device availability may
+    /// have changed during the debounce window — then restart if still warranted.
+    private func evaluateAndRestart() {
         let isDeviceAvailable = selectedDeviceUID.map { Self.deviceIDForUID($0) != kAudioObjectUnknown } ?? false
         let action = MicRestartPolicy.decideRestart(
             isRecording: isRecording,
@@ -303,11 +360,9 @@ public class MicCaptureHandler: @unchecked Sendable {
             selectedDeviceUID: selectedDeviceUID,
             isSelectedDeviceAvailable: isDeviceAvailable,
         )
-
         switch action {
         case let .restart(deviceUID):
             executeRestart(deviceUID: deviceUID)
-
         case .skip:
             break
         }
@@ -377,6 +432,16 @@ public class MicCaptureHandler: @unchecked Sendable {
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
+        }
+        // Cancel any pending/in-flight coalesced restart before tearing the
+        // engine down. Listeners are already removed, so no new restart can be
+        // scheduled; the sync barrier drains any restart currently running on
+        // `captureControl`, and cancelling `pendingRestart` drops a scheduled
+        // one. (Even a slipped-through debounce would no-op: `isRecording` is
+        // now false, so `MicRestartPolicy` returns `.skip`.)
+        captureControl.sync {
+            pendingRestart?.cancel()
+            pendingRestart = nil
         }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()

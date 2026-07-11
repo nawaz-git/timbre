@@ -95,3 +95,51 @@ final class MicRestartPolicyTests: XCTestCase {
         XCTAssertEqual(action, .skip)
     }
 }
+
+/// Coalescing tests for the mic-side debounce that collapses a burst of
+/// input-device notifications (a Bluetooth HFP↔A2DP flip fires several) into a
+/// single restart. All timing is injected so each scenario is deterministic.
+final class MicRestartCoalescerTests: XCTestCase {
+    private let base = Date(timeIntervalSince1970: 2_000_000)
+    private func date(_ offset: TimeInterval) -> Date { base.addingTimeInterval(offset) }
+
+    func testSingleChangeSchedulesDebounceThenRestarts() {
+        var coalescer = MicRestartCoalescer(debounce: 2.0)
+        XCTAssertEqual(coalescer.handle(.deviceChanged(at: date(0))), .scheduleDebounce(at: date(2)))
+        XCTAssertEqual(coalescer.handle(.debounceElapsed(at: date(2))), .restart)
+    }
+
+    func testBurstWithinDebounceCoalescesToOneRestart() {
+        var coalescer = MicRestartCoalescer(debounce: 2.0)
+        // Five notifications within 1 s — each pushes the window out.
+        for offset in [0.0, 0.2, 0.4, 0.6, 0.8] {
+            _ = coalescer.handle(.deviceChanged(at: date(offset)))
+        }
+        // Windows scheduled by the earlier notifications are stale.
+        XCTAssertEqual(coalescer.handle(.debounceElapsed(at: date(2.0))), .ignore)
+        XCTAssertEqual(coalescer.handle(.debounceElapsed(at: date(2.6))), .ignore)
+        // Only the final window fires a single restart.
+        XCTAssertEqual(coalescer.handle(.debounceElapsed(at: date(2.8))), .restart)
+    }
+
+    func testStaleDebounceIgnoredWhenNewerChangeExtendedIt() {
+        var coalescer = MicRestartCoalescer(debounce: 2.0)
+        _ = coalescer.handle(.deviceChanged(at: date(0))) // window → 2
+        _ = coalescer.handle(.deviceChanged(at: date(1))) // window → 3
+        XCTAssertEqual(coalescer.handle(.debounceElapsed(at: date(2))), .ignore)
+        XCTAssertEqual(coalescer.handle(.debounceElapsed(at: date(3))), .restart)
+    }
+
+    func testDebounceElapsedWithNoPendingIsIgnored() {
+        var coalescer = MicRestartCoalescer(debounce: 2.0)
+        XCTAssertEqual(coalescer.handle(.debounceElapsed(at: date(0))), .ignore)
+    }
+
+    func testRestartClearsPendingSoNextElapsedIsIgnored() {
+        var coalescer = MicRestartCoalescer(debounce: 2.0)
+        _ = coalescer.handle(.deviceChanged(at: date(0)))
+        XCTAssertEqual(coalescer.handle(.debounceElapsed(at: date(2))), .restart)
+        // pendingUntil cleared → a spurious later window does nothing.
+        XCTAssertEqual(coalescer.handle(.debounceElapsed(at: date(4))), .ignore)
+    }
+}
