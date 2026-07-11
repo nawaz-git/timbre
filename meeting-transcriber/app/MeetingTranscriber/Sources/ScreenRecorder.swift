@@ -308,6 +308,16 @@ actor ScreenRecorder {
         return outputURL
     }
 
+    /// Liveness snapshot for the engine heartbeat: the wall-clock of the
+    /// last appended frame and the current consecutive-restart count. Actor-
+    /// isolated so `lastFrameWallClock` / `restartAttempts` are never read
+    /// off-actor (the actor-isolation contract). Returns nil only for symmetry with
+    /// the `ScreenRecording` protocol default — the concrete recorder always has
+    /// values.
+    func sckLiveness() -> (lastFrameAt: Date, restartAttempts: Int)? {
+        (lastFrameWallClock, restartAttempts)
+    }
+
     // MARK: - Restart / watchdog
 
     /// Maximum stream-restart attempts before giving up and finalizing whatever

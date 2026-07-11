@@ -588,6 +588,10 @@ final class AppState { // swiftlint:disable:this type_body_length
     func gracefulShutdown() async {
         guard shutdownPhase == .idle else { return }
         shutdownPhase = .inProgress
+        // Stop refreshing + delete the heartbeat FIRST — before any finalize that
+        // could wedge — so an Electron start racing this shutdown sees no
+        // heartbeat and won't reuse a dying engine (the cross-process shutdown signal).
+        stopEngineHeartbeat()
         logger.info("graceful_shutdown starting (deadline \(Self.shutdownDeadlineSeconds)s)")
 
         let outcome = await raceAgainstDeadline(seconds: Self.shutdownDeadlineSeconds) { [weak self] in
@@ -620,6 +624,59 @@ final class AppState { // swiftlint:disable:this type_body_length
             stopPersistentLogStreamer()
         #endif
         logger.info("graceful_shutdown: ordered teardown finished")
+    }
+
+    // MARK: - Engine Heartbeat
+
+    /// Epoch-milliseconds this engine process came up — the heartbeat `startedAt`.
+    @ObservationIgnored private let engineStartedAtMillis = EngineHeartbeat.epochMillis(Date())
+    @ObservationIgnored private let heartbeatWriter = EngineHeartbeatWriter()
+    @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
+
+    /// Start the ~2 s engine heartbeat. Idempotent. Runs for the WHOLE process
+    /// lifetime (every liveness state, not only recording) so Electron's reuse
+    /// probe and supervisor always have a fresh signal. Stopped + the file
+    /// deleted at the very start of `gracefulShutdown`.
+    func startEngineHeartbeat() {
+        guard heartbeatTask == nil else { return }
+        heartbeatTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                await self?.writeHeartbeat()
+                try? await Task.sleep(for: .seconds(EngineHeartbeatWriter.intervalSeconds))
+            }
+        }
+    }
+
+    /// Cancel the beat and delete the heartbeat file (ordered after any pending
+    /// write). Called first thing in `gracefulShutdown`.
+    func stopEngineHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        heartbeatWriter.stopAndDelete()
+    }
+
+    /// Snapshot the current engine state and hand a heartbeat to the writer. The
+    /// SCK-liveness read hops through the ScreenRecorder actor; the actual file
+    /// write is dispatched off-main by `EngineHeartbeatWriter`, so this tick
+    /// never blocks the main thread on disk.
+    private func writeHeartbeat() async {
+        let phase = watchLoop?.state ?? .idle
+        let recorder = watchLoop?.activeRecorder
+        let sck = await watchLoop?.currentScreenLiveness()
+        let heartbeat = EngineHeartbeat(
+            pid: Int(ProcessInfo.processInfo.processIdentifier),
+            version: Bundle.main.appVersion,
+            state: EngineHeartbeat.livenessState(
+                watchPhase: phase,
+                pipelineProcessing: pipelineQueue.isProcessing,
+            ),
+            startedAt: engineStartedAtMillis,
+            lastIOCallbackAt: recorder?.lastIOCallbackAt.map(EngineHeartbeat.epochMillis),
+            lastSCKFrameAt: (sck?.lastFrameAt).map(EngineHeartbeat.epochMillis),
+            tapPIDCount: recorder?.tapPIDCount,
+            updatedAt: EngineHeartbeat.epochMillis(Date()),
+        )
+        heartbeatWriter.write(heartbeat)
     }
 
     /// Filters `urls` to files that currently exist on disk, forwards them to

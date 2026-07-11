@@ -190,6 +190,16 @@ class WatchLoop {
         )
     }
 
+    /// Screen-recorder liveness for the engine heartbeat: the last
+    /// appended-frame wall-clock + consecutive-restart count, or nil when no
+    /// screen recorder is active. Hops through the actor — never reads its state
+    /// off-actor (the actor-isolation contract).
+    func currentScreenLiveness() async -> (lastFrameAt: Date, restartAttempts: Int)? {
+        guard #available(macOS 14.0, *) else { return nil }
+        guard let screen = activeScreenRecorder else { return nil }
+        return await screen.sckLiveness()
+    }
+
     // MARK: - Start / Stop
 
     func start() {
@@ -819,6 +829,18 @@ class WatchLoop {
 protocol ScreenRecording: AnyObject, Sendable {
     func start() async throws
     func stop() async throws -> URL
+
+    /// Liveness for the engine heartbeat: last appended-frame wall-clock +
+    /// consecutive-restart count, or nil when unavailable. A protocol requirement
+    /// (not just an extension member) so a call through `any ScreenRecording`
+    /// dynamically dispatches to the concrete `ScreenRecorder` actor; the default
+    /// below keeps existing test spies compiling unchanged.
+    func sckLiveness() async -> (lastFrameAt: Date, restartAttempts: Int)?
+}
+
+@available(macOS 14.0, *)
+extension ScreenRecording {
+    func sckLiveness() async -> (lastFrameAt: Date, restartAttempts: Int)? { nil }
 }
 
 @available(macOS 14.0, *)

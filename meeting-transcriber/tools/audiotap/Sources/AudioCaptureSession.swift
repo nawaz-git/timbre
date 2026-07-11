@@ -131,6 +131,17 @@ public class AudioCaptureSession {
         micCapture?.currentLevelDBFS ?? -120
     }
 
+    /// Wall-clock of the most recent app-tap IOProc callback, or nil when the tap
+    /// has never delivered a buffer. Sourced by the engine heartbeat.
+    public var lastIOCallbackAt: Date? {
+        appCapture?.lastIOCallbackAt
+    }
+
+    /// Number of PIDs in the live app tap set (post audio-active filter).
+    public var tapPIDCount: Int {
+        appCapture?.tapPIDCount ?? 0
+    }
+
     /// Stop all capture and return the result. Idempotent — safe to call more
     /// than once (e.g. an explicit stop() followed by a teardown path); the
     /// second call returns the cached result without touching CoreAudio again.
