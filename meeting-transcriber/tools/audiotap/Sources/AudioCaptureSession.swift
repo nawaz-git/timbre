@@ -105,6 +105,12 @@ public class AudioCaptureSession {
             do {
                 try mic.start(deviceUID: micDeviceUID)
                 micCapture = mic
+                // Give the app tap's health watchdog a mic-liveness reference so
+                // its all-zero rebuild only fires when the meeting isn't simply
+                // silent (the asymmetry guard). Without a mic the guard stays off.
+                capture.setPeerActivityProvider { [weak mic] in
+                    (mic?.currentLevelDBFS ?? -120) > CaptureTuning.micSilenceFloorDBFS
+                }
             } catch {
                 logger.error("Failed to start mic capture: \(error). Continuing with app audio only.")
             }
