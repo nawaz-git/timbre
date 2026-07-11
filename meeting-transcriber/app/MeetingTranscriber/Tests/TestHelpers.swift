@@ -260,6 +260,9 @@ class MockRecorder: RecordingProvider {
     var micPath: URL?
     var startCalled = false
     var stopCalled = false
+    /// Number of `stop()` invocations — lets a test assert the recorder is
+    /// finalized *exactly once* across teardown paths (leak-fix regression).
+    var stopCallCount = 0
 
     /// Per-channel level overrides for asymmetric-silence tests. Both default to -120
     /// (silence) so existing tests that don't touch these see the same behavior as
@@ -273,6 +276,7 @@ class MockRecorder: RecordingProvider {
 
     func stop() throws -> RecordingResult {
         stopCalled = true
+        stopCallCount += 1
         guard let mix = mixPath else {
             throw RecorderError.noAudioData
         }
