@@ -35,7 +35,7 @@ import { execFile } from 'child_process'
 import { promises as fsp } from 'fs'
 import { shell } from 'electron'
 import { openPrivacyPane } from './permissions'
-import { killLiveRecorderSync, resolveLiveRecorderApp, startLiveRecorder } from './backend'
+import { forceKillEngine, resolveLiveRecorderApp, startLiveRecorder } from './backend'
 import { resetCaptureWatchdog } from './captureWatchdog'
 import { writeSettings } from './settings'
 import type {
@@ -115,14 +115,14 @@ export function revealHelper(): { revealed: boolean; path?: string } {
 /**
  * Kill + relaunch the engine so freshly-granted TCC takes effect — macOS
  * does NOT refresh permission state for a running process. Reuses
- * `killLiveRecorderSync()` + `startLiveRecorder()` (backend.ts, the v0.21
+ * `forceKillEngine()` + `startLiveRecorder()` (backend.ts, the v0.21
  * `/usr/bin/open --args --auto-watch` path). We also reset the capture
  * watchdog first (mirrors `system:restartHelper`) so any stale red banner
  * clears before the respawn.
  */
 export async function restartEngine(): Promise<OnboardingRestartResult> {
   resetCaptureWatchdog()
-  killLiveRecorderSync()
+  forceKillEngine()
   // Tiny pause so the OS reaps the killed PID before `open` tries to
   // reactivate the same bundle id (would no-op otherwise).
   await new Promise((r) => setTimeout(r, 300))
