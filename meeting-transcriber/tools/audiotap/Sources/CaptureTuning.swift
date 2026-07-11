@@ -33,4 +33,18 @@ enum CaptureTuning {
     /// a healthy disk never overflows it, so capture stays byte-identical to the
     /// pre-ring direct-write path.
     static let ringCapacityBytes: Int = 16 * 1024 * 1024
+
+    /// How often the capture writer thread drains the ring to disk. 50 ms keeps
+    /// worst-case queued audio well under the ring capacity on a healthy disk while
+    /// staying far below the writer's stop deadline.
+    static let writerDrainInterval: TimeInterval = 0.05
+
+    /// Staging-buffer size for each ring→disk copy. 512 KiB ≈ 1.3 s of 48 kHz stereo
+    /// Float32, so a backed-up ring drains in a few loop iterations.
+    static let writerScratchBytes: Int = 512 * 1024
+
+    /// Upper bound on how long capture stop waits for the writer's final flush
+    /// before proceeding — the bounded replacement for the old unbounded drain
+    /// barrier, so a stalled disk can never hang teardown.
+    static let writerFlushDeadline: TimeInterval = 3.0
 }
