@@ -21,6 +21,13 @@ public class AudioCaptureSession {
     private var micCapture: MicCaptureHandler?
     private var appFileHandle: FileHandle?
 
+    /// Latches on the first `stop()` so a second call is a no-op that returns the
+    /// same result — a double `stop()` would otherwise double-destroy the tap +
+    /// aggregate device in coreaudiod. Paired with the `deinit` backstop, no code
+    /// path can drop a live tap or tear one down twice.
+    private var isStopped = false
+    private var stopResult: AudioCaptureResult?
+
     /// - Parameter pids: PIDs to capture audio from. For Electron/WebView2
     ///   apps (Teams 2.x, Slack, Discord) this should include the root PID
     ///   plus helper/renderer children; for native Cocoa apps a
@@ -111,8 +118,13 @@ public class AudioCaptureSession {
         micCapture?.currentLevelDBFS ?? -120
     }
 
-    /// Stop all capture and return the result.
+    /// Stop all capture and return the result. Idempotent — safe to call more
+    /// than once (e.g. an explicit stop() followed by a teardown path); the
+    /// second call returns the cached result without touching CoreAudio again.
     public func stop() -> AudioCaptureResult {
+        if isStopped, let stopResult { return stopResult }
+        isStopped = true
+
         appCapture?.stop()
         micCapture?.stop()
 
@@ -143,8 +155,23 @@ public class AudioCaptureSession {
 
         appCapture = nil
         micCapture = nil
+        stopResult = result
 
         logger.info("Capture session stopped (rate: \(result.actualSampleRate), channels: \(result.actualChannels), micDelay: \(result.micDelay))")
         return result
+    }
+
+    /// Debug-visible, release-safe backstop. If the session is deallocated while
+    /// a capture is still live — i.e. `stop()` was never called — a process tap
+    /// + aggregate device would leak inside coreaudiod (exactly the lifecycle
+    /// stress this workstream is closing). Trap in debug so the offending path is
+    /// caught in tests/dev, and best-effort stop in every build so production can
+    /// never drop a running tap.
+    deinit {
+        if appCapture != nil {
+            assertionFailure("AudioCaptureSession deallocated with a live capture — stop() was never called")
+            appCapture?.stop()
+            micCapture?.stop()
+        }
     }
 }
