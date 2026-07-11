@@ -37,6 +37,7 @@ extension AppAudioCapture {
 
     func handleOutputDeviceChanged() {
         guard isRunning else { return }
+        deviceChangeEvents += 1 // session forensics counter
         if debugLogging {
             let newName = getDefaultOutputDeviceName() ?? "?"
             let newUID = getDefaultOutputDeviceUID() ?? "?"
@@ -85,6 +86,7 @@ extension AppAudioCapture {
     /// back so the machine can retry / degrade.
     private func performRebuild() {
         logger.info("Tap lifecycle rebuild: full teardown + recreate")
+        rebuildsPerformed += 1 // session forensics counter
         stopCapture()
         let success: Bool
         do {
@@ -170,6 +172,7 @@ extension AppAudioCapture {
         case let .noCallbacks(secondsStale):
             healthLogger.error("Tap health rebuild: reason=noCallbacks window=\(Int(secondsStale), privacy: .public)s")
         case let .allZero(secondsStale):
+            zeroSignalWindows += 1 // session forensics counter
             healthLogger.error("Tap health rebuild: reason=allZero window=\(Int(secondsStale), privacy: .public)s")
         }
         tapHealth.reset()

@@ -126,6 +126,21 @@ public class AppAudioCapture: @unchecked Sendable {
     /// on `captureControl`. Nil when there is no mic reference channel.
     var peerActivityProvider: (@Sendable () -> Bool)?
 
+    // MARK: - Session forensics counters
+    // All touched ONLY on `captureControl` (the device-change / health / rebuild
+    // path in `+Lifecycle`, plus `stopCapture`), read once at session `stop()` on
+    // that same queue — no atomics needed. Accumulate across rebuilds within a
+    // session and are logged as one greppable summary line at stop.
+
+    /// Output-device-change notifications observed this session.
+    var deviceChangeEvents = 0
+    /// Full teardown+recreate cycles this session (device-change or health).
+    var rebuildsPerformed = 0
+    /// All-zero health faults (the tap delivered silence while the mic was live).
+    var zeroSignalWindows = 0
+    /// Ring bytes dropped on writer overflow, summed across this session's writers.
+    private var sessionDroppedBytes = 0
+
     /// - Parameters:
     ///   - pids: Process IDs to capture audio from. Pass the meeting app's
     ///     root PID plus its helper/renderer child PIDs for Electron-based
@@ -370,7 +385,9 @@ public class AppAudioCapture: @unchecked Sendable {
         tap.muteBehavior = .unmuted
 
         var newTapID = AudioObjectID(kAudioObjectUnknown)
-        let tapStatus = AudioHardwareCreateProcessTap(tap, &newTapID)
+        let tapStatus = Self.timedHALCall("createProcessTap") {
+            AudioHardwareCreateProcessTap(tap, &newTapID)
+        }
         guard tapStatus == noErr else {
             let hint = Self.describeTapError(tapStatus)
             logger.error(
@@ -412,9 +429,9 @@ public class AppAudioCapture: @unchecked Sendable {
         ]
 
         var newAggregateID = AudioObjectID(kAudioObjectUnknown)
-        let aggStatus = AudioHardwareCreateAggregateDevice(
-            desc as CFDictionary, &newAggregateID,
-        )
+        let aggStatus = Self.timedHALCall("createAggregate") {
+            AudioHardwareCreateAggregateDevice(desc as CFDictionary, &newAggregateID)
+        }
         guard aggStatus == noErr else {
             AudioHardwareDestroyProcessTap(tapID)
             throw NSError(
@@ -537,7 +554,7 @@ public class AppAudioCapture: @unchecked Sendable {
         isRunning = false
 
         if let procID {
-            AudioDeviceStop(aggregateID, procID)
+            Self.timedHALCall("audioDeviceStop") { AudioDeviceStop(aggregateID, procID) }
             AudioDeviceDestroyIOProcID(aggregateID, procID)
             self.procID = nil
         }
@@ -551,6 +568,9 @@ public class AppAudioCapture: @unchecked Sendable {
         // Bounded final drain of the ring to disk, then stop the writer thread.
         if let writer {
             writer.flushAndClose(deadline: .now() + CaptureTuning.writerFlushDeadline)
+            // Accumulate the session dropped-byte total before the writer (and its
+            // ring) go away on a rebuild — the summary line reports the whole run.
+            sessionDroppedBytes += writer.droppedBytes
             if debugLogging {
                 logger.info(
                     "[debug] App audio capture stopping: totalBytes=\(writer.totalBytesWritten, privacy: .public), droppedBytes=\(writer.droppedBytes, privacy: .public)",
@@ -559,11 +579,11 @@ public class AppAudioCapture: @unchecked Sendable {
             self.writer = nil
         }
         if aggregateID != kAudioObjectUnknown {
-            AudioHardwareDestroyAggregateDevice(aggregateID)
+            Self.timedHALCall("destroyAggregate") { AudioHardwareDestroyAggregateDevice(aggregateID) }
             aggregateID = AudioObjectID(kAudioObjectUnknown)
         }
         if tapID != kAudioObjectUnknown {
-            AudioHardwareDestroyProcessTap(tapID)
+            Self.timedHALCall("destroyProcessTap") { AudioHardwareDestroyProcessTap(tapID) }
             tapID = AudioObjectID(kAudioObjectUnknown)
         }
         didLogFormat = false
@@ -587,8 +607,35 @@ public class AppAudioCapture: @unchecked Sendable {
                 outputDeviceChangeListener = nil
                 outputListenerInstalled = false
             }
+            // One greppable per-session forensics line. Logged inside the
+            // control-queue block so the counters are read on the queue that owns
+            // them, after the final `stopCapture` folded in the last writer's drops.
+            // Built as a plain string (all fields are non-sensitive Int counters)
+            // then logged public — keeps the line under the length cap.
+            let summary = "Capture session summary: "
+                + "deviceChanges=\(deviceChangeEvents) rebuilds=\(rebuildsPerformed) "
+                + "zeroWindows=\(zeroSignalWindows) droppedBytes=\(sessionDroppedBytes) "
+                + "tapPIDs=\(tapPIDCount)"
+            logger.info("\(summary, privacy: .public)")
         }
         logger.info("Audio capture stopped")
+    }
+
+    /// Time a CoreAudio HAL call and log at error level when it exceeds
+    /// `CaptureTuning.halCallSlowThreshold` — an early coreaudiod-distress
+    /// tripwire that feeds the HAL-liveness sentinel's evidence. The call
+    /// runs inline (non-escaping body) so `inout` OSStatus out-params work.
+    @discardableResult
+    static func timedHALCall<Result>(_ label: String, _ body: () -> Result) -> Result {
+        let start = mach_absolute_time()
+        let result = body()
+        let elapsed = machTicksToSeconds(mach_absolute_time() &- start)
+        if elapsed > CaptureTuning.halCallSlowThreshold {
+            logger.error(
+                "HAL call slow: \(label, privacy: .public) took \(String(format: "%.2f", elapsed), privacy: .public)s",
+            )
+        }
+        return result
     }
 
     /// Translates an `AudioHardwareCreateProcessTap` OSStatus to a human hint.

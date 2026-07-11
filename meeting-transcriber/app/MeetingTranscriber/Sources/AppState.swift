@@ -1,5 +1,6 @@
 // swiftlint:disable file_length
 import AppKit
+import AudioTapLib
 import Foundation
 import Observation
 import os.log
@@ -679,6 +680,82 @@ final class AppState { // swiftlint:disable:this type_body_length
         heartbeatWriter.write(heartbeat)
     }
 
+    // MARK: - HAL Liveness Sentinel
+
+    @ObservationIgnored private var halMonitor: HALLivenessMonitor?
+
+    /// User-facing message when the audio HAL stops responding. Carries the
+    /// admin-friendly recovery one-liner — the app never escalates privilege to
+    /// run it itself (that would treat the symptom, not the cause).
+    nonisolated static let halUnresponsiveMessage: String =
+        "macOS audio system has stopped responding. Meetings/browser audio may freeze. "
+            + "Fix without restarting: run `sudo killall coreaudiod` in Terminal."
+
+    /// Start the HAL-liveness sentinel (idempotent). Runs only while the engine
+    /// is watching/recording. On `.unresponsive` it notifies the user with the
+    /// recovery hint and writes a coreaudiod diagnostics snapshot.
+    func startHALSentinel() {
+        guard halMonitor == nil else { return }
+        let monitor = HALLivenessMonitor { [weak self] verdict in
+            Task { @MainActor in self?.handleHALVerdict(verdict) }
+        }
+        monitor.start()
+        halMonitor = monitor
+    }
+
+    /// Stop the HAL-liveness sentinel. Idempotent.
+    func stopHALSentinel() {
+        halMonitor?.stop()
+        halMonitor = nil
+    }
+
+    private func handleHALVerdict(_ verdict: HALLivenessSentinel.Verdict) {
+        switch verdict {
+        case .unresponsive:
+            logger.error("HAL liveness sentinel: coreaudiod unresponsive — notifying + snapshotting")
+            notifier.notify(title: "Audio System Unresponsive", body: Self.halUnresponsiveMessage)
+            writeHALDiagnosticsSnapshot()
+
+        case .recovered:
+            logger.info("HAL liveness sentinel: recovered")
+
+        case .healthy:
+            break
+        }
+    }
+
+    /// Write a coreaudiod-focused diagnostics snapshot to the output dir so a HAL
+    /// wedge is attributable after the fact. Runs off the main thread (the
+    /// `log show` subprocess can be slow) and wraps a security-scoped access for
+    /// the sandboxed build's Output Folder bookmark.
+    private func writeHALDiagnosticsSnapshot() {
+        guard #available(macOS 12, *) else { return }
+        let dir = settings.effectiveOutputDir
+        let version = Bundle.main.appVersion
+        let commit = Bundle.main.gitCommitHash
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
+        Task.detached(priority: .utility) {
+            let accessing = dir.startAccessingSecurityScopedResource()
+            defer { if accessing { dir.stopAccessingSecurityScopedResource() } }
+            let url = dir.appendingPathComponent(
+                "coreaudio-diagnostics-\(Int(Date().timeIntervalSince1970)).log",
+            )
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let info = DiagnosticExporter.HeaderInfo(
+                    appVersion: version, commit: commit,
+                    macOSVersion: osVersion, settings: ["trigger": "hal-unresponsive"],
+                )
+                let count = try DiagnosticExporter.exportCoreAudioSnapshot(to: url, info: info)
+                logger.info(
+                    "Wrote HAL diagnostics snapshot (\(count, privacy: .public) lines) to \(url.lastPathComponent, privacy: .public)",
+                )
+            } catch {
+                logger.error("Failed to write HAL diagnostics snapshot: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     /// Filters `urls` to files that currently exist on disk, forwards them to
     /// `enqueueFiles`, and returns the existing count. RPC-friendly entry
     /// point; nil-callers (weak self) treat absent app as 0-enqueued.
@@ -750,15 +827,24 @@ final class AppState { // swiftlint:disable:this type_body_length
                     )
                 }
                 self?.startChannelHealthMonitoring()
+                self?.startHALSentinel()
+
+            case .watching:
+                // Channel-health only runs during recording, but the HAL sentinel
+                // watches the whole active session (watching + recording).
+                self?.stopChannelHealthMonitoring()
+                self?.startHALSentinel()
 
             case .error:
                 if let err = loop?.lastError {
                     notifier.notify(title: "Error", body: err)
                 }
                 self?.stopChannelHealthMonitoring()
+                self?.stopHALSentinel()
 
-            default:
+            case .idle:
                 self?.stopChannelHealthMonitoring()
+                self?.stopHALSentinel()
             }
         }
     }
