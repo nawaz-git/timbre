@@ -17,6 +17,11 @@ public class AudioCaptureSession {
     private let appLiveSink: LiveAudioSink?
     private let micLiveSink: LiveAudioSink?
 
+    /// One serial queue shared by the tap and the mic engine so their lifecycle
+    /// operations (start, stop, device-change rebuilds) serialize with each other
+    /// and never churn CoreAudio concurrently during a Bluetooth storm.
+    private let captureControl = DispatchQueue(label: "audiotap.control", qos: .userInitiated)
+
     private var appCapture: AppAudioCapture?
     private var micCapture: MicCaptureHandler?
     private var appFileHandle: FileHandle?
@@ -78,6 +83,7 @@ public class AudioCaptureSession {
             channels: channels,
             debugLogging: debugLogging,
             liveSink: appLiveSink,
+            captureControl: captureControl,
         )
         do {
             try capture.start()
@@ -94,6 +100,7 @@ public class AudioCaptureSession {
                 outputURL: micURL,
                 debugLogging: debugLogging,
                 liveSink: micLiveSink,
+                captureControl: captureControl,
             )
             do {
                 try mic.start(deviceUID: micDeviceUID)
