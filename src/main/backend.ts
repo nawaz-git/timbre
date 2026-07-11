@@ -334,23 +334,28 @@ const ENGINE_TERM_GRACE_MS = 8000
 /** Poll cadence while waiting for the engine to exit. */
 const ENGINE_POLL_MS = 500
 
-export type EscalationAction = 'sigterm' | 'wait' | 'sigkill' | 'done'
+export type EscalationAction = 'sigterm' | 'sigkill' | 'done'
 
 /**
  * Pure escalation policy for a graceful engine stop. Given the time elapsed
  * since the stop began and whether any engine helper is still alive, decide the
  * next action. The driver acts once on each transition ('sigterm' at t=0,
  * 'sigkill' at the grace boundary) and merely 'wait's in between:
+ * The driver sends SIGTERM once (the first time it sees 'sigterm') and then just
+ * polls until the engine exits or the grace window closes:
  *
- *   t = 0            → 'sigterm'  (engine's SIGTERM handler finalizes + exits)
- *   0 < t < GRACE    → 'wait'     (give the graceful teardown time)
- *   t >= GRACE       → 'sigkill'  (last resort)
- *   engine gone      → 'done'
+ *   engine gone            → 'done'
+ *   t < ENGINE_TERM_GRACE  → 'sigterm'  (graceful window; engine finalizes + exits)
+ *   t >= ENGINE_TERM_GRACE → 'sigkill'  (last resort)
+ *
+ * 'sigterm' deliberately spans the WHOLE grace window rather than only t=0:
+ * `isEngineAlive()` (a spawnSync) burns a few ms before the first elapsed is
+ * measured, so a t<=0 check would miss the initial SIGTERM entirely and skip
+ * straight to the SIGKILL at the grace boundary.
  */
 export function nextEscalationStep(elapsedMs: number, alive: boolean): EscalationAction {
   if (!alive) return 'done'
-  if (elapsedMs <= 0) return 'sigterm'
-  if (elapsedMs < ENGINE_TERM_GRACE_MS) return 'wait'
+  if (elapsedMs < ENGINE_TERM_GRACE_MS) return 'sigterm'
   return 'sigkill'
 }
 
@@ -383,12 +388,14 @@ export async function stopEngineGracefully(
       return { ok: true, finalAction: 'done' }
     }
     if (action === 'sigterm') {
+      // Send SIGTERM once, then poll for the engine to self-finalize + exit.
       if (!termSent) {
         termSent = true
         console.log('[live-recorder] escalation: SIGTERM')
         forceKillEngine('SIGTERM')
       }
-    } else if (action === 'sigkill') {
+    } else {
+      // Grace window elapsed and the engine is still alive — force-kill.
       console.warn(
         `[live-recorder] escalation: SIGKILL after ${ENGINE_TERM_GRACE_MS} ms (reason=${reason})`
       )
