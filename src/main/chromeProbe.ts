@@ -114,18 +114,92 @@ const CHROMIUM_BROWSERS: ReadonlyArray<{ appName: string; bundleId: string }> = 
  */
 const MEET_URL_RE = /^https:\/\/meet\.google\.com\/([a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4})\b/i
 
+/** Fast cadence while merely watching, so a new meeting is picked up quickly. */
+const WATCHING_INTERVAL_MS = 3000
+/**
+ * Slow cadence once a recording is underway: we stop firing Apple Events into
+ * the meeting browser every 3 s. The engine tolerates this via its widened
+ * `ElectronSignalDetector.staleAfter` (45 s) — keep the two in lockstep: this
+ * interval plus osascript latency and a missed tick must stay well under it.
+ */
+const RECORDING_INTERVAL_MS = 15_000
+/** Tolerance so a timer firing a hair early still counts as "cadence reached". */
+const PROBE_SLACK_MS = 1000
+/**
+ * How long a browser's running/not-running verdict is trusted before we
+ * re-ask System Events. Consulted only while recording (see `isAppRunning`),
+ * where we're already backing off and don't need per-tick freshness.
+ */
+const BROWSER_RUNNING_CACHE_MS = 60_000
+
+/**
+ * Whether a recording is currently active. Injected by `index.ts` so this
+ * module doesn't import `captureWatchdog` (which imports us — a cycle).
+ * Defaults to "not recording" so the probe keeps its historic fast cadence for
+ * any caller that never wires a provider (tests, tray, ipc).
+ */
+let recordingActiveProvider: () => boolean = () => false
+
+export function setRecordingActiveProvider(fn: () => boolean): void {
+  recordingActiveProvider = fn
+}
+
+function safeRecordingActive(): boolean {
+  try {
+    return recordingActiveProvider()
+  } catch {
+    // A throwing provider must never break the probe loop — fail to "watching".
+    return false
+  }
+}
+
+/**
+ * Pure cadence gate: has enough time passed since the last real probe? Target
+ * is the slow interval while recording, the fast one otherwise; `slackMs`
+ * absorbs timer jitter. Exported for unit coverage.
+ */
+export function shouldProbeNow(args: {
+  recordingActive: boolean
+  msSinceLastProbe: number
+  watchingIntervalMs: number
+  recordingIntervalMs: number
+  slackMs: number
+}): boolean {
+  const target = args.recordingActive ? args.recordingIntervalMs : args.watchingIntervalMs
+  return args.msSinceLastProbe >= target - args.slackMs
+}
+
+/** Cached browser running/not-running verdict + when it was taken. */
+const browserRunningCache = new Map<string, { running: boolean; at: number }>()
+
+/**
+ * Pure: is a cache entry taken at `cachedAt` still fresh at `now`? Guards
+ * against a negative age (clock moved backwards) as well as expiry. Exported
+ * for unit coverage.
+ */
+export function browserRunningCacheFresh(cachedAt: number, now: number, ttlMs: number): boolean {
+  const age = now - cachedAt
+  return age >= 0 && age < ttlMs
+}
+
 interface InternalState {
   snapshot: ChromeMeetSnapshot
   timer: NodeJS.Timeout | null
   /** True while we're in the middle of an osascript call. Prevents overlapping calls
    *  if the previous one is slow. */
   busy: boolean
+  /** Wall-clock of the last real (non-skipped) probe, for the cadence gate. */
+  lastProbeAt: number
+  /** Base tick cadence the interval fires at; the watching-state target. */
+  baseIntervalMs: number
 }
 
 const state: InternalState = {
   snapshot: { available: false, tab: null },
   timer: null,
-  busy: false
+  busy: false,
+  lastProbeAt: 0,
+  baseIntervalMs: WATCHING_INTERVAL_MS
 }
 
 export function getChromeMeetSnapshot(): ChromeMeetSnapshot {
@@ -137,9 +211,10 @@ export function getChromeMeetSnapshot(): ChromeMeetSnapshot {
  * `recording` state, and stopped when it returns to `idle`. Safe to
  * call multiple times — idempotent.
  */
-export function startChromeProbe(intervalMs = 3000): void {
+export function startChromeProbe(intervalMs = WATCHING_INTERVAL_MS): void {
   if (process.platform !== 'darwin') return
   if (state.timer) return
+  state.baseIntervalMs = intervalMs
   // First tick fires immediately so the UI doesn't have to wait 3s.
   void tick()
   state.timer = setInterval(() => {
@@ -152,6 +227,10 @@ export function stopChromeProbe(): void {
     clearInterval(state.timer)
     state.timer = null
   }
+  // Reset the cadence clock so the immediate first tick on a later restart
+  // isn't skipped by the gate (a stale placeholder could otherwise make the
+  // restart wait a full slow interval before its first real probe).
+  state.lastProbeAt = 0
   // Engine is no longer watching — remove the signal so a stale file can't
   // trigger a recording later.
   void writeActiveMeetingSignal(null)
@@ -159,12 +238,33 @@ export function stopChromeProbe(): void {
 
 async function tick(): Promise<void> {
   if (state.busy) return
+  const now = Date.now()
+  const recordingActive = safeRecordingActive()
+  // Cadence gate: while a recording is active we do real work every ~15 s, not
+  // every 3 s, so we stop firing Apple Events into the meeting browser mid-call.
+  // The setInterval keeps ticking at the base cadence; we just skip the
+  // expensive osascript work between slow-cadence ticks. Keeping the interval
+  // (rather than rescheduling) means a thrown tick can never kill the loop.
+  if (
+    !shouldProbeNow({
+      recordingActive,
+      msSinceLastProbe: now - state.lastProbeAt,
+      watchingIntervalMs: state.baseIntervalMs,
+      recordingIntervalMs: RECORDING_INTERVAL_MS,
+      slackMs: PROBE_SLACK_MS
+    })
+  ) {
+    return
+  }
+  state.lastProbeAt = now
   state.busy = true
   try {
-    const tab = await findFirstMeetTab()
+    const tab = await findFirstMeetTab(recordingActive)
     updateSnapshot({ available: true, tab })
-    // Refresh (or clear) the engine signal every tick so it acts as a
-    // heartbeat the engine can age out if Mintr stops updating it.
+    // Refresh (or clear) the engine signal on every real probe so it acts as a
+    // heartbeat the engine can age out if Mintr stops updating it. While
+    // recording this refreshes every ~15 s — well inside the engine's 45 s
+    // staleness window.
     await writeActiveMeetingSignal(tab)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -191,9 +291,9 @@ async function tick(): Promise<void> {
  * Returns the first Meet URL we find, or null. Skips silently when a
  * browser isn't running.
  */
-async function findFirstMeetTab(): Promise<ChromeMeetTab | null> {
+async function findFirstMeetTab(recordingActive: boolean): Promise<ChromeMeetTab | null> {
   for (const browser of CHROMIUM_BROWSERS) {
-    if (!(await isAppRunning(browser.appName))) continue
+    if (!(await isAppRunning(browser.appName, recordingActive))) continue
     const urls = await fetchUrls(browser.appName).catch(() => [] as string[])
     if (urls.length === 0) continue
     for (const raw of urls) {
@@ -220,15 +320,32 @@ async function findFirstMeetTab(): Promise<ChromeMeetTab | null> {
  * Cheap check: does `<App> is running` come back true from System Events?
  * Without this we'd spam every browser with an osascript call even when
  * none of them are open, and each call costs ~30ms.
+ *
+ * `useCache` (set while recording) trusts a verdict taken within
+ * `BROWSER_RUNNING_CACHE_MS` instead of re-asking System Events every probe —
+ * mid-meeting the running set barely changes, so this drops a per-tick
+ * osascript call per browser. Watching leaves it uncached so a browser opened
+ * mid-watch is still detected on the very next tick. The verdict is always
+ * written to the cache so the first recording tick starts warm.
  */
-async function isAppRunning(appName: string): Promise<boolean> {
+async function isAppRunning(appName: string, useCache: boolean): Promise<boolean> {
+  const now = Date.now()
+  if (useCache) {
+    const cached = browserRunningCache.get(appName)
+    if (cached && browserRunningCacheFresh(cached.at, now, BROWSER_RUNNING_CACHE_MS)) {
+      return cached.running
+    }
+  }
   const script = `tell application "System Events" to (name of processes) contains "${escapeAppleScriptString(appName)}"`
   try {
     const { stdout } = await execFileP('/usr/bin/osascript', ['-e', script], {
       timeout: 1500
     })
-    return stdout.trim() === 'true'
+    const running = stdout.trim() === 'true'
+    browserRunningCache.set(appName, { running, at: now })
+    return running
   } catch {
+    browserRunningCache.set(appName, { running: false, at: now })
     return false
   }
 }

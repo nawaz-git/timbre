@@ -16,8 +16,8 @@ private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "Electro
 /// reliable signal drive the engine's existing record→pipeline path.
 ///
 /// Contract — `AppPaths.ipcDir/active_meeting.json`, written atomically by
-/// Electron whenever its probe sees a live Meet and rewritten on every probe
-/// tick (~3 s), then deleted when the Meet ends:
+/// Electron whenever its probe sees a live Meet, then deleted when the Meet
+/// ends:
 /// ```
 /// { "meetingId": "abc-defg-hij",
 ///   "title": "abc-defg-hij - Google Meet",
@@ -28,6 +28,14 @@ private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "Electro
 /// Absence of the file — or an `updatedAt` older than `staleAfter` (Electron
 /// stopped updating, e.g. quit/crashed) — means "no live meeting", so we never
 /// record forever against a stale file.
+///
+/// The probe refresh cadence is ADAPTIVE on the Electron side: ~3 s while merely
+/// watching (fast meeting pickup), but stretched to ~15 s once a recording is
+/// underway so we stop firing AppleScript into the meeting browser mid-call.
+/// `staleAfter` must therefore comfortably exceed the slow cadence plus
+/// osascript latency and a missed tick — hence 45 s, not the old 3 s-cadence 12 s.
+/// A too-tight value would make a slow-but-alive refresh look stale and end the
+/// recording spuriously.
 final class ElectronSignalDetector: MeetingDetecting {
     private let signalFile: URL
     private let staleAfter: TimeInterval
@@ -47,7 +55,7 @@ final class ElectronSignalDetector: MeetingDetecting {
 
     init(
         signalFile: URL = AppPaths.ipcDir.appendingPathComponent("active_meeting.json"),
-        staleAfter: TimeInterval = 12,
+        staleAfter: TimeInterval = 45,
         now: @escaping () -> Date = Date.init,
         pidResolver: @escaping (String) -> pid_t? = ElectronSignalDetector.runningAppPID,
     ) {
