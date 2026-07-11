@@ -1,0 +1,149 @@
+name: CI
+
+# Monorepo CI for Timbre.
+#
+# The Swift engine lives under meeting-transcriber/ (a subdirectory), so its
+# own workflows at meeting-transcriber/.github/workflows/ never run — GitHub
+# only executes workflows found in the repo-root .github/workflows/. This is
+# the single root entry point that exercises BOTH halves of the monorepo:
+# the Swift engine (tests + lint) and the Electron app (typecheck + build).
+#
+# This Mac has no Xcode, so GitHub's macOS runners are the only place the
+# engine's XCTest suite can execute.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# One in-flight run per ref; a newer push / PR-sync cancels the superseded run
+# instead of piling up macOS-runner minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Swift engine — XCTest suite (SPM). Caching + Xcode-toolchain selection are
+  # ported from the engine's original ci.yml
+  # (meeting-transcriber/.github/workflows/ci.yml + its setup-swift-test and
+  # verify-xcode composite actions), with paths rebased onto the monorepo
+  # layout (meeting-transcriber/ prefix).
+  # ---------------------------------------------------------------------------
+  engine-tests:
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: meeting-transcriber/app/MeetingTranscriber
+    env:
+      # Force the full Xcode toolchain (it ships XCTest); the bare Command Line
+      # Tools cannot import XCTest and SwiftPM would fail half a job later with
+      # an opaque compile error. Mirrors the engine CI's verify-xcode action.
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Xcode toolchain
+        run: |
+          xcode-select -p
+          swift --version
+
+      # SPM build cache keyed off Package.resolved. actions/cache paths are
+      # resolved from the repo root (they ignore defaults.run.working-directory),
+      # hence the full meeting-transcriber/... path here.
+      - name: Cache SPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: meeting-transcriber/app/MeetingTranscriber/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('meeting-transcriber/app/MeetingTranscriber/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      # WhisperKit (HuggingFace) + FluidAudio model weights. The HF download
+      # client races under concurrent cold loads of the same model, so we
+      # pre-warm sequentially (below, on a cache miss) and let the parallel
+      # suite hit the warm cache. The key also hashes ModelPreloadTests so that
+      # adding a newly pre-warmed model invalidates a stale cache.
+      - name: Cache ML models
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Documents/huggingface
+            ~/Library/Application Support/FluidAudio
+          key: ml-models-${{ runner.os }}-${{ hashFiles('meeting-transcriber/app/MeetingTranscriber/Package.resolved', 'meeting-transcriber/app/MeetingTranscriber/Tests/ModelPreloadTests.swift') }}
+          restore-keys: ml-models-${{ runner.os }}-
+
+      # Sequential pre-warm on cache miss only — populates the model cache so
+      # the parallel run below doesn't race the HF download client. Skipped
+      # entirely once the cache is warm.
+      - name: Pre-warm model cache (cache miss only)
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 30
+        run: swift test --filter ModelPreloadTests
+
+      # ModelPreloadTests is a pure cache-warmer, not a real test, so it's
+      # skipped in the actual suite (it already ran, or its models are cached).
+      - name: Swift tests
+        timeout-minutes: 20
+        run: swift test --parallel --skip ModelPreloadTests
+
+  # ---------------------------------------------------------------------------
+  # Swift engine — SwiftFormat + SwiftLint via scripts/lint.sh, run the same
+  # way the engine CI ran them: brew-installed tools on a macOS runner.
+  # scripts/lint.sh is the single source of truth for the linted directories.
+  # ---------------------------------------------------------------------------
+  engine-lint:
+    runs-on: macos-26
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: meeting-transcriber
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SwiftFormat + SwiftLint
+        run: brew install swiftformat swiftlint
+      # Runs `swiftformat --dryrun --lint` then `swiftlint lint --strict` over
+      # the shared SWIFT_DIRS list.
+      #
+      # TODO(engine-lint): flip this back to blocking once the engine snapshot
+      # is re-formatted on a follow-up branch. The runner's SwiftFormat (0.61.x)
+      # flags pre-existing violations in engine files that landed via the
+      # monorepo import without ever being linted (the engine's own workflows
+      # live in a subdirectory GitHub doesn't execute): ElectronSignalDetector,
+      # ScreenVideoMuxer, DualSourceRecorder. This bootstrap PR deliberately
+      # touches no engine code, so lint runs non-blocking for visibility.
+      - name: Lint (non-blocking — pre-existing violations in engine snapshot)
+        continue-on-error: true
+        run: ./scripts/lint.sh
+
+  # ---------------------------------------------------------------------------
+  # Electron app — install, typecheck, and a production bundler build. Runs on
+  # Linux (the checks are platform-agnostic) to keep macOS runners for the
+  # engine legs.
+  # ---------------------------------------------------------------------------
+  electron-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Production build
+        run: npx electron-vite build
+      # ESLint is RED on main today (40 pre-existing errors + 300-odd
+      # prettier/prettier warnings). We run it for visibility but keep it
+      # NON-BLOCKING (continue-on-error) so it doesn't wall off every PR on a
+      # pre-existing debt. Flip this to blocking once the backlog is cleared.
+      - name: ESLint (non-blocking — 40 pre-existing errors on main)
+        continue-on-error: true
+        run: npm run lint
