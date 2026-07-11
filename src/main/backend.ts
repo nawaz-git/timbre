@@ -5,6 +5,7 @@ import { join } from 'path'
 import { app, type WebContents } from 'electron'
 import type { EnrolledSpeaker, NumSpeakersHint } from '../shared/types'
 import { globalSpeakersDBPath } from './settings'
+import { ENGINE_IPC_DIR } from './chromeProbe'
 
 /**
  * Resolve the path to the bundled `mt-batch` Swift CLI.
@@ -400,6 +401,83 @@ export async function stopEngineGracefully(
 }
 
 /**
+ * Engine liveness heartbeat, written by the engine to the shared IPC dir every
+ * couple of seconds and read here to decide whether a running engine can be
+ * reused instead of killed + relaunched. `updatedAt` is epoch **milliseconds**,
+ * matching `active_meeting.json` / `engine_config.json`, and `version` is the
+ * engine's build version (compared against `app.getVersion()`; the monorepo
+ * keeps the two in lockstep). Extra liveness fields are read opportunistically.
+ *
+ * NOTE: the engine-side writer of this file does not exist yet, so
+ * `readEngineHeartbeat()` returns null and reuse is simply skipped — every
+ * launch falls through to the safe kill + relaunch until the writer lands.
+ */
+export interface EngineHeartbeat {
+  pid: number
+  version: string
+  state: 'watching' | 'recording' | 'processing' | 'idle'
+  startedAt: number
+  lastIOCallbackAt?: number
+  lastSCKFrameAt?: number
+  tapPIDCount?: number
+  updatedAt: number
+}
+
+const ENGINE_HEARTBEAT_FILE = join(ENGINE_IPC_DIR, 'engine_heartbeat.json')
+
+/** How fresh the heartbeat must be for us to trust a running engine (ms). */
+const HEARTBEAT_FRESH_MS = 6000
+
+/**
+ * Read + parse the engine heartbeat. Returns null when absent (engine not
+ * running / writer not yet shipped) or malformed — callers treat null as
+ * "can't reuse".
+ */
+export async function readEngineHeartbeat(): Promise<EngineHeartbeat | null> {
+  try {
+    const raw = await fs.readFile(ENGINE_HEARTBEAT_FILE, 'utf-8')
+    const parsed = JSON.parse(raw) as Partial<EngineHeartbeat>
+    if (typeof parsed.updatedAt !== 'number' || typeof parsed.version !== 'string') {
+      return null
+    }
+    return parsed as EngineHeartbeat
+  } catch {
+    return null
+  }
+}
+
+export interface EngineReuseVerdict {
+  reuse: boolean
+  reason: string
+}
+
+/**
+ * Pure decision: can a running engine be reused instead of killed + relaunched?
+ * Reuse only when the heartbeat is present, fresh (< HEARTBEAT_FRESH_MS old),
+ * and its embedded version matches the version this Timbre build expects. Any
+ * doubt — no heartbeat, stale, clock-skewed, or version mismatch — declines, so
+ * the caller falls back to the always-safe graceful stop + relaunch.
+ */
+export function evaluateEngineReuse(
+  heartbeat: EngineHeartbeat | null,
+  expectedVersion: string,
+  nowMs: number
+): EngineReuseVerdict {
+  if (!heartbeat) return { reuse: false, reason: 'no-heartbeat' }
+  const age = nowMs - heartbeat.updatedAt
+  if (!(age >= 0) || age > HEARTBEAT_FRESH_MS) {
+    return { reuse: false, reason: `stale-heartbeat(age=${Math.round(age)}ms)` }
+  }
+  if (heartbeat.version !== expectedVersion) {
+    return {
+      reuse: false,
+      reason: `version-mismatch(${heartbeat.version}!=${expectedVersion})`
+    }
+  }
+  return { reuse: true, reason: 'healthy' }
+}
+
+/**
  * Spawn the bundled MintrEngine helper.
  *
  * **v0.21 critical change — back to `/usr/bin/open`.** TCC log diff
@@ -432,11 +510,12 @@ export async function stopEngineGracefully(
  * we no longer hold a PID handle to the helper. That's why we keep
  * pkill-by-binary-path for kill/restart paths.
  */
-export function startLiveRecorder(env: Record<string, string> = {}): {
+export async function startLiveRecorder(env: Record<string, string> = {}): Promise<{
   ok: boolean
   appPath?: string
   message?: string
-} {
+  reused?: boolean
+}> {
   const appPath = resolveLiveRecorderApp()
   if (!appPath) {
     return {
@@ -446,11 +525,31 @@ export function startLiveRecorder(env: Record<string, string> = {}): {
     }
   }
 
-  // Step 1: kill any stale instance. macOS won't refresh a running
-  // process's TCC entries, so a 4-hour-old helper that booted before
-  // permission was granted is dead weight — silently failing to read
-  // window titles for as long as it lives.
-  forceKillEngine()
+  // Serialise behind any in-flight graceful stop so we never probe or relaunch
+  // over an engine that is still shutting down.
+  if (pendingStop) {
+    await pendingStop
+  }
+
+  // Step 0: reuse a healthy running engine instead of the kill-mid-IO +
+  // relaunch that every routine Timbre launch used to do. A fresh,
+  // version-matched heartbeat means the engine is already watching with
+  // current permissions, so relaunching would needlessly SIGTERM a live audio
+  // tap. (Until the engine writes the heartbeat this always misses and we fall
+  // through to the safe stop + relaunch below.) The extra isEngineAlive() call
+  // closes the fresh-heartbeat-but-just-died race.
+  const verdict = evaluateEngineReuse(await readEngineHeartbeat(), app.getVersion(), Date.now())
+  if (verdict.reuse && isEngineAlive()) {
+    console.log('[live-recorder] reusing healthy engine (skipping kill + relaunch)')
+    return { ok: true, appPath, reused: true }
+  }
+
+  // Step 1: stop any stale / mismatched instance GRACEFULLY before launching,
+  // so the old engine finalizes its recording and releases its tap instead of
+  // fighting the new one for audio. macOS won't refresh a running process's TCC
+  // entries anyway, so a stale helper has to go.
+  console.log(`[live-recorder] not reusing engine (${verdict.reason}) — stopping + relaunching`)
+  await stopEngineGracefully('stale-engine')
 
   // Step 2: launch via `/usr/bin/open -n <bundled-app> --args --auto-watch`.
   //

@@ -126,7 +126,7 @@ export async function restartEngine(): Promise<OnboardingRestartResult> {
   // Tiny pause so the OS reaps the killed PID before `open` tries to
   // reactivate the same bundle id (would no-op otherwise).
   await new Promise((r) => setTimeout(r, 300))
-  const result = startLiveRecorder()
+  const result = await startLiveRecorder()
   return { ok: result.ok, message: result.message }
 }
 
