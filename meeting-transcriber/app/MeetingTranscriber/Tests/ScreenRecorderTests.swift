@@ -191,4 +191,90 @@ final class ScreenRecorderTests: XCTestCase {
             ),
         )
     }
+
+    // MARK: - watchdogVerdict (pause-aware decision table)
+
+    private func verdict(
+        gap: Double = 10,
+        attempts: Int = 0,
+        max: Int = 5,
+        threshold: Double = 3,
+        window: ScreenRecorder.WindowVisibility,
+        recording: Bool = true,
+    ) -> ScreenRecorder.WatchdogVerdict {
+        ScreenRecorder.watchdogVerdict(
+            isRecording: recording,
+            secondsSinceLastFrame: gap,
+            attemptsSoFar: attempts,
+            maxAttempts: max,
+            stallThreshold: threshold,
+            windowState: window,
+        )
+    }
+
+    /// Visible target + stale gap + under the cap → restart (the genuine stall).
+    func testVerdictVisibleStaleRestarts() {
+        XCTAssertEqual(verdict(window: .visible), .restart)
+    }
+
+    /// Fresh gap (below threshold) → wait, whatever the window state.
+    func testVerdictFreshGapWaits() {
+        XCTAssertEqual(verdict(gap: 1, window: .visible), .wait)
+        XCTAssertEqual(verdict(gap: 1, window: .gone), .wait)
+    }
+
+    /// Minimized window pauses SCK delivery by design → wait, never restart.
+    func testVerdictMinimizedWaits() {
+        XCTAssertEqual(verdict(window: .minimized), .wait)
+    }
+
+    /// Locked/asleep display pauses all capture → wait, never restart.
+    func testVerdictDisplayLockedOrAsleepWaits() {
+        XCTAssertEqual(verdict(window: .displayLockedOrAsleep), .wait)
+    }
+
+    /// Vanished window → fall back to whole-display capture (under the cap).
+    func testVerdictGoneFallsBackToDisplay() {
+        XCTAssertEqual(verdict(window: .gone), .fallbackToDisplay)
+    }
+
+    /// Undetermined visibility is treated like visible so a flaky enumeration
+    /// can't silently disable stall recovery.
+    func testVerdictUnknownRestarts() {
+        XCTAssertEqual(verdict(window: .unknown), .restart)
+    }
+
+    /// At the consecutive-attempt cap: a stall gives up, a gone window gives up.
+    func testVerdictAtCapGivesUp() {
+        XCTAssertEqual(verdict(attempts: 5, window: .visible), .giveUp)
+        XCTAssertEqual(verdict(attempts: 5, window: .gone), .giveUp)
+        XCTAssertEqual(verdict(attempts: 5, window: .unknown), .giveUp)
+    }
+
+    /// Teardown (isRecording=false) → wait, even with an enormous gap.
+    func testVerdictNotRecordingWaits() {
+        XCTAssertEqual(verdict(gap: 999, window: .visible, recording: false), .wait)
+    }
+
+    // MARK: - restartBackoff progression
+
+    /// Exponential 1/2/4/8/16, clamped at 16; sub-1 attempt is defensively 1 s.
+    func testRestartBackoffProgression() {
+        XCTAssertEqual(ScreenRecorder.restartBackoff(consecutiveAttempts: 1), 1)
+        XCTAssertEqual(ScreenRecorder.restartBackoff(consecutiveAttempts: 2), 2)
+        XCTAssertEqual(ScreenRecorder.restartBackoff(consecutiveAttempts: 3), 4)
+        XCTAssertEqual(ScreenRecorder.restartBackoff(consecutiveAttempts: 4), 8)
+        XCTAssertEqual(ScreenRecorder.restartBackoff(consecutiveAttempts: 5), 16)
+        XCTAssertEqual(ScreenRecorder.restartBackoff(consecutiveAttempts: 6), 16)
+        XCTAssertEqual(ScreenRecorder.restartBackoff(consecutiveAttempts: 0), 1)
+    }
+
+    // MARK: - attemptsAfterFrameAppended (reset-on-frame)
+
+    /// A successful frame resets the consecutive-failure counter to 0.
+    func testAttemptsResetOnFrame() {
+        XCTAssertEqual(ScreenRecorder.attemptsAfterFrameAppended(3), 0)
+        XCTAssertEqual(ScreenRecorder.attemptsAfterFrameAppended(1), 0)
+        XCTAssertEqual(ScreenRecorder.attemptsAfterFrameAppended(0), 0)
+    }
 }
