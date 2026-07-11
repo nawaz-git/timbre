@@ -156,6 +156,10 @@ struct MeetingTranscriberApp: App {
                 // `init`) so `appState` is fully valid and tests that construct
                 // AppState directly never install process-global handlers.
                 appState.installTerminationSignalHandlers()
+                // Begin the engine liveness heartbeat (read by Electron's reuse
+                // probe + supervisor). Runs for the whole process lifetime; the
+                // file is deleted at the start of gracefulShutdown.
+                appState.startEngineHeartbeat()
             }
             .task {
                 await appState.checkPermissions()

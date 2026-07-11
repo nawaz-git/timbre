@@ -30,6 +30,13 @@ enum AppPaths {
     /// Electron quitting.
     static let engineConfigFile = ipcDir.appendingPathComponent("engine_config.json")
 
+    /// Cross-process engine liveness heartbeat written by the engine every ~2 s
+    /// (see `EngineHeartbeatWriter`) and read by Electron's reuse probe +
+    /// supervisor. Lives in the same dir as `active_meeting.json`; DELETED at
+    /// the start of graceful shutdown so a concurrent Electron start can't reuse
+    /// a dying engine.
+    static let engineHeartbeatFile = ipcDir.appendingPathComponent("engine_heartbeat.json")
+
     /// Recordings directory.
     static let recordingsDir = dataDir.appendingPathComponent("recordings")
 

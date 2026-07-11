@@ -56,6 +56,14 @@ protocol RecordingProvider {
     /// Instantaneous mic level in dBFS, with the same semantics as
     /// `appLevelDBFS`.
     var micLevelDBFS: Double { get }
+
+    /// Wall-clock of the most recent app-tap IOProc callback, or nil when no
+    /// capture session is active / the tap has never delivered a buffer. Sourced
+    /// by the engine heartbeat. Default nil (mocks with no live tap).
+    var lastIOCallbackAt: Date? { get }
+
+    /// Number of PIDs in the live app tap set. Default 0.
+    var tapPIDCount: Int { get }
 }
 
 extension RecordingProvider {
@@ -65,6 +73,14 @@ extension RecordingProvider {
 
     var micLevelDBFS: Double {
         -120
+    }
+
+    var lastIOCallbackAt: Date? {
+        nil
+    }
+
+    var tapPIDCount: Int {
+        0
     }
 }
 
@@ -92,6 +108,16 @@ class DualSourceRecorder: RecordingProvider {
     var micLevelDBFS: Double {
         guard #available(macOS 14.2, *) else { return -120 }
         return captureSession?.micLevelDBFS ?? -120
+    }
+
+    var lastIOCallbackAt: Date? {
+        guard #available(macOS 14.2, *) else { return nil }
+        return captureSession?.lastIOCallbackAt
+    }
+
+    var tapPIDCount: Int {
+        guard #available(macOS 14.2, *) else { return 0 }
+        return captureSession?.tapPIDCount ?? 0
     }
 
     private let recordRate = 48000

@@ -73,6 +73,21 @@ public class AppAudioCapture: @unchecked Sendable {
         levelPublisher.currentLevelDBFS
     }
 
+    /// Wall-clock of the most recent IOProc callback, or nil if the tap has
+    /// never delivered a buffer. Derived from the monotonic callback clock by
+    /// subtracting the elapsed interval from now, so the real-time path stores
+    /// only mach ticks (no `Date`). Sourced by the engine heartbeat.
+    public var lastIOCallbackAt: Date? {
+        let ticks = lastCallbackTicks.load(ordering: .relaxed)
+        guard ticks != 0 else { return nil }
+        return Date().addingTimeInterval(-machTicksToSeconds(mach_absolute_time() &- ticks))
+    }
+
+    /// Number of PIDs in the live app tap set (post audio-active filter).
+    public var tapPIDCount: Int {
+        activeTapPIDCount.load(ordering: .relaxed)
+    }
+
     /// CoreAudio property address for default output device changes. `internal`
     /// for the cross-file `+Lifecycle` extension's listener install/remove.
     var defaultOutputAddress = AudioObjectPropertyAddress(
@@ -99,6 +114,9 @@ public class AppAudioCapture: @unchecked Sendable {
     /// mach ticks of the last IOProc callback — set on the audio thread, read by
     /// the health timer. `internal` for the cross-file `+Lifecycle` extension.
     let lastCallbackTicks = ManagedAtomic<UInt64>(0)
+    /// Number of process objects in the live tap set (post audio-active filter),
+    /// stored on each `startCapture`. Read cross-thread by the engine heartbeat.
+    let activeTapPIDCount = ManagedAtomic<Int>(0)
     /// Pure tap-health verdict machine. Mutated only on `captureControl` (the
     /// health timer). `internal` for the cross-file `+Lifecycle` extension.
     var tapHealth = TapHealthMonitor()
@@ -301,6 +319,9 @@ public class AppAudioCapture: @unchecked Sendable {
     func startCapture() throws {
         let translated = try translatePIDs()
         let processObjectIDs = translated.map(\.audioObjectID)
+        // Publish the live tap fan-in for the engine heartbeat; re-set on
+        // every rebuild so a health re-tap's fresh PID set is reflected.
+        activeTapPIDCount.store(translated.count, ordering: .relaxed)
 
         // Always log at info level with exe names so a "silent _app.wav"
         // report can be triaged without the user toggling Verbose Audio
