@@ -51,6 +51,37 @@ export interface RecordingStatus {
   progressPercent?: number
 }
 
+/**
+ * Liveness state the engine advertises in `engine_heartbeat.json`. Mirrors the
+ * Swift `EngineLivenessState` — keep the union in lockstep.
+ */
+export type EngineLivenessState = 'watching' | 'recording' | 'processing' | 'idle'
+
+/**
+ * Engine liveness heartbeat, written by the engine (Swift
+ * `EngineHeartbeatWriter`) to the shared IPC dir every ~2 s and read on the
+ * Electron side to (a) decide whether a running engine can be reused instead of
+ * killed + relaunched (`evaluateEngineReuse` in `backend.ts`), (b) supervise a
+ * wedged/dead engine (`engineSupervisor.ts`), and (c) back the Chrome probe off
+ * while a recording is live (`index.ts` → `chromeProbe.setRecordingActiveProvider`).
+ *
+ * `startedAt` / `updatedAt` / `lastIOCallbackAt` / `lastSCKFrameAt` are epoch
+ * **milliseconds**, matching `active_meeting.json` / `engine_config.json`.
+ * `version` is the engine build version, compared against `app.getVersion()`
+ * (the monorepo keeps the two in lockstep). Optional liveness fields are omitted
+ * when the engine has nothing to report (e.g. no active tap).
+ */
+export interface EngineHeartbeat {
+  pid: number
+  version: string
+  state: EngineLivenessState
+  startedAt: number
+  lastIOCallbackAt?: number
+  lastSCKFrameAt?: number
+  tapPIDCount?: number
+  updatedAt: number
+}
+
 export interface MeetingSummary {
   /** Folder name — used as a stable id. */
   id: string

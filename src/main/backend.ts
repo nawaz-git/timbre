@@ -3,9 +3,13 @@ import { existsSync } from 'fs'
 import { promises as fs } from 'fs'
 import { join } from 'path'
 import { app, type WebContents } from 'electron'
-import type { EnrolledSpeaker, NumSpeakersHint } from '../shared/types'
+import type { EnrolledSpeaker, EngineHeartbeat, NumSpeakersHint } from '../shared/types'
 import { globalSpeakersDBPath } from './settings'
 import { ENGINE_IPC_DIR } from './chromeProbe'
+
+// Re-export so existing importers of `EngineHeartbeat` from this module keep
+// working after the type moved to the shared surface (imported on both sides).
+export type { EngineHeartbeat } from '../shared/types'
 
 /**
  * Resolve the path to the bundled `mt-batch` Swift CLI.
@@ -407,28 +411,11 @@ export async function stopEngineGracefully(
   }
 }
 
-/**
- * Engine liveness heartbeat, written by the engine to the shared IPC dir every
- * couple of seconds and read here to decide whether a running engine can be
- * reused instead of killed + relaunched. `updatedAt` is epoch **milliseconds**,
- * matching `active_meeting.json` / `engine_config.json`, and `version` is the
- * engine's build version (compared against `app.getVersion()`; the monorepo
- * keeps the two in lockstep). Extra liveness fields are read opportunistically.
- *
- * NOTE: the engine-side writer of this file does not exist yet, so
- * `readEngineHeartbeat()` returns null and reuse is simply skipped — every
- * launch falls through to the safe kill + relaunch until the writer lands.
- */
-export interface EngineHeartbeat {
-  pid: number
-  version: string
-  state: 'watching' | 'recording' | 'processing' | 'idle'
-  startedAt: number
-  lastIOCallbackAt?: number
-  lastSCKFrameAt?: number
-  tapPIDCount?: number
-  updatedAt: number
-}
+// `EngineHeartbeat` now lives in `../shared/types` (imported above) so both the
+// reuse probe here and `engineSupervisor.ts` read the one definition. The engine
+// (Swift `EngineHeartbeatWriter`) refreshes the file every ~2 s; a missing file
+// means the engine isn't running yet, so `readEngineHeartbeat()` returns null and
+// reuse falls through to the safe kill + relaunch.
 
 const ENGINE_HEARTBEAT_FILE = join(ENGINE_IPC_DIR, 'engine_heartbeat.json')
 
