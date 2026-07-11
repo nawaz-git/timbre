@@ -14,6 +14,8 @@ import AppKit
 // @preconcurrency: AVFoundation/CoreMedia types (CMSampleBuffer, AVAssetWriter*)
 // lack Sendable annotations — same gap guarded in DualSourceRecorder.swift.
 @preconcurrency import AVFoundation
+// CoreGraphics for the display-sleep / session-lock probes in resolveWindowState.
+import CoreGraphics
 import CoreMedia
 import Foundation
 import os.log
@@ -112,6 +114,12 @@ actor ScreenRecorder {
     private var lastFrameWallClock = Date()
     private var restartAttempts = 0
     private var watchdogTask: Task<Void, Never>?
+    /// Cached window-visibility verdict + when it was computed. The watchdog
+    /// consults this at most once per `windowStateCacheSeconds`, so a stalled
+    /// meeting can never trigger a full `SCShareableContent` enumeration on
+    /// every tick (the enumeration is itself WindowServer pressure — the exact
+    /// thing we're trying not to add to during a meeting).
+    private var cachedWindowState: (state: WindowVisibility, at: Date)?
 
     private var sessionStarted = false
     private var frameCount = 0
@@ -239,6 +247,10 @@ actor ScreenRecorder {
             videoInput.append(sampleBuffer)
             frameCount += 1
             lastFrameWallClock = Date()
+            // A live frame proves the stream recovered — reset the
+            // consecutive-failure counter so the cap bounds consecutive stalls,
+            // not lifetime restarts (see attemptsAfterFrameAppended).
+            restartAttempts = Self.attemptsAfterFrameAppended(restartAttempts)
         } // else: drop frame (back-pressure). Fine — no A/V sync to maintain.
     }
 
@@ -254,9 +266,19 @@ actor ScreenRecorder {
         isRecording = false
 
         // Stop the stream BEFORE finishing the writer so no late frame appends
-        // after markAsFinished() and faults the writer.
-        if let stream {
-            try? await stream.stopCapture()
+        // after markAsFinished() and faults the writer. Bounded: a wedged
+        // stopCapture must never hang meeting finalization (WatchLoop awaits
+        // this) — past the deadline we drop the stream and finalize anyway.
+        if stream != nil {
+            let outcome = await raceAgainstDeadline(seconds: Self.stopCaptureDeadline) { [weak self] in
+                await self?.stopStreamCapture()
+            }
+            if outcome == .timedOut {
+                PermissionHealthCheck.debugLog(
+                    "[ScreenRecorder] stopCapture exceeded \(Int(Self.stopCaptureDeadline))s — "
+                        + "dropping stream and finalizing anyway",
+                )
+            }
         }
         stream = nil
         output = nil
@@ -294,6 +316,105 @@ actor ScreenRecorder {
     /// Seconds without an appended frame (while recording) that the watchdog
     /// treats as a stall worth restarting the stream for.
     private static let stallThreshold: Double = 3.0
+    /// How long a computed `WindowVisibility` verdict is reused before the
+    /// watchdog re-enumerates. Matched to the 5 s watchdog tick so there is at
+    /// most one `SCShareableContent` enumeration per tick.
+    private static let windowStateCacheSeconds: Double = 5.0
+    /// Hard deadline for a single `SCStream.stopCapture()` await. SCK teardown
+    /// can wedge when the WindowServer/coreaudiod is distressed; past this the
+    /// stream reference is dropped and finalization proceeds so the meeting
+    /// pipeline (`WatchLoop.handleMeeting`) can never hang on it. The OS
+    /// reclaims the abandoned stream on process exit.
+    private static let stopCaptureDeadline: Double = 5.0
+
+    /// Where the captured target is, as far as frame delivery is concerned.
+    /// Drives `watchdogVerdict`: SCK pauses delivery for a minimized window or a
+    /// locked/asleep display BY DESIGN, so those are benign, not stalls.
+    enum WindowVisibility: Equatable, Sendable {
+        /// Target window is on-screen (or, for full-display scope, the display
+        /// is awake and unlocked) — frames should be flowing.
+        case visible
+        /// Window-scoped capture whose target window is minimized/off-screen —
+        /// SCK pauses delivery until it is restored.
+        case minimized
+        /// The captured window no longer exists (closed / moved off all spaces).
+        case gone
+        /// The display is asleep or the session is locked — all capture pauses.
+        case displayLockedOrAsleep
+        /// Visibility could not be determined (enumeration failed); treat as a
+        /// possible genuine stall so recovery is not silently disabled.
+        case unknown
+    }
+
+    /// What the watchdog should do about a stale frame gap, given the window
+    /// state. Keeps the (freeze-relevant) "is this a real stall or an expected
+    /// pause?" decision pure and headless-testable.
+    enum WatchdogVerdict: Equatable, Sendable {
+        /// Do nothing — either frames are fresh or the pause is expected
+        /// (minimized window / locked-or-asleep display). Preserves the stream
+        /// so delivery resumes on restore without a rebuild.
+        case wait
+        /// Genuine stall on a visible target — tear down and rebuild the stream.
+        case restart
+        /// The captured window is gone — rebuild against the display fallback.
+        case fallbackToDisplay
+        /// Consecutive-failure cap reached — stop retrying, finalize what exists.
+        case giveUp
+    }
+
+    /// Pure, pause-aware watchdog decision. Extends `shouldRestart` with window
+    /// state so an EXPECTED SCK pause (minimized window, locked/asleep display)
+    /// no longer misfires a stream rebuild — the churn documented as the
+    /// window-capture restart loop. Only a stale gap on a genuinely visible
+    /// target restarts; a vanished window falls back to display capture; both
+    /// are bounded by the consecutive-attempt cap.
+    nonisolated static func watchdogVerdict(
+        isRecording: Bool,
+        secondsSinceLastFrame: Double,
+        attemptsSoFar: Int,
+        maxAttempts: Int,
+        stallThreshold: Double,
+        windowState: WindowVisibility,
+    ) -> WatchdogVerdict {
+        // Teardown in progress, or frames still arriving → nothing to do.
+        guard isRecording, secondsSinceLastFrame >= stallThreshold else { return .wait }
+
+        switch windowState {
+        case .minimized, .displayLockedOrAsleep:
+            // SCK stops delivering frames for a minimized window or a
+            // locked/asleep display by design. The gap is EXPECTED — waiting
+            // keeps the stream alive so it resumes on restore, instead of
+            // hammering WindowServer with a rebuild that changes nothing.
+            return .wait
+        case .gone:
+            // The target window vanished — re-resolving it will fail forever,
+            // so switch to the whole-display fallback (bounded by the cap).
+            return attemptsSoFar < maxAttempts ? .fallbackToDisplay : .giveUp
+        case .visible, .unknown:
+            // Visible-and-stale is a real stall. `.unknown` (enumeration
+            // failed) is treated the same so a flaky lookup can't silently
+            // disable recovery; the cap + backoff bound any resulting churn.
+            return attemptsSoFar < maxAttempts ? .restart : .giveUp
+        }
+    }
+
+    /// Exponential backoff (seconds) before the Nth CONSECUTIVE restart:
+    /// 1, 2, 4, 8, 16, then clamped at 16. `consecutiveAttempts` is 1-based
+    /// (the attempt about to run). Replaces the old flat 1 s sleep so a display
+    /// that stays unavailable is retried with widening gaps, not a tight loop.
+    nonisolated static func restartBackoff(consecutiveAttempts: Int) -> Double {
+        guard consecutiveAttempts > 1 else { return 1.0 }
+        return Double(min(16, 1 << min(consecutiveAttempts - 1, 4)))
+    }
+
+    /// The `restartAttempts` value after a frame is successfully appended: a
+    /// live frame proves the stream recovered, so the consecutive-failure
+    /// counter resets. This makes the cap bound CONSECUTIVE failures, not
+    /// lifetime restarts — a long meeting with occasional pauses can't exhaust
+    /// it. Pure so the reset invariant is unit-pinned.
+    nonisolated static func attemptsAfterFrameAppended(_ current: Int) -> Int {
+        current > 0 ? 0 : current
+    }
 
     /// Pure decision boundary for restart, extracted so it is headless-testable
     /// without live ScreenCaptureKit frames. Restart only while still recording,
@@ -339,14 +460,26 @@ actor ScreenRecorder {
     /// touches the audio path (the CATap is independent), preserving the
     /// audio-isolation guarantee.
     private func restartStream() async {
-        // Brief backoff so we don't hot-loop against a display that is still
-        // unavailable (sleep/lock).
-        try? await Task.sleep(for: .seconds(1))
+        // Exponential backoff (1/2/4/8/16 s) keyed to the consecutive-attempt
+        // count so we don't hot-loop against a display that is still
+        // unavailable (sleep/lock). `restartAttempts` was already incremented
+        // by the caller, so it is the 1-based number of this attempt.
+        let backoff = Self.restartBackoff(consecutiveAttempts: restartAttempts)
+        try? await Task.sleep(for: .seconds(backoff))
         guard isRecording else { return }
 
         // Tear down the old stream only — keep writer/videoInput/sessionStarted.
-        if let stream {
-            try? await stream.stopCapture()
+        // Bounded so a wedged stopCapture can't hang the watchdog task.
+        if stream != nil {
+            let outcome = await raceAgainstDeadline(seconds: Self.stopCaptureDeadline) { [weak self] in
+                await self?.stopStreamCapture()
+            }
+            if outcome == .timedOut {
+                PermissionHealthCheck.debugLog(
+                    "[ScreenRecorder] restart: stopCapture exceeded \(Int(Self.stopCaptureDeadline))s — "
+                        + "rebuilding over the abandoned stream",
+                )
+            }
         }
         stream = nil
         observer = nil
@@ -400,21 +533,123 @@ actor ScreenRecorder {
         }
     }
 
-    /// One watchdog evaluation — restart if frames have gone stale.
+    /// One watchdog evaluation — act on a stale frame gap, but only after
+    /// ruling out an EXPECTED SCK pause (minimized window / locked-or-asleep
+    /// display / vanished window) via `watchdogVerdict`.
     private func watchdogTick() async {
         let gap = Date().timeIntervalSince(lastFrameWallClock)
-        guard Self.shouldRestart(
+        // Cheap pre-gate: fresh frames need no window enumeration at all.
+        guard isRecording, gap >= Self.stallThreshold else { return }
+
+        let windowState = await currentWindowState()
+        // isRecording may have flipped while we awaited the enumeration.
+        guard isRecording else { return }
+
+        let verdict = Self.watchdogVerdict(
             isRecording: isRecording,
             secondsSinceLastFrame: gap,
             attemptsSoFar: restartAttempts,
             maxAttempts: Self.maxRestartAttempts,
             stallThreshold: Self.stallThreshold,
-        ) else { return }
-        PermissionHealthCheck.debugLog(
-            "[ScreenRecorder] frame stall \(gap)s — restarting (attempt \(restartAttempts + 1)/\(Self.maxRestartAttempts))",
+            windowState: windowState,
         )
-        restartAttempts += 1
-        await restartStream()
+        switch verdict {
+        case .wait:
+            PermissionHealthCheck.debugLog(
+                "[ScreenRecorder] frame gap \(Int(gap))s but windowState=\(windowState) — "
+                    + "expected pause, not restarting",
+            )
+        case .restart:
+            PermissionHealthCheck.debugLog(
+                "[ScreenRecorder] frame stall \(Int(gap))s (windowState=\(windowState)) — "
+                    + "restarting (attempt \(restartAttempts + 1)/\(Self.maxRestartAttempts))",
+            )
+            restartAttempts += 1
+            await restartStream()
+        case .fallbackToDisplay:
+            PermissionHealthCheck.debugLog(
+                "[ScreenRecorder] captured window gone — display fallback "
+                    + "(attempt \(restartAttempts + 1)/\(Self.maxRestartAttempts))",
+            )
+            restartAttempts += 1
+            await restartStream() // resolveStream re-resolves; no window → display filter
+        case .giveUp:
+            PermissionHealthCheck.debugLog(
+                "[ScreenRecorder] frame stall \(Int(gap))s but restart cap reached "
+                    + "(\(restartAttempts)/\(Self.maxRestartAttempts)) — leaving stream as-is",
+            )
+        }
+    }
+
+    /// Await the current SCStream's `stopCapture()` on the actor. Split out so
+    /// `stop()`/`restartStream()` can race it against `stopCaptureDeadline` via
+    /// `raceAgainstDeadline` WITHOUT the non-Sendable `SCStream` escaping actor
+    /// isolation (the deadline task only captures `self`).
+    private func stopStreamCapture() async {
+        try? await stream?.stopCapture()
+    }
+
+    /// Cached window-visibility lookup — at most one `SCShareableContent`
+    /// enumeration per `windowStateCacheSeconds` so the watchdog never adds
+    /// per-tick WindowServer pressure during a stalled meeting.
+    private func currentWindowState() async -> WindowVisibility {
+        if let cached = cachedWindowState,
+           Date().timeIntervalSince(cached.at) < Self.windowStateCacheSeconds {
+            return cached.state
+        }
+        let state = await resolveWindowState()
+        cachedWindowState = (state, Date())
+        return state
+    }
+
+    /// Live (impure) window-visibility probe. Order matters: a locked/asleep
+    /// display pauses ALL capture regardless of scope, so it is checked first.
+    /// Full-display scope never pauses on a window minimize (no single target),
+    /// so an awake, unlocked full-display gap is a genuine stall. Window scope
+    /// distinguishes minimized (off-screen) from gone (not enumerated at all).
+    private func resolveWindowState() async -> WindowVisibility {
+        if Self.displayIsLockedOrAsleep() { return .displayLockedOrAsleep }
+        guard windowHint.scope == .chromeWindow else { return .visible }
+
+        guard let content = try? await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: false,
+        ) else {
+            // Couldn't enumerate → don't silently disable recovery.
+            return .unknown
+        }
+        let candidates: [WindowInfo] = content.windows.map { win in
+            WindowInfo(
+                id: win.windowID,
+                pid: win.owningApplication?.processID ?? -1,
+                title: win.title,
+                bundleId: win.owningApplication?.bundleIdentifier,
+                frameArea: win.frame.width * win.frame.height,
+            )
+        }
+        guard let chosen = Self.pickWindow(
+            candidates: candidates,
+            pid: windowHint.pid,
+            titleHint: windowHint.titleHint,
+            bundleId: windowHint.bundleId,
+        ),
+            let scWindow = content.windows.first(where: { $0.windowID == chosen.id })
+        else {
+            return .gone
+        }
+        return scWindow.isOnScreen ? .visible : .minimized
+    }
+
+    /// True when the main display is asleep or the session is locked — both
+    /// pause SCK frame delivery by design. `CGSessionCopyCurrentDictionary`'s
+    /// `CGSSessionScreenIsLocked` is the standard lock signal; the engine is the
+    /// non-sandboxed helper, so neither call is entitlement-restricted.
+    nonisolated static func displayIsLockedOrAsleep() -> Bool {
+        if CGDisplayIsAsleep(CGMainDisplayID()) != 0 { return true }
+        if let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+           let locked = session["CGSSessionScreenIsLocked"] as? Int, locked == 1 {
+            return true
+        }
+        return false
     }
 
     // MARK: - Window selection
