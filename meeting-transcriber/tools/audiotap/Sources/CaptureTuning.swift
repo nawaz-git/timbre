@@ -27,4 +27,10 @@ enum CaptureTuning {
     /// Hard cap on the number of process objects a single tap fans in. A Chrome
     /// tree is 40-100 helpers, but only a small, stable set actually owns audio.
     static let maxTapPIDs: Int = 8
+
+    /// Capacity of the SPSC capture ring buffer that decouples the CATap IOProc
+    /// from disk writes. 16 MiB ≈ 43 s of 48 kHz stereo Float32 — deep enough that
+    /// a healthy disk never overflows it, so capture stays byte-identical to the
+    /// pre-ring direct-write path.
+    static let ringCapacityBytes: Int = 16 * 1024 * 1024
 }
