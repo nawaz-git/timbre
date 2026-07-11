@@ -1,3 +1,4 @@
+import Atomics
 import CoreAudio
 import Foundation
 import os.log
@@ -34,6 +35,11 @@ public class AppAudioCapture: @unchecked Sendable {
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
+    /// Dedicated disk-writer draining the SPSC ring for the current capture. Owns
+    /// the blocking `write()` + RMS/level/peak work that used to run inside the
+    /// IOProc. Created per `startCapture`, torn down with a bounded flush in
+    /// `stopCapture`.
+    private var writer: CaptureFileWriter?
     private var isRunning = false
     private var outputListenerInstalled = false
     /// Stored listener block so we can pass the same instance to remove.
@@ -48,10 +54,9 @@ public class AppAudioCapture: @unchecked Sendable {
     /// to a private queue for direct construction.
     private let captureControl: DispatchQueue
 
-    /// `internal` (not `private`) so the cross-file `+DebugLogging` extension
-    /// can drive the per-buffer RMS accumulator + dBFS report cadence.
-    var debugRMS = DebugRMSReporter()
-    var debugTotalBytes: UInt64 = 0
+    /// Per-buffer level source for the menu-bar indicator. Published from the
+    /// `CaptureFileWriter` drain thread (which owns all RMS/level/peak work now
+    /// that it is off the IOProc) and read via `currentLevelDBFS`.
     let levelPublisher = LevelPublisher()
 
     /// Returns the instantaneous app-audio level in dBFS, decayed to -120 if
@@ -378,12 +383,17 @@ public class AppAudioCapture: @unchecked Sendable {
         aggregateID = newAggregateID
         logger.info("Created aggregate device: \(self.aggregateID)")
 
-        // Set up IOProc to read audio data and write to file descriptor
-        let fd = outputFileDescriptor
+        // SPSC ring between this IOProc (producer) and the writer thread
+        // (consumer). Captured by value into the IOProc so it is paired with
+        // exactly the writer created for this capture — a rebuild makes a fresh
+        // ring + writer, never aliasing a previous one.
+        let ring = AudioRingBuffer()
+
+        // Set up IOProc to hand audio to the ring — no blocking I/O in the callback.
         var newProcID: AudioDeviceIOProcID?
         let ioProcStatus = AudioDeviceCreateIOProcIDWithBlock(
             &newProcID, aggregateID, writeQueue,
-        ) { [weak self] _, inInputData, _, _, _ in
+        ) { [weak self, ring] _, inInputData, _, _, _ in
             guard let self, self.isRunning else { return }
             let abl = inInputData.pointee
 
@@ -415,14 +425,13 @@ public class AppAudioCapture: @unchecked Sendable {
                 )
             }
 
-            // CATapDescription delivers interleaved float32 — write directly
+            // CATapDescription delivers interleaved float32. Hand the buffer to
+            // the SPSC ring and return; the writer thread does the blocking disk
+            // write + RMS/level/peak off this real-time path. Live-sink forwarding
+            // stays here — it already copies and must not be delayed by draining.
             guard let data = abl.mBuffers.mData else { return }
             let byteCount = Int(abl.mBuffers.mDataByteSize)
-            writeAllToFileHandle(fd, data, count: byteCount)
-
-            self.accumulateDebugRMS(data: data, byteCount: byteCount)
-            self.publishCurrentLevel()
-            self.maybeReportDebugRMS()
+            ring.write(data, count: byteCount)
             self.forwardToLiveSink(data: data, byteCount: byteCount)
         }
 
@@ -452,6 +461,15 @@ public class AppAudioCapture: @unchecked Sendable {
             )
         }
 
+        // Spin up the drain thread before opening the IOProc gate (`isRunning`) so
+        // the ring is being emptied the instant buffers start flowing.
+        let fileWriter = CaptureFileWriter(
+            fd: outputFileDescriptor, ring: ring,
+            levelPublisher: levelPublisher, debugLogging: debugLogging,
+        )
+        fileWriter.start()
+        writer = fileWriter
+
         isRunning = true
 
         actualSampleRate = Self.resolveActualSampleRate(
@@ -463,22 +481,28 @@ public class AppAudioCapture: @unchecked Sendable {
     private func stopCapture() {
         isRunning = false
 
-        if debugLogging {
-            logger.info(
-                "[debug] App audio capture stopping: totalBytes=\(self.debugTotalBytes, privacy: .public)",
-            )
-        }
-
         if let procID {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)
             self.procID = nil
         }
-        // Drain pending IOProc blocks before the caller closes the fd —
-        // AudioDeviceStop doesn't synchronize against blocks already dispatched
-        // onto writeQueue, so without this barrier a late buffer could write
-        // to a closed/recycled fd.
+        // Ordering barrier: an IOProc block that already passed the `isRunning`
+        // guard may still be mid-`ring.write`; draining writeQueue lets it finish
+        // before the writer's final flush, so no produced bytes are lost (keeps
+        // capture byte-identical). This is now BOUNDED — the IOProc only memcpys
+        // into the ring — unlike the old barrier, which waited on the callback's
+        // own synchronous disk write and could hang on a stalled disk.
         writeQueue.sync {}
+        // Bounded final drain of the ring to disk, then stop the writer thread.
+        if let writer {
+            writer.flushAndClose(deadline: .now() + CaptureTuning.writerFlushDeadline)
+            if debugLogging {
+                logger.info(
+                    "[debug] App audio capture stopping: totalBytes=\(writer.totalBytesWritten, privacy: .public), droppedBytes=\(writer.droppedBytes, privacy: .public)",
+                )
+            }
+            self.writer = nil
+        }
         if aggregateID != kAudioObjectUnknown {
             AudioHardwareDestroyAggregateDevice(aggregateID)
             aggregateID = AudioObjectID(kAudioObjectUnknown)
