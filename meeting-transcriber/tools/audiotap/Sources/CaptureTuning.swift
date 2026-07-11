@@ -47,4 +47,20 @@ enum CaptureTuning {
     /// before proceeding — the bounded replacement for the old unbounded drain
     /// barrier, so a stalled disk can never hang teardown.
     static let writerFlushDeadline: TimeInterval = 3.0
+
+    /// How often the tap-health watchdog evaluates the capture.
+    static let tapHealthCheckInterval: TimeInterval = 5.0
+
+    /// The IOProc has not fired for this long while the device claims running →
+    /// the tap is dead (no-callback fault).
+    static let tapNoCallbackTimeout: TimeInterval = 5.0
+
+    /// Every captured sample has been zero for this long *while the mic is
+    /// non-silent* → the tap is delivering silence (all-zero fault). Long enough to
+    /// never trip on natural pauses.
+    static let tapAllZeroTimeout: TimeInterval = 60.0
+
+    /// A peer (mic) channel above this dBFS counts as "non-silent" for the all-zero
+    /// asymmetry guard. Matches `ChannelHealthMonitor`'s silence floor.
+    static let micSilenceFloorDBFS: Double = -60
 }

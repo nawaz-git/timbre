@@ -12,12 +12,14 @@ private let logger = Logger(subsystem: "com.meetingtranscriber.audiotap", catego
 /// Every tap/aggregate lifecycle transition — `start`, `stop`, device-change
 /// rebuilds, health re-taps, degraded retries — is serialized on the private
 /// `captureControl` serial queue. That queue IS the manual-serialization
-/// contract: the CoreAudio device-change listener block, the debounce timers,
-/// and the public `start()`/`stop()` (dispatched sync) all run on it, so no two
-/// lifecycle operations ever overlap. Audio buffers are handled separately on
-/// `writeQueue` (the IOProc target), which never overlaps with itself for a
-/// given tap. `@unchecked Sendable` reflects that this serialization is manual
-/// rather than expressible to the compiler.
+/// contract: the CoreAudio device-change listener block, the debounce timer, the
+/// tap-health timer, and the public `start()`/`stop()` (dispatched sync) all run
+/// on it, so no two lifecycle operations ever overlap. Audio buffers are handled
+/// separately: the IOProc (on `writeQueue`) only memcpys them into the lock-free
+/// SPSC `AudioRingBuffer`, and a dedicated `CaptureFileWriter` thread drains that
+/// ring to disk — neither path overlaps the control queue. `@unchecked Sendable`
+/// reflects that this serialization is manual rather than expressible to the
+/// compiler.
 @available(macOS 14.2, *)
 public class AppAudioCapture: @unchecked Sendable {
     /// `internal` (not `private`) so the cross-file `+PIDTranslation`
@@ -28,8 +30,8 @@ public class AppAudioCapture: @unchecked Sendable {
     let sampleRate: Int
     private let channels: Int
     private let outputFileDescriptor: Int32
-    /// `internal` (not `private`) so the cross-file `+DebugLogging` extension
-    /// can drive the throttled dBFS log line.
+    /// `internal` so the cross-file `+Lifecycle` extension can gate its verbose
+    /// device-change logs, and so it can be forwarded to the `CaptureFileWriter`.
     let debugLogging: Bool
     let liveSink: LiveAudioSink?
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
@@ -38,21 +40,26 @@ public class AppAudioCapture: @unchecked Sendable {
     /// Dedicated disk-writer draining the SPSC ring for the current capture. Owns
     /// the blocking `write()` + RMS/level/peak work that used to run inside the
     /// IOProc. Created per `startCapture`, torn down with a bounded flush in
-    /// `stopCapture`.
-    private var writer: CaptureFileWriter?
-    private var isRunning = false
-    private var outputListenerInstalled = false
+    /// `stopCapture`. `internal` so the cross-file `+Lifecycle` extension can read the
+    /// writer's recent peak-abs.
+    var writer: CaptureFileWriter?
+    /// `internal` so the cross-file `+Lifecycle` extension can gate the health tick.
+    var isRunning = false
+    /// `internal` (with the listener block below and `defaultOutputAddress`) so the
+    /// cross-file `+Lifecycle` extension can install/remove the device listener.
+    var outputListenerInstalled = false
     /// Stored listener block so we can pass the same instance to remove.
-    private var outputDeviceChangeListener: AudioObjectPropertyListenerBlock?
+    var outputDeviceChangeListener: AudioObjectPropertyListenerBlock?
     private let writeQueue = DispatchQueue(
         label: "audiotap.writer", qos: .userInteractive,
     )
     /// Serial queue that owns ALL tap/aggregate lifecycle transitions (start,
     /// stop, rebuilds, retries), the device-change listener block, and the
-    /// debounce timers. Injected by `AudioCaptureSession` so the mic engine and
-    /// the tap share ONE queue and can't churn CoreAudio concurrently; defaults
-    /// to a private queue for direct construction.
-    private let captureControl: DispatchQueue
+    /// debounce + health timers. Injected by `AudioCaptureSession` so the mic
+    /// engine and the tap share ONE queue and can't churn CoreAudio concurrently;
+    /// defaults to a private queue for direct construction. `internal` so the
+    /// cross-file `+Lifecycle` extension schedules its timer on the same queue.
+    let captureControl: DispatchQueue
 
     /// Per-buffer level source for the menu-bar indicator. Published from the
     /// `CaptureFileWriter` drain thread (which owns all RMS/level/peak work now
@@ -66,8 +73,9 @@ public class AppAudioCapture: @unchecked Sendable {
         levelPublisher.currentLevelDBFS
     }
 
-    /// CoreAudio property address for default output device changes.
-    private var defaultOutputAddress = AudioObjectPropertyAddress(
+    /// CoreAudio property address for default output device changes. `internal`
+    /// for the cross-file `+Lifecycle` extension's listener install/remove.
+    var defaultOutputAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain,
@@ -81,11 +89,24 @@ public class AppAudioCapture: @unchecked Sendable {
     public private(set) var actualChannels: Int = 0
     private var didLogFormat = false
     /// Pure state machine that decides when/what to do on device-change and
-    /// health-check triggers. Mutated only on `captureControl`.
-    private var captureLifecycle = CaptureLifecycleCoordinator()
+    /// health-check triggers. Mutated only on `captureControl`. `internal` so the
+    /// cross-file `+Lifecycle` extension can feed it `healthCheckFailed`.
+    var captureLifecycle = CaptureLifecycleCoordinator()
     /// The currently-scheduled debounce/quiet-window timer, cancelled + replaced
-    /// on each new trigger so a burst coalesces to a single rebuild.
-    private var pendingQuietWindow: DispatchWorkItem?
+    /// on each new trigger so a burst coalesces to a single rebuild. `internal` for
+    /// the cross-file `+Lifecycle` extension (scheduling) and `stop()` (cancel).
+    var pendingQuietWindow: DispatchWorkItem?
+    /// mach ticks of the last IOProc callback — set on the audio thread, read by
+    /// the health timer. `internal` for the cross-file `+Lifecycle` extension.
+    let lastCallbackTicks = ManagedAtomic<UInt64>(0)
+    /// Pure tap-health verdict machine. Mutated only on `captureControl` (the
+    /// health timer). `internal` for the cross-file `+Lifecycle` extension.
+    var tapHealth = TapHealthMonitor()
+    /// Repeating tap-health timer on `captureControl` (nil when not capturing).
+    var healthTimer: DispatchSourceTimer?
+    /// Peer (mic) non-silence probe — the all-zero asymmetry guard. Touched only
+    /// on `captureControl`. Nil when there is no mic reference channel.
+    var peerActivityProvider: (@Sendable () -> Bool)?
 
     /// - Parameters:
     ///   - pids: Process IDs to capture audio from. Pass the meeting app's
@@ -127,6 +148,7 @@ public class AppAudioCapture: @unchecked Sendable {
         try captureControl.sync {
             try startCapture()
             installOutputDeviceChangeListener()
+            startHealthTimer()
         }
     }
 
@@ -274,7 +296,9 @@ public class AppAudioCapture: @unchecked Sendable {
     }
 
     // swiftlint:disable:next function_body_length
-    private func startCapture() throws {
+    // `internal` so the cross-file `+Lifecycle` extension can recreate the tap
+    // during a rebuild.
+    func startCapture() throws {
         let translated = try translatePIDs()
         let processObjectIDs = translated.map(\.audioObjectID)
 
@@ -395,6 +419,9 @@ public class AppAudioCapture: @unchecked Sendable {
             &newProcID, aggregateID, writeQueue,
         ) { [weak self, ring] _, inInputData, _, _, _ in
             guard let self, self.isRunning else { return }
+            // Liveness beat for the tap-health watchdog — one relaxed atomic store,
+            // no per-sample work on this real-time path.
+            self.lastCallbackTicks.store(mach_absolute_time(), ordering: .relaxed)
             let abl = inInputData.pointee
 
             // Log format on first callback
@@ -471,6 +498,11 @@ public class AppAudioCapture: @unchecked Sendable {
         writer = fileWriter
 
         isRunning = true
+        // Seed the health watchdog's callback clock on every (re)start so the
+        // no-callback window measures from now — otherwise a rebuild that succeeds
+        // could inherit a stale timestamp and spuriously re-trigger before the
+        // first fresh callback lands.
+        lastCallbackTicks.store(mach_absolute_time(), ordering: .relaxed)
 
         actualSampleRate = Self.resolveActualSampleRate(
             deviceID: aggregateID, tapID: tapID, requestedRate: sampleRate,
@@ -478,7 +510,9 @@ public class AppAudioCapture: @unchecked Sendable {
         logger.info("Audio capture started (PIDs \(self.pids), rate: \(self.actualSampleRate) Hz)")
     }
 
-    private func stopCapture() {
+    /// `internal` so the cross-file `+Lifecycle` extension can tear the tap down
+    /// during a rebuild / degrade.
+    func stopCapture() {
         isRunning = false
 
         if let procID {
@@ -516,8 +550,9 @@ public class AppAudioCapture: @unchecked Sendable {
 
     public func stop() {
         captureControl.sync {
-            // Cancel any pending debounce/degraded-retry timer so it can't revive
-            // a stopped capture after teardown.
+            // Stop the health watchdog and cancel any pending debounce/degraded
+            // retry so neither can revive a stopped capture after teardown.
+            stopHealthTimer()
             pendingQuietWindow?.cancel()
             pendingQuietWindow = nil
             stopCapture()
@@ -555,100 +590,5 @@ public class AppAudioCapture: @unchecked Sendable {
         default:
             "OSStatus \(status): unrecognised — see CoreAudio headers."
         }
-    }
-}
-
-// MARK: - Output device change handling
-
-@available(macOS 14.2, *)
-extension AppAudioCapture {
-    func installOutputDeviceChangeListener() {
-        guard !outputListenerInstalled else { return }
-        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.handleOutputDeviceChanged()
-        }
-        let status = AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &defaultOutputAddress,
-            captureControl,
-            listener,
-        )
-        if status == noErr {
-            outputDeviceChangeListener = listener
-            outputListenerInstalled = true
-            logger.info("App audio: listening for default output device changes")
-        }
-    }
-
-    func handleOutputDeviceChanged() {
-        guard isRunning else { return }
-        if debugLogging {
-            let newName = getDefaultOutputDeviceName() ?? "?"
-            let newUID = getDefaultOutputDeviceUID() ?? "?"
-            logger.info(
-                "[debug] Output device change → name=\(newName, privacy: .public) uid=\(newUID, privacy: .public)",
-            )
-        }
-        // Debounced single-flight: a burst of device-change events (an HFP↔A2DP
-        // flip is several) coalesces into one rebuild once the identity has been
-        // quiet for the debounce window. Runs on `captureControl`.
-        apply(captureLifecycle.handle(.deviceChanged(at: Date())))
-    }
-
-    /// Apply a lifecycle action on `captureControl`. Every branch runs on that
-    /// queue, so rebuilds, stops, and retries can never overlap.
-    private func apply(_ action: CaptureLifecycleCoordinator.Action) {
-        switch action {
-        case .ignore:
-            break
-        case let .scheduleQuietWindow(at):
-            scheduleQuietWindow(at: at)
-        case .rebuild:
-            performRebuild()
-        case let .enterDegraded(reattemptAt):
-            enterDegraded(reattemptAt: reattemptAt)
-        }
-    }
-
-    /// Cancel any pending timer and schedule a fresh quiet-window callback on
-    /// `captureControl`. Cancelling collapses a burst of triggers to the single
-    /// latest window (the coordinator's stale-timer guard is the belt-and-braces).
-    private func scheduleQuietWindow(at deadline: Date) {
-        pendingQuietWindow?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.apply(self.captureLifecycle.handle(.quietWindowElapsed(at: Date())))
-        }
-        pendingQuietWindow = item
-        let delay = max(0, deadline.timeIntervalSinceNow)
-        captureControl.asyncAfter(deadline: .now() + delay, execute: item)
-    }
-
-    /// The forum-proven recovery: full ordered teardown then recreate.
-    /// `stopCapture` destroys IOProc → aggregate → tap in order; `startCapture`
-    /// recreates both (re-resolving the audio-active PID set). Outcome is fed
-    /// back so the machine can retry / degrade.
-    private func performRebuild() {
-        logger.info("Tap lifecycle rebuild: full teardown + recreate")
-        stopCapture()
-        let success: Bool
-        do {
-            try startCapture()
-            success = actualSampleRate > 0
-        } catch {
-            logger.error("Tap rebuild failed: \(error)")
-            success = false
-        }
-        apply(captureLifecycle.handle(.rebuildFinished(success: success)))
-    }
-
-    /// Too many consecutive failed rebuilds: leave the tap off, report silence on
-    /// the level publisher, and schedule a single backoff re-attempt — never a
-    /// hot loop against a device coreaudiod is still reconfiguring.
-    private func enterDegraded(reattemptAt: Date) {
-        logger.error("Tap lifecycle degraded — tap off, re-attempting at next quiet window")
-        stopCapture()
-        levelPublisher.publish(level: -120)
-        scheduleQuietWindow(at: reattemptAt)
     }
 }
