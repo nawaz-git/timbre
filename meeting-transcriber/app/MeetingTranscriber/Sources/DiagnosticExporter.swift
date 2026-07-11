@@ -156,6 +156,79 @@ enum DiagnosticExporter {
         return count
     }
 
+    /// coreaudiod-focused snapshot for the HAL-liveness sentinel. Writes the
+    /// header + our recent audiotap / ScreenRecorder subsystem entries (which
+    /// carry the "HAL call slow" tripwires and the "Capture session summary:"
+    /// line), and — on the Homebrew build where `Process` is permitted — appends
+    /// `log show` output filtered to `coreaudiod`. Returns the number of body
+    /// lines written. Best-effort: any source that fails is simply omitted.
+    @available(macOS 12, *)
+    static func exportCoreAudioSnapshot(
+        to outputURL: URL,
+        info: HeaderInfo,
+        windowSeconds: TimeInterval = 300,
+    ) throws -> Int {
+        var lines: [String] = [makeHeader(info)]
+        var count = 0
+
+        // (a) Our own recent entries — the HAL-slow tripwires + capture summary.
+        if let store = try? OSLogStore(scope: .currentProcessIdentifier) {
+            let position = store.position(date: Date().addingTimeInterval(-windowSeconds))
+            let predicate = NSPredicate(format: "subsystem CONTAINS 'com.meetingtranscriber'")
+            if let entries = try? store.getEntries(at: position, matching: predicate) {
+                for entry in entries {
+                    guard let log = entry as? OSLogEntryLog else { continue }
+                    let timestamp = formatter.string(from: log.date)
+                    lines.append(
+                        "\(timestamp) [\(log.level.rawValue)] \(log.subsystem)/\(log.category): \(log.composedMessage)",
+                    )
+                    count += 1
+                }
+            }
+        }
+
+        // (b) coreaudiod's own log — Homebrew build only (the App Store sandbox
+        //     forbids `Process`; the (a) tripwires still land there).
+        #if !APPSTORE
+            let coreAudio = coreAudioLogShow(windowSeconds: windowSeconds)
+            if !coreAudio.isEmpty {
+                lines.append("# --- coreaudiod (log show) ---")
+                lines.append(coreAudio)
+                count += coreAudio.split(separator: "\n", omittingEmptySubsequences: false).count
+            }
+        #endif
+
+        try lines.joined(separator: "\n").write(to: outputURL, atomically: true, encoding: .utf8)
+        return count
+    }
+
+    #if !APPSTORE
+        /// Shell out to `log show` for coreaudiod. Best-effort — returns "" on any
+        /// failure. Caller runs this off the main thread.
+        private static func coreAudioLogShow(windowSeconds: TimeInterval) -> String {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+            process.arguments = [
+                "show", "--last", "\(Int(windowSeconds))s",
+                "--predicate", "process == \"coreaudiod\"",
+                "--style", "syslog",
+            ]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = Pipe()
+            do {
+                try process.run()
+            } catch {
+                return ""
+            }
+            // `log show` is a one-shot command, so reading to EOF then waiting is
+            // bounded by its own runtime.
+            let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+            process.waitUntilExit()
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+    #endif
+
     /// Parses `syslog` style line prefix `Mmm d HH:mm:ss` (15 chars) to a
     /// `Date`. Returns nil for lines without that prefix (e.g. multi-line
     /// continuations). Uses the cached `syslogFormatter` — avoids per-call

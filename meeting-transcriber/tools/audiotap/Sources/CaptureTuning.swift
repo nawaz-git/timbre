@@ -63,4 +63,21 @@ enum CaptureTuning {
     /// A peer (mic) channel above this dBFS counts as "non-silent" for the all-zero
     /// asymmetry guard. Matches `ChannelHealthMonitor`'s silence floor.
     static let micSilenceFloorDBFS: Double = -60
+
+    // MARK: - Lifecycle forensics + HAL sentinel
+
+    /// A single HAL create/destroy call taking longer than this is an early
+    /// coreaudiod-distress tripwire — logged at error level so it precedes the
+    /// sentinel's own verdict in the diagnostics window.
+    static let halCallSlowThreshold: TimeInterval = 0.5
+
+    /// How often the HAL-liveness sentinel probes the default output device.
+    static let halSentinelInterval: TimeInterval = 5.0
+
+    /// Bounded deadline for a single sentinel probe — a wedged coreaudiod times
+    /// out here instead of blocking the sentinel loop.
+    static let halSentinelProbeDeadline: TimeInterval = 2.0
+
+    /// Consecutive sentinel probe timeouts before declaring the HAL unresponsive.
+    static let halSentinelTimeoutsBeforeUnresponsive: Int = 2
 }
