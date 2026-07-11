@@ -150,6 +150,14 @@ struct MeetingTranscriberApp: App {
                 appState.updateChecker.startPeriodicChecks(settings: appState.settings)
             }
             .task {
+                // Install SIGTERM/SIGINT handlers so Electron's graceful stop
+                // (and a dev `kill -TERM`) tears the tap down + finalizes the
+                // recording instead of dropping it. Done here (not in the App
+                // `init`) so `appState` is fully valid and tests that construct
+                // AppState directly never install process-global handlers.
+                appState.installTerminationSignalHandlers()
+            }
+            .task {
                 await appState.checkPermissions()
             }
             .task {

@@ -4,6 +4,8 @@ import Foundation
 import Observation
 import os.log
 
+private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "AppState")
+
 // MARK: - AppNotifying
 
 /// Notification abstraction that keeps AppKit out of AppState.
@@ -542,6 +544,82 @@ final class AppState { // swiftlint:disable:this type_body_length
         Task { @MainActor in
             await loop?.stopManualRecording()
         }
+    }
+
+    // MARK: - Graceful Shutdown
+
+    /// Hard deadline for the ordered teardown before we force-exit. Kept under
+    /// Electron's 8 s kill-escalation budget (T8) so the engine self-exits via
+    /// SIGTERM well before Electron reaches SIGKILL.
+    static let shutdownDeadlineSeconds: Double = 5
+
+    private enum ShutdownPhase { case idle, inProgress, done }
+    @ObservationIgnored private var shutdownPhase: ShutdownPhase = .idle
+    @ObservationIgnored private var terminationSignalSources: [any DispatchSourceProtocol] = []
+
+    /// Install SIGTERM + SIGINT handlers that drive `gracefulShutdown()`.
+    /// Idempotent. Called once at app launch from the scene, NOT from `init`,
+    /// so unit tests and CLI targets that construct `AppState` directly never
+    /// install process-global signal handlers.
+    func installTerminationSignalHandlers() {
+        guard terminationSignalSources.isEmpty else { return }
+        for sig in [SIGTERM, SIGINT] {
+            // Ignore the default disposition so the dispatch source — not the
+            // kernel's default terminate action — observes the signal.
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { [weak self] in
+                Task { @MainActor in
+                    await self?.gracefulShutdown()
+                }
+            }
+            source.resume()
+            terminationSignalSources.append(source)
+        }
+        logger.info("Termination signal handlers installed (SIGTERM, SIGINT)")
+    }
+
+    /// Ordered, bounded shutdown: tear the watch loop down (destroying the
+    /// CoreAudio tap and finalizing any in-flight recording), flush the
+    /// pipeline snapshot, then terminate. Bounded by `shutdownDeadlineSeconds`:
+    /// if the teardown wedges (e.g. a stalled HAL destroy or `replaceItemAt`),
+    /// force-exit so a SIGTERM can never leave a zombie engine holding a tap.
+    /// Idempotent across the SIGTERM / SIGINT sources.
+    func gracefulShutdown() async {
+        guard shutdownPhase == .idle else { return }
+        shutdownPhase = .inProgress
+        logger.info("graceful_shutdown starting (deadline \(Self.shutdownDeadlineSeconds)s)")
+
+        let outcome = await raceAgainstDeadline(seconds: Self.shutdownDeadlineSeconds) { [weak self] in
+            await self?.performOrderedTeardown()
+        }
+
+        shutdownPhase = .done
+        switch outcome {
+        case .completed:
+            logger.info("graceful_shutdown complete — terminating")
+            NSApp.terminate(nil)
+
+        case .timedOut:
+            logger.error("graceful_shutdown exceeded \(Self.shutdownDeadlineSeconds)s deadline — forcing exit(0)")
+            exit(0)
+        }
+    }
+
+    /// Teardown order: stop the audio session FIRST (auto-detected meetings
+    /// destroy the tap via `recorder.stop()` before the screen recorder), then
+    /// finalize best-effort, then flush the pipeline snapshot so the enqueued
+    /// job survives the exit. Runs entirely through `WatchLoop.shutdown()` —
+    /// the existing single-flight stop machinery — never a parallel teardown.
+    private func performOrderedTeardown() async {
+        let loop = watchLoop
+        watchLoop = nil
+        await loop?.shutdown()
+        await pipelineQueue.awaitSnapshotFlush()
+        #if !APPSTORE
+            stopPersistentLogStreamer()
+        #endif
+        logger.info("graceful_shutdown: ordered teardown finished")
     }
 
     /// Filters `urls` to files that currently exist on disk, forwards them to

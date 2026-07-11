@@ -219,6 +219,39 @@ class WatchLoop {
         logger.info("Watch mode stopped")
     }
 
+    /// Awaitable, ordered teardown for process shutdown (SIGTERM / quit).
+    /// Cancels the watch task and finalizes any in-flight recording through the
+    /// SAME machinery as `stop()` — but AWAITS completion, so the caller can
+    /// guarantee the CoreAudio tap is destroyed and the recording enqueued
+    /// before the process exits. It never tears the tap down on a parallel
+    /// path: manual recordings flow through `finalizeManualRecording`, and an
+    /// auto-detected meeting finalizes inside `handleMeeting` on the cancelled
+    /// watch task (which we await here).
+    func shutdown() async {
+        // Cancel the watch loop but keep the task handle: `handleMeeting`
+        // finalizes an in-flight auto-detected meeting on the cancelled task
+        // (its `recorder.stop()` destroys the tap, then enqueues), and we must
+        // await that before returning.
+        let pendingWatch = watchTask
+        watchTask?.cancel()
+        watchTask = nil
+
+        // Finalize an in-flight MANUAL recording via the shared path, awaited.
+        if let pending = detachInFlightManualRecording() {
+            await finalizeAndRecordError(recorder: pending.recorder, info: pending.info)
+        }
+
+        // Await the auto-detected meeting's own finalize, if one was running.
+        await pendingWatch?.value
+
+        update { next in
+            next.phase = .idle
+            next.currentMeeting = nil
+            next.detail = ""
+        }
+        logger.info("Watch loop shutdown complete")
+    }
+
     // MARK: - Manual Recording
 
     func startManualRecording(pid: pid_t, appName: String, title: String) async throws {
@@ -335,28 +368,45 @@ class WatchLoop {
     }
 
     private func cleanupManualRecording() {
+        // Fire-and-forget finalize on a @MainActor task (the observable state is
+        // already cleared synchronously by `detachInFlightManualRecording`).
+        guard let pending = detachInFlightManualRecording() else { return }
+        Task { @MainActor [weak self] in
+            await self?.finalizeAndRecordError(recorder: pending.recorder, info: pending.info)
+        }
+    }
+
+    /// Synchronously cancel the manual-recording monitor and detach the
+    /// in-flight recorder + info, clearing the observable fields immediately so
+    /// UI reflects the stop at once. Returns the captured recorder/info to
+    /// finalize, or nil when nothing is in flight.
+    ///
+    /// Dropping `activeRecorder` without stopping it would leak the live
+    /// CoreAudio tap AND silently discard the recording, so callers MUST
+    /// finalize the returned pair. Shared by the fire-and-forget
+    /// `cleanupManualRecording()` and the awaited `shutdown()` path so the two
+    /// cannot drift. Auto-detected meetings carry no `manualRecordingInfo` and
+    /// finalize themselves via `handleMeeting`'s cancellation path, so this
+    /// returns nil for them.
+    private func detachInFlightManualRecording() -> (recorder: any RecordingProvider, info: ManualRecordingInfo)? {
         manualRecordingTask?.cancel()
         manualRecordingTask = nil
 
-        // Capture the in-flight manual recording (if any) before clearing the
-        // observable fields. Dropping `activeRecorder` without stopping it would
-        // leak the live CoreAudio tap AND silently discard the recording, so
-        // finalize it exactly like `stopManualRecording()` does. The observable
-        // state is cleared synchronously here so UI stays correct immediately;
-        // the finalize (which must `await stopScreenRecorder()`) hops onto a
-        // @MainActor task. Auto-detected meetings carry no `manualRecordingInfo`
-        // and finalize themselves via `handleMeeting`'s cancellation path, so
-        // the guard below skips them.
         let recorder = activeRecorder
         let info = manualRecordingInfo
         activeRecorder = nil
         update { next in next.manualRecordingInfo = nil }
 
-        guard let recorder, let info else { return }
-        Task { @MainActor [weak self] in
-            if let failureMessage = await self?.finalizeManualRecording(recorder: recorder, info: info) {
-                self?.update { next in next.lastError = failureMessage }
-            }
+        guard let recorder, let info else { return nil }
+        return (recorder, info)
+    }
+
+    /// Finalize a detached manual recording and surface any failure as
+    /// `lastError`. Shared finalize tail for `cleanupManualRecording()` and
+    /// `shutdown()`.
+    private func finalizeAndRecordError(recorder: any RecordingProvider, info: ManualRecordingInfo) async {
+        if let failureMessage = await finalizeManualRecording(recorder: recorder, info: info) {
+            update { next in next.lastError = failureMessage }
         }
     }
 
