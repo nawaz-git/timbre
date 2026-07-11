@@ -40,8 +40,8 @@ class WatchLoop {
     /// `activeRecorder` (not inside `RecordingProvider`) so a screen-capture
     /// failure can never throw into the audio recording or transcript pipeline.
     @available(macOS 14.0, *)
-    private var activeScreenRecorder: ScreenRecorder? {
-        get { _activeScreenRecorder as? ScreenRecorder }
+    private var activeScreenRecorder: (any ScreenRecording)? {
+        get { _activeScreenRecorder as? any ScreenRecording }
         set { _activeScreenRecorder = newValue }
     }
 
@@ -89,8 +89,14 @@ class WatchLoop {
     /// recorder. Injected so tests don't spin up an SCStream; production wires
     /// `ScreenRecorder(outputURL:windowHint:)` against `AppPaths.recordingsDir`.
     /// The `hint` carries the per-meeting screen-capture scope (window vs full
-    /// display) resolved fresh from `EngineConfig`.
-    let screenRecorderFactory: @MainActor (_ outputURL: URL, _ hint: ScreenRecorder.WindowHint) -> ScreenRecorder
+    /// display) resolved fresh from `EngineConfig`. Returns `any ScreenRecording`
+    /// (not the concrete actor) so a test can inject a spy — the real
+    /// `ScreenRecorder` is a non-subclassable actor.
+    let screenRecorderFactory: @MainActor (_ outputURL: URL, _ hint: ScreenRecorder.WindowHint) -> any ScreenRecording
+    /// Screen-recording permission gate. Injected so a test can drive the
+    /// screen-recorder lifecycle without a live TCC grant (always denied in a
+    /// headless CI harness). Production reads the live TCC verdict.
+    let screenRecordingPermitted: () -> Bool
     /// Surface user-facing failures (e.g. sidecar write errors) that don't
     /// transition state to `.error`. Defaults to a silent no-op for tests.
     let notifier: any AppNotifying
@@ -128,9 +134,10 @@ class WatchLoop {
             .unscoped(AppPaths.recordingsDir)
         },
         recordScreenVideo: @escaping () -> Bool = { false },
-        screenRecorderFactory: @MainActor @escaping (URL, ScreenRecorder.WindowHint) -> ScreenRecorder = { url, hint in
+        screenRecorderFactory: @MainActor @escaping (URL, ScreenRecorder.WindowHint) -> any ScreenRecording = { url, hint in
             ScreenRecorder(outputURL: url, windowHint: hint)
         },
+        screenRecordingPermitted: @escaping () -> Bool = { Permissions.checkScreenRecording() },
         notifier: any AppNotifying = SilentNotifier(),
         nowProvider: @escaping () -> Date = Date.init,
         sleepProvider: @escaping (TimeInterval) async throws -> Void = { interval in
@@ -151,6 +158,7 @@ class WatchLoop {
         self.recordOnlyDestination = recordOnlyDestination
         self.recordScreenVideo = recordScreenVideo
         self.screenRecorderFactory = screenRecorderFactory
+        self.screenRecordingPermitted = screenRecordingPermitted
         self.notifier = notifier
         self.nowProvider = nowProvider
         self.sleepProvider = sleepProvider
@@ -259,28 +267,44 @@ class WatchLoop {
         manualRecordingTask?.cancel()
         manualRecordingTask = nil
 
-        // Finalize the screen video (needs `await`) before the audio stop so the
-        // result rides through enqueueRecording. Best-effort — nil on failure.
-        let screenPath = await stopScreenRecorder()
+        // Clear the observable recording state up-front so a concurrent teardown
+        // (`stop()` → `cleanupManualRecording()`) sees "nothing in flight" and
+        // cannot finalize — and double-stop — the same recorder. The finalize
+        // itself runs afterwards against the captured `recorder`/`info`.
+        activeRecorder = nil
+        update { next in
+            next.phase = .idle
+            next.manualRecordingInfo = nil
+            next.detail = ""
+        }
 
-        var failureMessage: String?
+        if let failureMessage = await finalizeManualRecording(recorder: recorder, info: info) {
+            update { next in next.lastError = failureMessage }
+        }
+    }
+
+    /// Stop the screen recorder, stop the audio recorder, and enqueue the
+    /// result. Shared by `stopManualRecording()` (user pressed Stop) and
+    /// `cleanupManualRecording()` (watch-loop / app teardown) so the two paths
+    /// cannot drift and neither can leak a live CoreAudio tap by dropping the
+    /// recorder without stopping it. The screen recorder is finalized FIRST so a
+    /// throwing `recorder.stop()` still tears the SCStream down. Returns a
+    /// user-facing failure message, or nil on success.
+    private func finalizeManualRecording(
+        recorder: any RecordingProvider,
+        info: ManualRecordingInfo,
+    ) async -> String? {
+        let screenPath = await stopScreenRecorder()
         do {
             let recording = try recorder.stop()
             enqueueRecording(
                 title: info.title, appName: info.appName,
                 recording: recording.withScreenPath(screenPath),
             )
+            return nil
         } catch {
             logger.error("Failed to stop manual recording: \(error)")
-            failureMessage = error.localizedDescription
-        }
-
-        activeRecorder = nil
-        update { next in
-            next.phase = .idle
-            next.manualRecordingInfo = nil
-            next.detail = ""
-            if let failureMessage { next.lastError = failureMessage }
+            return error.localizedDescription
         }
     }
 
@@ -313,8 +337,27 @@ class WatchLoop {
     private func cleanupManualRecording() {
         manualRecordingTask?.cancel()
         manualRecordingTask = nil
+
+        // Capture the in-flight manual recording (if any) before clearing the
+        // observable fields. Dropping `activeRecorder` without stopping it would
+        // leak the live CoreAudio tap AND silently discard the recording, so
+        // finalize it exactly like `stopManualRecording()` does. The observable
+        // state is cleared synchronously here so UI stays correct immediately;
+        // the finalize (which must `await stopScreenRecorder()`) hops onto a
+        // @MainActor task. Auto-detected meetings carry no `manualRecordingInfo`
+        // and finalize themselves via `handleMeeting`'s cancellation path, so
+        // the guard below skips them.
+        let recorder = activeRecorder
+        let info = manualRecordingInfo
         activeRecorder = nil
         update { next in next.manualRecordingInfo = nil }
+
+        guard let recorder, let info else { return }
+        Task { @MainActor [weak self] in
+            if let failureMessage = await self?.finalizeManualRecording(recorder: recorder, info: info) {
+                self?.update { next in next.lastError = failureMessage }
+            }
+        }
     }
 
     // MARK: - Screen Recording (best-effort sibling of the audio recorder)
@@ -334,7 +377,7 @@ class WatchLoop {
     ) {
         guard recordScreenVideo() else { return }
         guard #available(macOS 14.0, *) else { return }
-        guard Permissions.checkScreenRecording() else {
+        guard screenRecordingPermitted() else {
             logger.warning("Screen recording requested but TCC not granted — continuing audio-only")
             PermissionHealthCheck.debugLog("[ScreenRecorder] skipped — checkScreenRecording=false")
             return
@@ -379,6 +422,22 @@ class WatchLoop {
             PermissionHealthCheck.debugLog("[ScreenRecorder] finalize FAILED: \(error)")
             return nil
         }
+    }
+
+    /// Defer-safe teardown for `handleMeeting`: if the screen recorder is still
+    /// active when the function unwinds (the normal path already nil-ed it via
+    /// `stopScreenRecorder()`, so this only fires on an early/throwing exit),
+    /// detach it synchronously and stop the SCStream best-effort. Fire-and-forget
+    /// because `stop()` is async and the recording result is already lost on the
+    /// throwing path — the only goal is to not leak a running stream.
+    private func abortScreenRecorderIfStillActive() {
+        guard #available(macOS 14.0, *) else {
+            _activeScreenRecorder = nil
+            return
+        }
+        guard let screen = activeScreenRecorder else { return }
+        _activeScreenRecorder = nil
+        Task { _ = try? await screen.stop() }
     }
 
     private static let screenTimestampFormatter: DateFormatter = {
@@ -464,7 +523,12 @@ class WatchLoop {
             bundleId: nil,
         )
         startScreenRecorderIfEnabled(hint: hint)
-        defer { _activeScreenRecorder = nil }
+        // Backstop: if control leaves this function while the screen recorder is
+        // still active — e.g. `recorder.stop()` below throws before
+        // `stopScreenRecorder()` runs — tear the SCStream down. A bare
+        // `_activeScreenRecorder = nil` (the previous defer) leaked a running
+        // stream on the throwing path.
+        defer { abortScreenRecorderIfStillActive() }
 
         // Read participants (Teams)
         var participants: [String] = []
@@ -695,6 +759,20 @@ class WatchLoop {
         }
     }
 }
+
+/// Minimal screen-recorder lifecycle surface `WatchLoop` depends on, extracted
+/// so a test can inject a spy: the production `ScreenRecorder` is a
+/// non-subclassable `actor` and cannot be subclassed to observe `stop()`. The
+/// `async` requirements are satisfied by the actor's isolated methods (callers
+/// `await` across the hop).
+@available(macOS 14.0, *)
+protocol ScreenRecording: AnyObject, Sendable {
+    func start() async throws
+    func stop() async throws -> URL
+}
+
+@available(macOS 14.0, *)
+extension ScreenRecorder: ScreenRecording {}
 
 /// Pair of URLs used by `WatchLoop` when persisting record-only output: the
 /// `scope` URL is what `startAccessingSecurityScopedResource()` is called on
