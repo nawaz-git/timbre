@@ -8,11 +8,14 @@ private let logger = Logger(subsystem: "com.meetingtranscriber.audiotap", catego
 /// No Screen Recording permission needed — only Audio Capture.
 /// Monitors default output device changes and recreates the tap when needed.
 ///
-/// All mutable state is serialized through `writeQueue` (`audiotap.writer`,
-/// userInteractive QoS) or driven from the CoreAudio IOProc callback which
-/// never overlaps with itself for a given tap. The DispatchQueue.main retry
-/// path is the only main-thread touch and it dispatches a single completion
-/// closure. `@unchecked Sendable` reflects that the serialization is manual
+/// Every tap/aggregate lifecycle transition — `start`, `stop`, device-change
+/// rebuilds, health re-taps, degraded retries — is serialized on the private
+/// `captureControl` serial queue. That queue IS the manual-serialization
+/// contract: the CoreAudio device-change listener block, the debounce timers,
+/// and the public `start()`/`stop()` (dispatched sync) all run on it, so no two
+/// lifecycle operations ever overlap. Audio buffers are handled separately on
+/// `writeQueue` (the IOProc target), which never overlaps with itself for a
+/// given tap. `@unchecked Sendable` reflects that this serialization is manual
 /// rather than expressible to the compiler.
 @available(macOS 14.2, *)
 public class AppAudioCapture: @unchecked Sendable {
@@ -38,6 +41,12 @@ public class AppAudioCapture: @unchecked Sendable {
     private let writeQueue = DispatchQueue(
         label: "audiotap.writer", qos: .userInteractive,
     )
+    /// Serial queue that owns ALL tap/aggregate lifecycle transitions (start,
+    /// stop, rebuilds, retries), the device-change listener block, and the
+    /// debounce timers. Injected by `AudioCaptureSession` so the mic engine and
+    /// the tap share ONE queue and can't churn CoreAudio concurrently; defaults
+    /// to a private queue for direct construction.
+    private let captureControl: DispatchQueue
 
     /// `internal` (not `private`) so the cross-file `+DebugLogging` extension
     /// can drive the per-buffer RMS accumulator + dBFS report cadence.
@@ -66,8 +75,12 @@ public class AppAudioCapture: @unchecked Sendable {
     /// Actual channel count detected from first IOProc callback.
     public private(set) var actualChannels: Int = 0
     private var didLogFormat = false
-    /// Pure state machine that decides when/what to dispatch on device-change events.
-    private var deviceChangeCoordinator = OutputDeviceChangeCoordinator()
+    /// Pure state machine that decides when/what to do on device-change and
+    /// health-check triggers. Mutated only on `captureControl`.
+    private var captureLifecycle = CaptureLifecycleCoordinator()
+    /// The currently-scheduled debounce/quiet-window timer, cancelled + replaced
+    /// on each new trigger so a burst coalesces to a single rebuild.
+    private var pendingQuietWindow: DispatchWorkItem?
 
     /// - Parameters:
     ///   - pids: Process IDs to capture audio from. Pass the meeting app's
@@ -90,6 +103,7 @@ public class AppAudioCapture: @unchecked Sendable {
         channels: Int = 2,
         debugLogging: Bool = false,
         liveSink: LiveAudioSink? = nil,
+        captureControl: DispatchQueue? = nil,
     ) {
         self.pids = pids
         self.outputFileDescriptor = outputFileDescriptor
@@ -97,11 +111,18 @@ public class AppAudioCapture: @unchecked Sendable {
         self.channels = channels
         self.debugLogging = debugLogging
         self.liveSink = liveSink
+        self.captureControl = captureControl
+            ?? DispatchQueue(label: "audiotap.control", qos: .userInitiated)
     }
 
+    /// Start capturing. Synchronous to callers, but the work runs on
+    /// `captureControl` so it serializes with every rebuild/stop. No reentrancy:
+    /// callers must not call `start()`/`stop()` from within `captureControl`.
     public func start() throws {
-        try startCapture()
-        installOutputDeviceChangeListener()
+        try captureControl.sync {
+            try startCapture()
+            installOutputDeviceChangeListener()
+        }
     }
 
     /// Query nominal sample rate from a CoreAudio device.
@@ -470,16 +491,22 @@ public class AppAudioCapture: @unchecked Sendable {
     }
 
     public func stop() {
-        stopCapture()
-        if outputListenerInstalled, let listener = outputDeviceChangeListener {
-            AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject),
-                &defaultOutputAddress,
-                DispatchQueue.main,
-                listener,
-            )
-            outputDeviceChangeListener = nil
-            outputListenerInstalled = false
+        captureControl.sync {
+            // Cancel any pending debounce/degraded-retry timer so it can't revive
+            // a stopped capture after teardown.
+            pendingQuietWindow?.cancel()
+            pendingQuietWindow = nil
+            stopCapture()
+            if outputListenerInstalled, let listener = outputDeviceChangeListener {
+                AudioObjectRemovePropertyListenerBlock(
+                    AudioObjectID(kAudioObjectSystemObject),
+                    &defaultOutputAddress,
+                    captureControl,
+                    listener,
+                )
+                outputDeviceChangeListener = nil
+                outputListenerInstalled = false
+            }
         }
         logger.info("Audio capture stopped")
     }
@@ -519,7 +546,7 @@ extension AppAudioCapture {
         let status = AudioObjectAddPropertyListenerBlock(
             AudioObjectID(kAudioObjectSystemObject),
             &defaultOutputAddress,
-            DispatchQueue.main,
+            captureControl,
             listener,
         )
         if status == noErr {
@@ -531,10 +558,6 @@ extension AppAudioCapture {
 
     func handleOutputDeviceChanged() {
         guard isRunning else { return }
-        let action = deviceChangeCoordinator.handle(.deviceChanged)
-        guard action != .ignore else { return }
-
-        logger.info("App audio: default output device changed, recreating tap...")
         if debugLogging {
             let newName = getDefaultOutputDeviceName() ?? "?"
             let newUID = getDefaultOutputDeviceUID() ?? "?"
@@ -542,46 +565,66 @@ extension AppAudioCapture {
                 "[debug] Output device change → name=\(newName, privacy: .public) uid=\(newUID, privacy: .public)",
             )
         }
-        applyAction(action)
+        // Debounced single-flight: a burst of device-change events (an HFP↔A2DP
+        // flip is several) coalesces into one rebuild once the identity has been
+        // quiet for the debounce window. Runs on `captureControl`.
+        apply(captureLifecycle.handle(.deviceChanged(at: Date())))
     }
 
-    /// Try a startCapture() and feed the result into the coordinator, dispatching
-    /// any follow-up restart/retry/give-up action it asks for.
-    private func completeRestart() {
-        let event: OutputDeviceChangeCoordinator.Event
-        do {
-            try startCapture()
-            event = .startSucceeded(rate: actualSampleRate)
-        } catch {
-            logger.error("Failed to restart app audio capture: \(error)")
-            event = .startFailed
-        }
-        applyAction(deviceChangeCoordinator.handle(event))
-    }
-
-    private func applyAction(_ action: OutputDeviceChangeCoordinator.Action) {
+    /// Apply a lifecycle action on `captureControl`. Every branch runs on that
+    /// queue, so rebuilds, stops, and retries can never overlap.
+    private func apply(_ action: CaptureLifecycleCoordinator.Action) {
         switch action {
         case .ignore:
             break
-
-        case let .stopAndRetry(delay):
-            stopCapture()
-            scheduleRetry(after: delay)
-
-        case let .restart(delay):
-            scheduleRetry(after: delay)
-
-        case .complete:
-            logger.info("App audio: tap restarted (rate: \(self.actualSampleRate) Hz)")
-
-        case .giveUp:
-            logger.error("App audio: retry failed; giving up")
+        case let .scheduleQuietWindow(at):
+            scheduleQuietWindow(at: at)
+        case .rebuild:
+            performRebuild()
+        case let .enterDegraded(reattemptAt):
+            enterDegraded(reattemptAt: reattemptAt)
         }
     }
 
-    private func scheduleRetry(after delay: TimeInterval) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.completeRestart()
+    /// Cancel any pending timer and schedule a fresh quiet-window callback on
+    /// `captureControl`. Cancelling collapses a burst of triggers to the single
+    /// latest window (the coordinator's stale-timer guard is the belt-and-braces).
+    private func scheduleQuietWindow(at deadline: Date) {
+        pendingQuietWindow?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.apply(self.captureLifecycle.handle(.quietWindowElapsed(at: Date())))
         }
+        pendingQuietWindow = item
+        let delay = max(0, deadline.timeIntervalSinceNow)
+        captureControl.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    /// The forum-proven recovery: full ordered teardown then recreate.
+    /// `stopCapture` destroys IOProc → aggregate → tap in order; `startCapture`
+    /// recreates both (re-resolving the audio-active PID set). Outcome is fed
+    /// back so the machine can retry / degrade.
+    private func performRebuild() {
+        logger.info("Tap lifecycle rebuild: full teardown + recreate")
+        stopCapture()
+        let success: Bool
+        do {
+            try startCapture()
+            success = actualSampleRate > 0
+        } catch {
+            logger.error("Tap rebuild failed: \(error)")
+            success = false
+        }
+        apply(captureLifecycle.handle(.rebuildFinished(success: success)))
+    }
+
+    /// Too many consecutive failed rebuilds: leave the tap off, report silence on
+    /// the level publisher, and schedule a single backoff re-attempt — never a
+    /// hot loop against a device coreaudiod is still reconfiguring.
+    private func enterDegraded(reattemptAt: Date) {
+        logger.error("Tap lifecycle degraded — tap off, re-attempting at next quiet window")
+        stopCapture()
+        levelPublisher.publish(level: -120)
+        scheduleQuietWindow(at: reattemptAt)
     }
 }
