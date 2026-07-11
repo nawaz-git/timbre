@@ -315,7 +315,7 @@ app.whenReady().then(async () => {
   try {
     const settings = await readSettings()
     if (settings.autoStartWatching) {
-      const status = startWatching()
+      const status = await startWatching()
       if (status.state !== 'watching') {
         console.warn('[main] auto-start watching did not enter watching state', status)
       } else {

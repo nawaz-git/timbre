@@ -66,7 +66,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.recordingStart, async (): Promise<RecordingStatus> => {
     console.log('[recording] start')
-    return startWatching()
+    return await startWatching()
   })
 
   ipcMain.handle(IPC.recordingStop, async (): Promise<RecordingStatus> => {
@@ -385,7 +385,7 @@ export function registerIpcHandlers(): void {
     // tries to "reactivate" it (which would no-op against the same
     // bundle id).
     await new Promise((r) => setTimeout(r, 300))
-    const result = startLiveRecorder()
+    const result = await startLiveRecorder()
     return { ok: result.ok, message: result.message }
   })
 

@@ -363,7 +363,9 @@ function buildMenu(): Menu {
       label: 'Start watching',
       enabled: status.state !== 'transcribing',
       click: () => {
-        startWatching()
+        // Fire-and-forget: startWatching may await a graceful stop of a stale
+        // engine; the tray refreshes from the status listener when it settles.
+        void startWatching()
       }
     })
   }

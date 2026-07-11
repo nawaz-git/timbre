@@ -56,8 +56,8 @@ function getMainWindow(): BrowserWindow | null {
   return wins[0] ?? null
 }
 
-export function startWatching(): RecordingStatus {
-  const result = startLiveRecorder()
+export async function startWatching(): Promise<RecordingStatus> {
+  const result = await startLiveRecorder()
   if (!result.ok) {
     internal.state = 'idle'
     internal.lastError = result.message
