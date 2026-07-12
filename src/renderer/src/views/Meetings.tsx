@@ -1979,7 +1979,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     }}
                     onMouseMove={onSeekMouseMove}
                     onMouseLeave={onSeekMouseLeave}
-                    aria-label="Seek"
+                    aria-label={`Seek — ${formatHHMMSS(currentTime)} of ${formatHHMMSS(duration)}`}
+                    aria-valuetext={formatHHMMSS(currentTime)}
                   />
                   {seekHover && (
                     <div
@@ -2180,7 +2181,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
               </div>
             )}
             {tab === 'transcript' && (
-              <>
+              <div
+                className="transcript-pane"
+                role="tabpanel"
+                id="meeting-tabpanel-transcript"
+                aria-labelledby="meeting-tab-transcript"
+              >
                 {transcriptLoading && <div className="empty">Loading transcript…</div>}
                 {!transcriptLoading &&
                   segments.length === 0 &&
@@ -2338,7 +2344,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     ))}
                   </div>
                 )}
-              </>
+              </div>
             )}
 
             {tab === 'video' && videoSrc && (
