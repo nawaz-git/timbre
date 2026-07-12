@@ -4,6 +4,7 @@ import type { Dirent } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import type {
+  DeleteOutcome,
   MeetingSummary,
   MeetingTranscript,
   NumSpeakersHint,
@@ -1625,22 +1626,31 @@ export async function renameMeetingTitle(
  * the user's ability to delete at all — fall back to a permanent recursive
  * remove. That path IS irreversible (there's no Trash to recover from), but a
  * delete the user explicitly asked for still succeeds.
+ *
+ * Returns `true` only when it took the irreversible permanent-remove fallback,
+ * `false` when the path was trashed or was already absent — so the caller can
+ * tell the user the truth about whether the delete is recoverable.
  */
-async function trashIfExists(absPath: string): Promise<void> {
+async function trashIfExists(absPath: string): Promise<boolean> {
   try {
     await fs.access(absPath)
   } catch {
-    return
+    return false
   }
   try {
     await shell.trashItem(absPath)
+    return false
   } catch (err) {
     console.warn('[meetings] trashItem failed; removing permanently', absPath, err)
     await fs.rm(absPath, { recursive: true, force: true })
+    return true
   }
 }
 
-export async function deleteMeeting(outputFolder: string, meetingId: string): Promise<void> {
+export async function deleteMeeting(
+  outputFolder: string,
+  meetingId: string
+): Promise<DeleteOutcome> {
   if (meetingId.startsWith('live:')) {
     throw new Error('Stop the live recording before deleting it.')
   }
@@ -1650,7 +1660,7 @@ export async function deleteMeeting(outputFolder: string, meetingId: string): Pr
       throw new Error(`Invalid engine prefix: ${prefix}`)
     }
     const protocolsDir = join(ENGINE_DEFAULT_ROOT, 'protocols')
-    await Promise.all(
+    const removedPermanently = await Promise.all(
       ['txt', 'md', 'meta.json', 'refining'].map((ext) =>
         trashIfExists(join(protocolsDir, `${prefix}.${ext}`))
       )
@@ -1658,15 +1668,16 @@ export async function deleteMeeting(outputFolder: string, meetingId: string): Pr
     const recordingsDir = join(ENGINE_DEFAULT_ROOT, 'recordings')
     try {
       const files = await fs.readdir(recordingsDir)
-      await Promise.all(
+      const recRemoved = await Promise.all(
         files
           .filter((f) => f.startsWith(prefix))
           .map((f) => trashIfExists(join(recordingsDir, f)))
       )
+      removedPermanently.push(...recRemoved)
     } catch {
       // recordings dir may not exist (e.g. protocol-only meeting) — nothing to do.
     }
-    return
+    return removedPermanently.some(Boolean) ? 'permanent' : 'trash'
   }
   const folderId = meetingId.startsWith('imported:')
     ? meetingId.slice('imported:'.length)
@@ -1674,7 +1685,8 @@ export async function deleteMeeting(outputFolder: string, meetingId: string): Pr
   if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
     throw new Error(`Invalid meeting id: ${meetingId}`)
   }
-  await trashIfExists(join(outputFolder, folderId))
+  const removedPermanently = await trashIfExists(join(outputFolder, folderId))
+  return removedPermanently ? 'permanent' : 'trash'
 }
 
 /**

@@ -8,6 +8,7 @@ import type {
   CaptureWatchdogSignal,
   ChromeMeetSnapshot,
   ChromeProbeTestResult,
+  DeleteOutcome,
   EnrolledSpeaker,
   ExportFormat,
   HelperPermissionSnapshot,
@@ -111,7 +112,7 @@ const api = {
     }> => ipcRenderer.invoke(IPC.meetingsExportPreview, meetingId, format, title),
     setTags: (meetingId: string, tagIds: string[]): Promise<{ tagIds: string[] }> =>
       ipcRenderer.invoke(IPC.meetingsSetTags, meetingId, tagIds),
-    delete: (meetingId: string): Promise<void> =>
+    delete: (meetingId: string): Promise<DeleteOutcome> =>
       ipcRenderer.invoke(IPC.meetingsDelete, meetingId),
     /** Full-text search across transcript `.txt` files. Empty query → []. */
     searchTranscripts: (query: string): Promise<TranscriptSearchHit[]> =>

@@ -339,6 +339,13 @@ export interface TranscriptSearchHit {
   snippet: string
 }
 
+/**
+ * Which disposal path `meetings.delete` actually took. `trash` = moved to the
+ * macOS Trash (recoverable); `permanent` = the volume had no Trash, so the
+ * files were removed irreversibly. Drives the honest post-delete toast.
+ */
+export type DeleteOutcome = 'trash' | 'permanent'
+
 /** A category label that can be applied to one or more meetings. */
 export interface TagDef {
   /** Stable id — never shown. */
