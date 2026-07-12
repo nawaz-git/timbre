@@ -109,7 +109,16 @@ export interface BatchJob {
 
 interface RunBatchOptions {
   jobId: string
-  inputFile: string
+  /** Single-source input. Provide this OR the inputApp/inputMic pair. */
+  inputFile?: string
+  /** Dual-source app/remote-audio track (requires inputMic). */
+  inputApp?: string
+  /** Dual-source microphone/local track (requires inputApp). */
+  inputMic?: string
+  /** Dual-source: seconds to shift the mic track onto the app timeline. */
+  micDelay?: number
+  /** Dual-source: display name for the local mic speaker (mt-batch default 'Me'). */
+  micName?: string
   /** Already-resolved per-meeting subfolder (caller created the timestamped dir). */
   outputDir: string
   /** Optional speaker hint forwarded as `--num-speakers`. */
@@ -122,6 +131,8 @@ interface RunBatchOptions {
    * Settings gets it honoured on imports too, not just live meetings.
    */
   language?: string
+  /** Optional processing tier forwarded as `--mode` (fast | max). */
+  mode?: 'fast' | 'max'
   /** Called for each parsed event. Errors during processing are reported via the `error` event. */
   onEvent: (ev: BatchEvent) => void
 }
@@ -150,7 +161,25 @@ export function runBatch(opts: RunBatchOptions): Promise<string> {
       return
     }
 
-    const args = ['--input', opts.inputFile, '--output-dir', opts.outputDir]
+    const args = ['--output-dir', opts.outputDir]
+    // Dual-source (app + mic tracks) wins over single --input; mt-batch's own
+    // validation rejects passing both, so we send exactly one form.
+    if (opts.inputApp && opts.inputMic) {
+      args.push('--input-app', opts.inputApp, '--input-mic', opts.inputMic)
+      if (typeof opts.micDelay === 'number') {
+        args.push('--mic-delay', String(opts.micDelay))
+      }
+      if (typeof opts.micName === 'string') {
+        args.push('--mic-name', opts.micName)
+      }
+    } else if (opts.inputFile) {
+      args.push('--input', opts.inputFile)
+    } else {
+      const msg = 'runBatch requires either inputFile or the inputApp/inputMic pair.'
+      opts.onEvent({ event: 'error', message: msg })
+      reject(new Error(msg))
+      return
+    }
     if (typeof opts.numSpeakers === 'number') {
       args.push('--num-speakers', String(opts.numSpeakers))
     }
@@ -161,6 +190,9 @@ export function runBatch(opts: RunBatchOptions): Promise<string> {
     // Only forward an explicit language; empty = auto-detect (omit the flag).
     if (opts.language && opts.language.length > 0) {
       args.push('--language', opts.language)
+    }
+    if (opts.mode) {
+      args.push('--mode', opts.mode)
     }
 
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })

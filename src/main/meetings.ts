@@ -1,5 +1,5 @@
 import { promises as fs } from 'fs'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import type {
   MeetingSummary,
@@ -915,12 +915,22 @@ export async function reanalyzeMeeting(opts: {
   jobId: string
   numSpeakers?: number
   language?: string
+  mode?: 'fast' | 'max'
   onEvent?: (ev: BatchEvent) => void
 }): Promise<string> {
   if (opts.meetingId.startsWith('engine:')) {
-    throw new Error(
-      'Live-recording meetings cannot be re-analysed from the Electron UI yet — their audio lives next to the engine output and uses a different pipeline.'
-    )
+    const prefix = opts.meetingId.slice('engine:'.length)
+    if (prefix.includes('/') || prefix.includes('\\') || prefix.includes('..')) {
+      throw new Error(`Invalid meeting id: ${opts.meetingId}`)
+    }
+    return reanalyzeEngineMeeting({
+      prefix,
+      jobId: opts.jobId,
+      numSpeakers: opts.numSpeakers,
+      language: opts.language,
+      mode: opts.mode,
+      onEvent: opts.onEvent
+    })
   }
   const folderId = opts.meetingId.startsWith('imported:')
     ? opts.meetingId.slice('imported:'.length)
@@ -943,6 +953,134 @@ export async function reanalyzeMeeting(opts: {
     language: opts.language,
     onEvent: opts.onEvent ?? ((): void => {})
   })
+}
+
+/**
+ * Re-analyse a live-recording ("engine:") meeting in place. Resolves the
+ * durable dual-source tracks (`<prefix>_app.wav` + `<prefix>_mic.wav`) and
+ * re-runs mt-batch on the pair — restoring the dual-track prior the live
+ * pipeline had — or on the mixed audio when the pair is absent. The engine
+ * owns these filenames, so overwriting the meeting's `_segments.json` +
+ * protocol `.txt` in place keeps the meeting id stable; the prior versions are
+ * kept as `.bak`.
+ *
+ * mt-batch writes into a temp dir first, so a failed run never truncates the
+ * live sidecars — only a completed run replaces them.
+ */
+async function reanalyzeEngineMeeting(opts: {
+  prefix: string
+  jobId: string
+  numSpeakers?: number
+  language?: string
+  mode?: 'fast' | 'max'
+  onEvent?: (ev: BatchEvent) => void
+}): Promise<string> {
+  const root = ENGINE_DEFAULT_ROOT
+  const recordingsDir = join(root, 'recordings')
+  const files = await findEngineReanalysisFiles(recordingsDir, opts.prefix)
+  const hasPair = Boolean(files.appPath && files.micPath)
+  const singleInput = files.mixPath ?? files.appPath ?? files.micPath
+  if (!hasPair && !singleInput) {
+    throw new Error(
+      `No engine audio found for ${opts.prefix} — cannot re-analyse without the source recording`
+    )
+  }
+
+  const onEvent = opts.onEvent ?? ((): void => {})
+  const workDir = await fs.mkdtemp(join(tmpdir(), 'mt-reanalyze-'))
+  try {
+    await runBatch({
+      jobId: opts.jobId,
+      outputDir: workDir,
+      numSpeakers: opts.numSpeakers,
+      language: opts.language,
+      mode: opts.mode,
+      // Dual-source when both tracks survive; otherwise the mixed audio.
+      // 'Me' matches the engine's default local-speaker label.
+      ...(hasPair
+        ? { inputApp: files.appPath as string, inputMic: files.micPath as string, micName: 'Me' }
+        : { inputFile: singleInput as string }),
+      onEvent
+    })
+    await applyEngineReanalysis(root, opts.prefix, workDir, files.segmentsPath)
+    return root
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Scan `recordings/` for a prefix's durable audio tracks and its existing
+ * segments sidecar. `_segments.json` can carry a `_<runId>` infix, so we
+ * return the actual matched path rather than reconstructing the name.
+ */
+async function findEngineReanalysisFiles(
+  recordingsDir: string,
+  prefix: string
+): Promise<{
+  appPath: string | null
+  micPath: string | null
+  mixPath: string | null
+  segmentsPath: string | null
+}> {
+  let entries: string[]
+  try {
+    entries = await fs.readdir(recordingsDir)
+  } catch {
+    return { appPath: null, micPath: null, mixPath: null, segmentsPath: null }
+  }
+  let appPath: string | null = null
+  let micPath: string | null = null
+  let mixPath: string | null = null
+  let segmentsPath: string | null = null
+  for (const e of entries) {
+    if (!e.startsWith(prefix)) continue
+    if (e.endsWith('_app.wav')) appPath = join(recordingsDir, e)
+    else if (e.endsWith('_mic.wav')) micPath = join(recordingsDir, e)
+    else if (e.endsWith('_mix.wav')) mixPath = join(recordingsDir, e)
+    else if (e.endsWith('_segments.json')) segmentsPath = join(recordingsDir, e)
+  }
+  return { appPath, micPath, mixPath, segmentsPath }
+}
+
+/**
+ * Copy an mt-batch run's outputs onto the engine meeting's sidecars. The engine
+ * `_segments.json` is the bare segment array (G0 contract), which is exactly
+ * mt-batch's `transcript.json.segments`; the protocol `.txt` is mt-batch's
+ * `transcript.txt` verbatim (its `[HH:MM:SS] Speaker: text` lines already match
+ * the renderer's fallback parser). Prior versions are backed up as `.bak`.
+ */
+async function applyEngineReanalysis(
+  root: string,
+  prefix: string,
+  workDir: string,
+  existingSegmentsPath: string | null
+): Promise<void> {
+  const parsed = JSON.parse(await fs.readFile(join(workDir, 'transcript.json'), 'utf-8')) as {
+    segments?: EngineSegmentJSON[]
+  }
+  const segments = Array.isArray(parsed.segments) ? parsed.segments : []
+  const segDest = existingSegmentsPath ?? join(root, 'recordings', `${prefix}_segments.json`)
+  await backupThenReplace(segDest, JSON.stringify(segments))
+
+  const txt = await fs.readFile(join(workDir, 'transcript.txt'), 'utf-8').catch(() => null)
+  if (txt !== null) {
+    await backupThenReplace(join(root, 'protocols', `${prefix}.txt`), txt)
+  }
+}
+
+/**
+ * Rename an existing file to `<path>.bak` (overwriting any prior backup) before
+ * writing new content, so a re-analysis keeps the previous result recoverable.
+ * A missing source is a first write — no backup needed.
+ */
+async function backupThenReplace(path: string, content: string): Promise<void> {
+  try {
+    await fs.rename(path, `${path}.bak`)
+  } catch {
+    // No existing file to back up.
+  }
+  await fs.writeFile(path, content, 'utf-8')
 }
 
 /** Convenience: convert a NumSpeakersHint into the integer arg, or undefined. */
