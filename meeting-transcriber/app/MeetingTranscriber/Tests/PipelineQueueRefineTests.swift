@@ -9,16 +9,16 @@ import XCTest
 final class PipelineQueueRefineTests: XCTestCase {
     private var root: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("refine_test_\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: root.appendingPathComponent("protocols"), withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: root.appendingPathComponent("recordings"), withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: root)
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func stubReport() -> RefineQualityReport {
@@ -195,10 +195,11 @@ final class PipelineQueueRefineTests: XCTestCase {
         let stem = "20260712_1300_fast"
         let txtURL = root.appendingPathComponent("protocols/\(stem).txt")
         try? "FAST".write(to: txtURL, atomically: true, encoding: .utf8)
+        let output = RefineOutput(segments: [], transcript: "X", report: stubReport())
         let queue = PipelineQueue(
             logDir: root.appendingPathComponent("ipc"),
             outputDir: root,
-            maxRefinerFactory: { StubRefiner(output: RefineOutput(segments: [], transcript: "X", report: stubReport())) },
+            maxRefinerFactory: { StubRefiner(output: output) },
             processingModeProvider: { .fast },
         )
         var job = PipelineJob(meetingTitle: "F", appName: "Chrome", mixPath: nil, appPath: nil, micPath: nil, micDelay: 0)
