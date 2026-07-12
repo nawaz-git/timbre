@@ -14,6 +14,16 @@ struct QualityResult: Codable {
     let appVersion: String
     let timestamp: String
     let durationSeconds: Double
+    /// Word diarization error rate — the attribution lane's headline metric.
+    /// `nil` on the WER/DER rows the engine-quality tests write. Defaulted so
+    /// existing call sites keep the same (shorter) memberwise initializer.
+    var wder: Double? = nil
+    /// Processing tier the row was measured at (`"fast"` / `"max"`). `nil` for
+    /// engine-quality rows that are not tier-specific.
+    var tier: String? = nil
+    /// Absolute speaker-count error for the row (R3 under/over-clustering).
+    /// `nil` for non-attribution rows.
+    var speakerCountError: Int? = nil
 
     struct WERBreakdown: Codable {
         let substitutions: Int
