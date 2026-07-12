@@ -222,7 +222,9 @@ actor MaxAccuracyPipeline: MaxRefining {
         if let llmComplete, input.llmRepairEnabled, !overSoftBudget() {
             try Task.checkCancellation()
             progress(.llmRepair, 0)
-            let repaired = await repairWithLLM(attributed: attributed, complete: llmComplete)
+            let repaired = await repairWithLLM(
+                attributed: attributed, complete: llmComplete, isOverBudget: overSoftBudget,
+            )
             attributed = repaired.words
             llmReport = (repaired.accepted, repaired.rejected, repaired.moved)
             if repaired.accepted + repaired.rejected > 0 { passesRun.append(.llmRepair) }
@@ -397,22 +399,59 @@ actor MaxAccuracyPipeline: MaxRefining {
 
     // MARK: - P5
 
+    /// Generous per-call ceiling for one LLM repair window. A window that
+    /// exceeds it is abandoned (fail-closed — the word keeps its prior label)
+    /// so a hung or unresponsive provider can't wedge the whole refine.
+    static let llmCallTimeoutSeconds: TimeInterval = 120
+
     private func repairWithLLM(
         attributed: [WordTimeline.AttributedWord],
         complete: @escaping @Sendable (String) async throws -> String,
+        isOverBudget: () -> Bool,
     ) async -> (words: [WordTimeline.AttributedWord], accepted: Int, rejected: Int, moved: Int) {
         let windows = LLMSpeakerRepair.serialize(words: attributed)
         guard !windows.isEmpty else { return (attributed, 0, 0, 0) }
         var responses: [Int: String] = [:]
         for window in windows {
+            // Stop issuing calls once over the soft budget — the assembled
+            // result keeps every not-yet-repaired window's prior labels.
+            if isOverBudget() {
+                logger.info("LLM repair stopping early — over soft budget at window \(window.index, privacy: .public)")
+                break
+            }
             do {
-                responses[window.index] = try await complete(LLMSpeakerRepair.buildPrompt(window: window))
+                let prompt = LLMSpeakerRepair.buildPrompt(window: window)
+                responses[window.index] = try await Self.withTimeout(Self.llmCallTimeoutSeconds) {
+                    try await complete(prompt)
+                }
             } catch {
                 logger.warning("LLM repair window \(window.index) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
         let outcome = LLMSpeakerRepair.apply(words: attributed, windows: windows, responses: responses)
         return (outcome.words, outcome.windowsAccepted, outcome.windowsRejected, outcome.labelsMoved)
+    }
+
+    private struct RefineTimeoutError: Error {}
+
+    /// Run `op`, throwing `RefineTimeoutError` if it doesn't finish within
+    /// `seconds`. The timeout only unblocks the loop; the underlying request may
+    /// keep running until its own transport times out, but the caller has
+    /// already moved on (fail-closed). `nonisolated` so it doesn't hop the actor.
+    private nonisolated static func withTimeout<T: Sendable>(
+        _ seconds: TimeInterval,
+        _ op: @escaping @Sendable () async throws -> T,
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw RefineTimeoutError()
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw RefineTimeoutError() }
+            return first
+        }
     }
 
     // MARK: - P6
