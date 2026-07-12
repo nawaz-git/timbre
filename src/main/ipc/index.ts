@@ -7,6 +7,7 @@ import type {
   BackendJob,
   ChromeMeetSnapshot,
   ChromeProbeTestResult,
+  DeleteOutcome,
   EnrolledSpeaker,
   ExportFormat,
   HelperPermissionSnapshot,
@@ -379,7 +380,7 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(IPC.meetingsDelete, async (_event, meetingId: string): Promise<void> => {
+  ipcMain.handle(IPC.meetingsDelete, async (_event, meetingId: string): Promise<DeleteOutcome> => {
     const settings = await readSettings()
     return deleteMeeting(settings.outputFolder, meetingId)
   })

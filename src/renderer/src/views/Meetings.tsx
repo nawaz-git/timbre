@@ -941,14 +941,16 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     const m = deletePending
     if (!m) return
     try {
-      await window.api.meetings.delete(m.id)
+      const outcome = await window.api.meetings.delete(m.id)
       // If the deleted meeting was open in the detail pane, clear it.
       if (selectedId === m.id) {
         setSelectedId(null)
         setTranscript(null)
       }
       setDeletePending(null)
-      toast('Moved to Trash.', { kind: 'success' })
+      toast(outcome === 'permanent' ? 'Deleted permanently.' : 'Moved to Trash.', {
+        kind: 'success'
+      })
       await refresh()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
