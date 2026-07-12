@@ -107,6 +107,14 @@ class WatchLoop {
     /// Surface user-facing failures (e.g. sidecar write errors) that don't
     /// transition state to `.error`. Defaults to a silent no-op for tests.
     let notifier: any AppNotifying
+    /// Apply the fresh per-meeting `EngineConfig` bridge to the live engines
+    /// just before a recording starts. Injected by `AppState` so `WatchLoop`
+    /// stays decoupled from the engine/pipeline it drives; the default is a
+    /// no-op. Used to push Timbre's per-meeting ASR-language choice into the
+    /// active engine so a mid-session change takes effect on the next meeting
+    /// (the engine/speaker-DB/num-speakers overrides are baked into the
+    /// pipeline queue at build time instead — see `AppState.makePipelineQueue`).
+    let applyEngineConfig: (EngineConfig) -> Void
 
     /// Wall-clock source. Defaults to `Date()`; tests inject a `TestClock`
     /// so timing-sensitive paths become deterministic instead of racing
@@ -146,6 +154,7 @@ class WatchLoop {
         },
         screenRecordingPermitted: @escaping () -> Bool = { Permissions.checkScreenRecording() },
         notifier: any AppNotifying = SilentNotifier(),
+        applyEngineConfig: @escaping (EngineConfig) -> Void = { _ in },
         nowProvider: @escaping () -> Date = Date.init,
         sleepProvider: @escaping (TimeInterval) async throws -> Void = { interval in
             try await Task.sleep(for: .seconds(interval))
@@ -167,6 +176,7 @@ class WatchLoop {
         self.screenRecorderFactory = screenRecorderFactory
         self.screenRecordingPermitted = screenRecordingPermitted
         self.notifier = notifier
+        self.applyEngineConfig = applyEngineConfig
         self.nowProvider = nowProvider
         self.sleepProvider = sleepProvider
         self.pidAliveCheck = pidAliveCheck
@@ -578,6 +588,12 @@ class WatchLoop {
         // AppState init) so a mid-session settings change takes effect on the
         // next meeting and we sidestep UserDefaults cross-process caching.
         let cfg = EngineConfig.read()
+
+        // Push the fresh bridge config into the live engines (ASR language) so
+        // a mid-session change from Timbre applies to THIS meeting. Engine /
+        // speaker-DB / num-speakers overrides are already baked into the
+        // pipeline queue that will process the recording.
+        applyEngineConfig(cfg)
 
         // --- Recording ---
         update { next in

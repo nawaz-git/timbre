@@ -445,6 +445,7 @@ final class AppState { // swiftlint:disable:this type_body_length
                     recordScreenVideo: { [settings] in settings.recordScreenVideo },
                     screenRecorderFactory: { ScreenRecorder(outputURL: $0, windowHint: $1) },
                     notifier: notifier,
+                    applyEngineConfig: { [weak self] cfg in self?.applyBridgeConfigToEngines(cfg) },
                 )
 
                 attachStateChangeHandler(to: loop, notifyOnRecording: true)
@@ -1055,6 +1056,23 @@ final class AppState { // swiftlint:disable:this type_body_length
         }
     }
 
+    /// Push the fresh per-meeting `EngineConfig` bridge into the live engines.
+    /// Wired into `WatchLoop.handleMeeting` (via its `applyEngineConfig` hook)
+    /// so Timbre's ASR-language choice takes effect on the next meeting without
+    /// rebuilding the pipeline queue — the engines here are the same instances
+    /// the queue transcribes with. Empty `asrLanguage` = auto-detect (nil). The
+    /// target engine follows the bridge's own engine override when present, else
+    /// the local setting.
+    func applyBridgeConfigToEngines(_ cfg: EngineConfig) {
+        let language = cfg.asrLanguage.isEmpty ? nil : cfg.asrLanguage
+        switch cfg.transcriptionEngine ?? settings.transcriptionEngine {
+        case .whisperKit:
+            if whisperKit.language != language { whisperKit.language = language }
+        case .parakeet:
+            if parakeetEngine.language != language { parakeetEngine.language = language }
+        }
+    }
+
     /// `withObservationTracking` is one-shot — re-arm after each fire so the
     /// AppState reacts to every settings change, not just the first one.
     /// Mirrors the `observeDebugRPCSetting` pattern.
@@ -1143,17 +1161,39 @@ final class AppState { // swiftlint:disable:this type_body_length
         )
     }
 
+    /// Resolve the transcription engine the bridge asks for, or `nil` when
+    /// Timbre supplied no override (the engine keeps its own settings choice).
+    private func bridgeEngine(_ cfg: EngineConfig) -> (any TranscribingEngine)? {
+        switch cfg.transcriptionEngine {
+        case .whisperKit: whisperKit
+        case .parakeet: parakeetEngine
+        case nil: nil
+        }
+    }
+
     func makePipelineQueue() -> PipelineQueue {
+        // Read the Electron bridge FRESH so the pipeline built for this watch
+        // session honours Timbre's engine / speaker-count / speaker-DB choices.
+        // The ASR language is applied per-meeting instead (WatchLoop's
+        // `applyEngineConfig` hook) so a mid-session change lands without a
+        // pipeline rebuild.
+        let cfg = EngineConfig.read()
+        let dbPath = AppPaths.resolvedSpeakersDB(bridgeOverride: cfg.globalSpeakersDBPath)
+        // One-time merge of the engine's legacy local speakers.json into the
+        // shared global DB (no-op unless a bridge path is set + not yet merged).
+        SpeakerMatcher.migrateLocalDBIntoGlobalIfNeeded(globalPath: dbPath)
+        let numSpeakers = cfg.numSpeakersHint > 0 ? cfg.numSpeakersHint : settings.numSpeakers
+
         let queue = PipelineQueue(
-            engine: activeTranscriptionEngine,
+            engine: bridgeEngine(cfg) ?? activeTranscriptionEngine,
             diarizationFactory: { [self] in makeFluidDiarizer(mode: settings.diarizerMode) },
             diarizationFactoryWithMode: { [self] mode in makeFluidDiarizer(mode: mode) },
             protocolGeneratorFactory: { [self] in makeProtocolGenerator() },
             outputDir: settings.effectiveOutputDir,
             diarizeEnabled: settings.diarize,
-            numSpeakers: settings.numSpeakers,
+            numSpeakers: numSpeakers,
             micLabel: settings.micName,
-            speakerMatcherFactory: { SpeakerMatcher() },
+            speakerMatcherFactory: { SpeakerMatcher(dbPath: dbPath) },
             vadConfig: settings.vadEnabled ? VADConfig(threshold: settings.vadThreshold) : nil,
             recognitionStatsLog: RecognitionStatsLog(),
         )
