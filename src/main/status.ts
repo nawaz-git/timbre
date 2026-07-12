@@ -42,6 +42,7 @@ import type {
 } from '../shared/types'
 import { getStatus, onStatusChange } from './recording'
 import { getCaptureSignal, onCaptureSignalChange, type CaptureSignal } from './captureSignal'
+import { enginePrefixFromRawAudioPath } from './captureSignalLogic'
 import { getChromeMeetSnapshot, onChromeMeetChange } from './chromeProbe'
 import { getWatchdogSignal, onWatchdogSignalChange, onMeetingsChanged } from './captureWatchdog'
 import { resolveLiveRecorderApp } from './backend'
@@ -274,9 +275,15 @@ export function isEngineProcessAlive(): boolean {
 
 /** Re-scan processing meetings, infer stage + stuck, and feed the machine. */
 async function refreshProcessing(): Promise<void> {
+  // Exclude the meeting being recorded right now (verified growing mic WAV) so
+  // it isn't counted as "processing" while it's still capturing — recording
+  // outranks processing, and it enters the scan honestly once capture stops.
+  const capture = getCaptureSignal()
+  const excludePrefix =
+    capture.active && capture.wavPath ? enginePrefixFromRawAudioPath(capture.wavPath) : null
   let scan: Awaited<ReturnType<typeof scanProcessingPrefixes>>
   try {
-    scan = await scanProcessingPrefixes(liveRecordingsRoot)
+    scan = await scanProcessingPrefixes(liveRecordingsRoot, excludePrefix)
   } catch (err) {
     console.warn('[status] scanProcessingPrefixes failed', err)
     scan = []
