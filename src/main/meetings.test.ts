@@ -22,6 +22,18 @@ async function fileExists(path: string): Promise<boolean> {
     .catch(() => false)
 }
 
+/** Yield a macrotask so detached promise chains (and their async fs ops) settle. */
+const flushAsync = (ms = 30): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Poll `pred` until it holds or the timeout elapses (for detached-completion assertions). */
+async function waitUntil(pred: () => Promise<boolean>, timeoutMs = 1000): Promise<void> {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    if (await pred()) return
+    await flushAsync(5)
+  }
+}
+
 describe('deriveEngineStatus', () => {
   const now = 1_000_000_000_000
 
@@ -107,21 +119,29 @@ describe('retryFailedMeeting', () => {
     await fs.rm(root, { recursive: true, force: true })
   })
 
-  async function writeSidecar(mixPath: string | undefined): Promise<string> {
-    const path = join(root, 'protocols', '20260712_0930_standup.error.json')
+  // Unique prefix per call so the module-level in-flight guard (keyed by bare
+  // prefix) can't leak state between tests that share this describe block.
+  let sidecarSeq = 0
+  async function writeSidecar(
+    mixPath: string | undefined
+  ): Promise<{ path: string; meetingId: string }> {
+    const prefix = `20260712_0930_standup_${sidecarSeq++}`
+    const path = join(root, 'protocols', `${prefix}.error.json`)
     await fs.writeFile(path, JSON.stringify(mixPath ? { mixPath } : {}))
-    return path
+    return { path, meetingId: `engine:${prefix}` }
   }
 
   it('errors cleanly and imports nothing when the source audio is gone', async () => {
-    const sidecar = await writeSidecar(join(root, 'recordings', 'missing_mix.wav'))
+    const { path: sidecar, meetingId } = await writeSidecar(
+      join(root, 'recordings', 'missing_mix.wav')
+    )
     let called = false
     const result = await retryFailedMeeting(
-      'engine:20260712_0930_standup',
+      meetingId,
       join(root, 'out'),
       async () => {
         called = true
-        return { jobId: 'x' }
+        return { jobId: 'x', completion: Promise.resolve() }
       },
       root
     )
@@ -131,23 +151,112 @@ describe('retryFailedMeeting', () => {
     expect(await fileExists(sidecar)).toBe(true)
   })
 
-  it('re-imports the mix and clears the sidecar on success', async () => {
+  it('clears the sidecar only after the import completes, not at kickoff', async () => {
     const mixPath = join(root, 'recordings', 'mix.wav')
     await fs.writeFile(mixPath, 'RIFF')
-    const sidecar = await writeSidecar(mixPath)
+    const { path: sidecar, meetingId } = await writeSidecar(mixPath)
+    // A deferred completion lets the test drive kickoff and completion apart —
+    // the previous mock conflated them (returned before the import "finished").
+    let finishImport: () => void = () => {}
+    const completion = new Promise<void>((resolve) => {
+      finishImport = resolve
+    })
     const seen: string[] = []
     const result = await retryFailedMeeting(
-      'engine:20260712_0930_standup',
+      meetingId,
       join(root, 'out'),
       async (mix) => {
         seen.push(mix)
-        return { jobId: 'job-1' }
+        return { jobId: 'job-1', completion }
       },
       root
     )
     expect(result).toEqual({ ok: true, jobId: 'job-1' })
     expect(seen).toEqual([mixPath])
+    // Kickoff returned but the import is still running: the sidecar MUST survive
+    // so a crash / re-failure mid-import can't strand the meeting invisibly.
+    expect(await fileExists(sidecar)).toBe(true)
+
+    // The import succeeds → the sidecar is cleared so the failed row disappears.
+    finishImport()
+    await waitUntil(async () => !(await fileExists(sidecar)))
     expect(await fileExists(sidecar)).toBe(false)
+  })
+
+  it('keeps the sidecar and frees the guard when the re-import fails', async () => {
+    const mixPath = join(root, 'recordings', 'mix.wav')
+    await fs.writeFile(mixPath, 'RIFF')
+    const { path: sidecar, meetingId } = await writeSidecar(mixPath)
+    // Reject the completion AFTER kickoff so retryFailedMeeting's own handler is
+    // already attached (no unhandled-rejection window).
+    let failImport: (e: Error) => void = () => {}
+    const completion = new Promise<void>((_, reject) => {
+      failImport = reject
+    })
+    const result = await retryFailedMeeting(
+      meetingId,
+      join(root, 'out'),
+      async () => ({ jobId: 'job-1', completion }),
+      root
+    )
+    expect(result).toEqual({ ok: true, jobId: 'job-1' })
+
+    failImport(new Error('batch died'))
+    await flushAsync()
+    // A failed re-import must leave the sidecar in place — it is the only record
+    // of the failure (the Electron import path writes none of its own).
+    expect(await fileExists(sidecar)).toBe(true)
+
+    // The in-flight guard is released, so the user can retry again.
+    let calledAgain = false
+    const second = await retryFailedMeeting(
+      meetingId,
+      join(root, 'out'),
+      async () => {
+        calledAgain = true
+        return { jobId: 'job-2', completion: Promise.resolve() }
+      },
+      root
+    )
+    expect(calledAgain).toBe(true)
+    expect(second.ok).toBe(true)
+  })
+
+  it('rejects a duplicate retry while one is already in flight', async () => {
+    const mixPath = join(root, 'recordings', 'mix.wav')
+    await fs.writeFile(mixPath, 'RIFF')
+    const { path: sidecar, meetingId } = await writeSidecar(mixPath)
+    // First retry: leave the import pending so the prefix stays in flight.
+    let finishFirst: () => void = () => {}
+    const pending = new Promise<void>((resolve) => {
+      finishFirst = resolve
+    })
+    const first = await retryFailedMeeting(
+      meetingId,
+      join(root, 'out'),
+      async () => ({ jobId: 'job-1', completion: pending }),
+      root
+    )
+    expect(first.ok).toBe(true)
+
+    // Second retry for the SAME meeting while the first import runs: rejected
+    // without kicking off a duplicate batch into the same folder.
+    let secondCalled = false
+    const second = await retryFailedMeeting(
+      meetingId,
+      join(root, 'out'),
+      async () => {
+        secondCalled = true
+        return { jobId: 'job-2', completion: Promise.resolve() }
+      },
+      root
+    )
+    expect(second.ok).toBe(false)
+    expect(secondCalled).toBe(false)
+
+    // Cleanup: finish the first import so the guard clears for later tests.
+    finishFirst()
+    await waitUntil(async () => !(await fileExists(sidecar)))
   })
 
   it('rejects a non-engine meeting id without importing', async () => {
@@ -157,7 +266,7 @@ describe('retryFailedMeeting', () => {
       join(root, 'out'),
       async () => {
         called = true
-        return { jobId: 'x' }
+        return { jobId: 'x', completion: Promise.resolve() }
       },
       root
     )
