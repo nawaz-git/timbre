@@ -675,7 +675,15 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     if (!selectedMeeting) return
     const handler = (e: KeyboardEvent): void => {
       const target = e.target as HTMLElement | null
-      if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return
+      if (target) {
+        // Don't hijack Space/Arrows from focused interactive controls —
+        // otherwise Space "activates" the player instead of the button/tab/link
+        // the user meant, breaking native keyboard activation on the detail pane.
+        if (/^(INPUT|TEXTAREA|BUTTON|SELECT|A)$/.test(target.tagName)) return
+        const role = target.getAttribute('role')
+        if (role === 'tab' || role === 'button' || role === 'menuitem' || role === 'option') return
+        if (target.isContentEditable) return
+      }
       if (titleEditing || pickerForCluster || pickerForSegment !== null || addSpeakerOpen) return
       const el = activeMediaEl()
       if (e.code === 'Space') {
