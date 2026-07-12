@@ -1341,11 +1341,65 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
   const renderMeetingRow = (m: MeetingSummary, snippet?: string): JSX.Element => {
     const isEditing = rowEditingId === m.id
+
+    // Row body below the title — identical whether the row is being
+    // renamed or not, so it's built once and shared by both branches.
+    const metaBlock = m.isLive ? (
+      <div className="meetings__row-meta meetings__row-meta--live">
+        Recording in progress — full transcript when meeting ends.
+      </div>
+    ) : m.status === 'processing' ? (
+      <div className="meetings__row-meta meetings__row-meta--processing">
+        {(() => {
+          const proc = appStatus.processing?.find((p) => p.id === m.id)
+          if (proc?.stuck) return "Processing didn't finish — open to recover it."
+          if (!proc) return 'Processing · Working…'
+          return `Processing · ${PROCESSING_STAGE_LABEL[proc.stage]} · ${formatProcessingElapsed(proc.startedAt)} elapsed`
+        })()}
+      </div>
+    ) : (
+      <div className="meetings__row-meta">
+        <span>{formatDateRelative(m.date)}</span>
+        <span aria-hidden="true">·</span>
+        <span className="meetings__row-meta-duration">{formatDuration(m.durationSeconds)}</span>
+        <span aria-hidden="true">·</span>
+        <span>
+          {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
+        </span>
+      </div>
+    )
+    const snippetBlock = snippet ? (
+      <div className="meetings__row-snippet">
+        {highlightParts(snippet, query).map((part, i) =>
+          part.mark ? <mark key={i}>{part.text}</mark> : <span key={i}>{part.text}</span>
+        )}
+      </div>
+    ) : null
+    const tagsBlock =
+      m.tagIds.length > 0 ? (
+        <div className="meetings__row-tags">
+          {m.tagIds.map((id) => {
+            const t = tagById(id)
+            if (!t) return null
+            return (
+              <span key={id} className="meetings__row-tag-pill" style={{ background: t.color }}>
+                <TagIcon size={9} aria-hidden="true" className="meetings__row-tag-icon" />
+                <span>{t.name}</span>
+              </span>
+            )
+          })}
+        </div>
+      ) : null
+
     return (
+      // Non-interactive container. The open affordance and the kebab are
+      // SIBLINGS inside it (never nested) so there is no interactive-inside-
+      // interactive. The open element carries flow content (title, meta,
+      // tag pills, a highlighted snippet) that a native <button> may not
+      // validly contain, so it's a role="button" — same keyboard contract,
+      // valid markup, and it announces as one button per row.
       <div
         key={m.id}
-        role="button"
-        tabIndex={0}
         className={
           'meetings__row' +
           (m.id === selectedId ? ' meetings__row--active' : '') +
@@ -1353,218 +1407,172 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           (m.isLive ? ' meetings__row--live' : '') +
           (m.status === 'processing' ? ' meetings__row--processing' : '')
         }
-        onClick={() => {
-          if (isEditing) return
-          void onSelect(m)
-        }}
-        onKeyDown={(e) => {
-          if (isEditing) return
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            void onSelect(m)
-          }
-        }}
       >
-        <div className="meetings__row-main">
-          {isEditing ? (
-            <input
-              autoFocus
-              className="meetings__row-input"
-              value={rowEditingValue}
-              onChange={(e) => setRowEditingValue(e.target.value)}
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                e.stopPropagation()
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  void commitRowRename()
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  cancelRowRename()
-                }
-              }}
-              onBlur={() => void commitRowRename()}
-            />
-          ) : (
-            <div className="meetings__row-title">
-              {m.isLive && (
-                <span className="meetings__row-live-dot" aria-label="Recording in progress" />
-              )}
-              <span>{m.title}</span>
-              {m.status === 'processing' && (
-                <span
-                  className="processing-pill"
-                  aria-label="Processing"
-                  title="Transcribing and separating speakers"
-                >
-                  <Loader2
-                    size={11}
-                    strokeWidth={2}
-                    aria-hidden="true"
-                    className="home-status-icon--spin"
-                  />
-                  <span>Processing</span>
-                </span>
-              )}
-              {m.status === 'refining' && (
-                <span
-                  className="processing-pill"
-                  aria-label="Refining"
-                  title="Upgrading speaker attribution (Max accuracy)"
-                >
-                  <Loader2
-                    size={11}
-                    strokeWidth={2}
-                    aria-hidden="true"
-                    className="home-status-icon--spin"
-                  />
-                  <span>Refining</span>
-                </span>
-              )}
-            </div>
-          )}
-          {!isEditing && !m.isLive && (
-            <div className="meetings__row-actions">
-              <div className="meetings__row-tag-wrap">
-                <button
-                  type="button"
-                  className={
-                    'meetings__row-action' +
-                    (rowMenuForId === m.id || tagPickerForRowId === m.id
-                      ? ' meetings__row-action--open'
-                      : '')
+        {isEditing ? (
+          <div className="meetings__row-open meetings__row-open--static">
+            <div className="meetings__row-main">
+              <input
+                autoFocus
+                className="meetings__row-input"
+                value={rowEditingValue}
+                onChange={(e) => setRowEditingValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void commitRowRename()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    cancelRowRename()
                   }
-                  aria-label="Meeting actions"
-                  title="Meeting actions"
-                  aria-haspopup="menu"
-                  aria-expanded={rowMenuForId === m.id}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setTagPickerForRowId(null)
-                    setTagPickerAnchor(null)
-                    if (rowMenuForId === m.id) {
-                      setRowMenuForId(null)
-                      setRowMenuAnchor(null)
-                    } else {
-                      setRowMenuForId(m.id)
-                      setRowMenuAnchor(e.currentTarget)
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.stopPropagation()
-                    }
-                  }}
-                >
-                  <MoreVertical size={15} strokeWidth={2} aria-hidden="true" />
-                </button>
-                {rowMenuForId === m.id && (
-                  <RowMenu
-                    anchorEl={rowMenuAnchor}
-                    onClose={() => {
-                      setRowMenuForId(null)
-                      setRowMenuAnchor(null)
-                    }}
-                    items={[
-                      {
-                        key: 'rename',
-                        label: 'Edit title',
-                        icon: <PencilIcon size={13} />,
-                        onSelect: () => {
-                          setRowMenuForId(null)
-                          setRowMenuAnchor(null)
-                          beginRowRename(m)
-                        }
-                      },
-                      {
-                        key: 'tags',
-                        label: 'Edit tags',
-                        icon: <TagIcon size={13} strokeWidth={2} aria-hidden="true" />,
-                        onSelect: () => {
-                          setTagPickerForRowId(m.id)
-                          setTagPickerAnchor(rowMenuAnchor)
-                          setRowMenuForId(null)
-                        }
-                      },
-                      {
-                        key: 'delete',
-                        label: 'Delete meeting',
-                        icon: <Trash2 size={13} strokeWidth={2} aria-hidden="true" />,
-                        danger: true,
-                        onSelect: () => {
-                          setRowMenuForId(null)
-                          setRowMenuAnchor(null)
-                          void onDeleteMeeting(m)
-                        }
-                      }
-                    ]}
-                  />
+                }}
+                onBlur={() => void commitRowRename()}
+              />
+            </div>
+            {metaBlock}
+            {snippetBlock}
+            {tagsBlock}
+          </div>
+        ) : (
+          <div
+            className="meetings__row-open"
+            role="button"
+            tabIndex={0}
+            onClick={() => void onSelect(m)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                void onSelect(m)
+              }
+            }}
+          >
+            <div className="meetings__row-main">
+              <div className="meetings__row-title">
+                {m.isLive && (
+                  <span className="meetings__row-live-dot" aria-label="Recording in progress" />
                 )}
-                {tagPickerForRowId === m.id && (
-                  <TagPicker
-                    allTags={allTags}
-                    activeTagIds={m.tagIds}
-                    anchorEl={tagPickerAnchor}
-                    onToggle={(tagId) => void onToggleTagForRow(m.id, tagId)}
-                    onClose={() => {
-                      setTagPickerForRowId(null)
-                      setTagPickerAnchor(null)
-                    }}
-                  />
+                <span>{m.title}</span>
+                {m.status === 'processing' && (
+                  <span
+                    className="processing-pill"
+                    aria-label="Processing"
+                    title="Transcribing and separating speakers"
+                  >
+                    <Loader2
+                      size={11}
+                      strokeWidth={2}
+                      aria-hidden="true"
+                      className="home-status-icon--spin"
+                    />
+                    <span>Processing</span>
+                  </span>
+                )}
+                {m.status === 'refining' && (
+                  <span
+                    className="processing-pill"
+                    aria-label="Refining"
+                    title="Upgrading speaker attribution (Max accuracy)"
+                  >
+                    <Loader2
+                      size={11}
+                      strokeWidth={2}
+                      aria-hidden="true"
+                      className="home-status-icon--spin"
+                    />
+                    <span>Refining</span>
+                  </span>
                 )}
               </div>
             </div>
-          )}
-        </div>
-        {m.isLive ? (
-          <div className="meetings__row-meta meetings__row-meta--live">
-            Recording in progress — full transcript when meeting ends.
-          </div>
-        ) : m.status === 'processing' ? (
-          <div className="meetings__row-meta meetings__row-meta--processing">
-            {(() => {
-              const proc = appStatus.processing?.find((p) => p.id === m.id)
-              if (proc?.stuck) return "Processing didn't finish — open to recover it."
-              if (!proc) return 'Processing · Working…'
-              return `Processing · ${PROCESSING_STAGE_LABEL[proc.stage]} · ${formatProcessingElapsed(proc.startedAt)} elapsed`
-            })()}
-          </div>
-        ) : (
-          <div className="meetings__row-meta">
-            <span>{formatDateRelative(m.date)}</span>
-            <span aria-hidden="true">·</span>
-            <span className="meetings__row-meta-duration">
-              {formatDuration(m.durationSeconds)}
-            </span>
-            <span aria-hidden="true">·</span>
-            <span>
-              {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
-            </span>
+            {metaBlock}
+            {snippetBlock}
+            {tagsBlock}
           </div>
         )}
-        {snippet && (
-          <div className="meetings__row-snippet">
-            {highlightParts(snippet, query).map((part, i) =>
-              part.mark ? <mark key={i}>{part.text}</mark> : <span key={i}>{part.text}</span>
-            )}
-          </div>
-        )}
-        {m.tagIds.length > 0 && (
-          <div className="meetings__row-tags">
-            {m.tagIds.map((id) => {
-              const t = tagById(id)
-              if (!t) return null
-              return (
-                <span
-                  key={id}
-                  className="meetings__row-tag-pill"
-                  style={{ background: t.color }}
-                >
-                  <TagIcon size={9} aria-hidden="true" className="meetings__row-tag-icon" />
-                  <span>{t.name}</span>
-                </span>
-              )
-            })}
+        {!isEditing && !m.isLive && (
+          <div className="meetings__row-actions">
+            <div className="meetings__row-tag-wrap">
+              <button
+                type="button"
+                className={
+                  'meetings__row-action' +
+                  (rowMenuForId === m.id || tagPickerForRowId === m.id
+                    ? ' meetings__row-action--open'
+                    : '')
+                }
+                aria-label="Meeting actions"
+                title="Meeting actions"
+                aria-haspopup="menu"
+                aria-expanded={rowMenuForId === m.id}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setTagPickerForRowId(null)
+                  setTagPickerAnchor(null)
+                  if (rowMenuForId === m.id) {
+                    setRowMenuForId(null)
+                    setRowMenuAnchor(null)
+                  } else {
+                    setRowMenuForId(m.id)
+                    setRowMenuAnchor(e.currentTarget)
+                  }
+                }}
+              >
+                <MoreVertical size={15} strokeWidth={2} aria-hidden="true" />
+              </button>
+              {rowMenuForId === m.id && (
+                <RowMenu
+                  anchorEl={rowMenuAnchor}
+                  onClose={() => {
+                    setRowMenuForId(null)
+                    setRowMenuAnchor(null)
+                  }}
+                  items={[
+                    {
+                      key: 'rename',
+                      label: 'Edit title',
+                      icon: <PencilIcon size={13} />,
+                      onSelect: () => {
+                        setRowMenuForId(null)
+                        setRowMenuAnchor(null)
+                        beginRowRename(m)
+                      }
+                    },
+                    {
+                      key: 'tags',
+                      label: 'Edit tags',
+                      icon: <TagIcon size={13} strokeWidth={2} aria-hidden="true" />,
+                      onSelect: () => {
+                        setTagPickerForRowId(m.id)
+                        setTagPickerAnchor(rowMenuAnchor)
+                        setRowMenuForId(null)
+                      }
+                    },
+                    {
+                      key: 'delete',
+                      label: 'Delete meeting',
+                      icon: <Trash2 size={13} strokeWidth={2} aria-hidden="true" />,
+                      danger: true,
+                      onSelect: () => {
+                        setRowMenuForId(null)
+                        setRowMenuAnchor(null)
+                        void onDeleteMeeting(m)
+                      }
+                    }
+                  ]}
+                />
+              )}
+              {tagPickerForRowId === m.id && (
+                <TagPicker
+                  allTags={allTags}
+                  activeTagIds={m.tagIds}
+                  anchorEl={tagPickerAnchor}
+                  onToggle={(tagId) => void onToggleTagForRow(m.id, tagId)}
+                  onClose={() => {
+                    setTagPickerForRowId(null)
+                    setTagPickerAnchor(null)
+                  }}
+                />
+              )}
+            </div>
           </div>
         )}
       </div>

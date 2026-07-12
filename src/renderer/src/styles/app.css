@@ -875,29 +875,21 @@
  * Each row carries its own bottom divider; the wrap above stops the last
  * divider from doubling with the panel border.
  */
+/* The row is a non-interactive positioning container; the full-area open
+   affordance (.meetings__row-open) and the kebab (.meetings__row-actions)
+   are SIBLINGS inside it — no interactive nested inside another. */
 .meetings__row {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1, 4px);
-  padding: var(--space-4, 14px) var(--space-5, 20px);
   border-bottom: 1px solid var(--divider);
   border-left: 3px solid transparent;
-  cursor: pointer;
   transition: background 80ms ease, border-left-color 80ms ease;
-  outline: none;
   background: transparent;
 }
 
 .meetings__row:hover {
   background: var(--surface-hover, var(--bg-hover));
-}
-
-.meetings__row:focus-visible {
-  outline: none;
-  background: var(--surface-hover);
-  box-shadow:
-    inset 2px 0 0 var(--accent),
-    var(--focus-ring);
 }
 
 .meetings__row--active {
@@ -912,6 +904,37 @@
   cursor: default;
 }
 
+/* Full-area open affordance — owns the row's column layout + padding and
+   is the single click/keyboard target. `--static` is the rename-in-place
+   wrapper (the input owns interaction, so no pointer cursor). */
+.meetings__row-open {
+  -webkit-appearance: none;
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  width: 100%;
+  padding: var(--space-4, 14px) var(--space-5, 20px);
+  border: 0;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+.meetings__row-open--static {
+  cursor: default;
+}
+.meetings__row-open:focus-visible {
+  outline: none;
+  background: var(--surface-hover);
+  box-shadow:
+    inset 2px 0 0 var(--accent),
+    var(--focus-ring);
+}
+
 .meetings__row-main {
   display: flex;
   align-items: center;
@@ -924,6 +947,9 @@
   font-weight: 500;
   font-size: var(--text-body-size, 13px);
   min-width: 0;
+  /* Reserve room for the absolute kebab (24px @ right:16px) so a long
+     title ellipsizes before it instead of running under it. */
+  padding-right: var(--space-6, 24px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -934,23 +960,28 @@
 /*
  * Row hover affordances — Tag + Rename.
  *
- * `.meetings__row-actions` is a small inline-flex cluster pinned to the
- * right end of the row. Each `.meetings__row-action` is a 24×24 ghost
- * icon button — generous hit target, light visual weight. Hidden by
- * default; revealed on row hover / focus-within (120ms fade). On the
- * currently-selected row we keep them visible so the user can tag or
- * rename without losing the selection. The Tag-picker popover stays
- * visible regardless via `.meetings__row-action--open` so the icon
- * doesn't fade out from under an open popover.
+ * `.meetings__row-actions` is a small flex cluster pinned to the row's
+ * top-right, absolutely positioned so it layers ABOVE the full-area open
+ * affordance (a sibling) rather than nesting inside it. Each
+ * `.meetings__row-action` is a 24×24 ghost icon button — generous hit
+ * target, light visual weight. Hidden by default; revealed on row hover /
+ * focus-within (120ms fade). On the currently-selected row we keep them
+ * visible so the user can tag or rename without losing the selection. The
+ * Tag-picker popover stays visible regardless via
+ * `.meetings__row-action--open` so the icon doesn't fade out from under an
+ * open popover.
  *
  * Color uses `var(--fg-muted)` (not opacity dimming) so the SVG strokes
  * stay crisp on both themes; brightens to `var(--fg)` on icon hover.
  */
 .meetings__row-actions {
+  position: absolute;
+  top: var(--space-3, 12px);
+  right: var(--space-4, 16px);
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1, 4px);
-  margin-right: -4px; /* visual nudge: align with row right padding */
   flex-shrink: 0;
 }
 .meetings__row-tag-wrap {
