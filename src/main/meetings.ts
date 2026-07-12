@@ -15,6 +15,12 @@ import {
   type BatchEvent
 } from './backend'
 import { getLivePlaceholder } from './captureWatchdog'
+import {
+  bracketToSeconds,
+  ENGINE_TXT_LINE_RE,
+  looksPreDiarizationSpeakers,
+  parseEngineTxtSegments
+} from './engineTranscript'
 
 /**
  * The Swift live-recording engine (`MeetingTranscriber.app`, bundled inside
@@ -376,25 +382,6 @@ async function renameEngineSpeaker(
 }
 
 /**
- * Shared timestamped-speaker-line regex for the engine protocol `.txt`. MUST
- * stay byte-for-byte in sync with `patchEngineTxtByIndex`'s `lineRe` and with
- * the renderer's flat-text fallback parser so that the Nth match here is the
- * same row the renderer addresses by index. Capture groups:
- *   1 = `[MM:SS]` / `[H:MM:SS]` bracket, 2 = whitespace, 3 = name, 4 = `:rest`.
- */
-const ENGINE_TXT_LINE_RE = /^(\[(?:\d{1,2}:)?\d{1,2}:\d{1,2}\])(\s+)([^:\n]+?)(:.*)$/
-
-/** Parse a `[MM:SS]` / `[H:MM:SS]` / `[HH:MM:SS]` bracket into start seconds. */
-function bracketToSeconds(bracket: string): number {
-  const m = bracket.match(/\[(?:(\d{1,2}):)?(\d{1,2}):(\d{1,2})\]/)
-  if (!m) return 0
-  const h = m[1] ? parseInt(m[1], 10) : 0
-  const min = parseInt(m[2], 10)
-  const s = parseInt(m[3], 10)
-  return h * 3600 + min * 60 + s
-}
-
-/**
  * Count distinct speaker names in an engine meeting's flat protocol `.txt`,
  * using the SAME line regex as `patchEngineTxtByIndex`. Used as the fallback
  * speaker count for `.txt`-only meetings (no `segments.json`). Returns 0 when
@@ -744,6 +731,23 @@ export async function readTranscript(
         // Build a SpeakerRecord list from the unique speakers in segments.
         const unique = Array.from(new Set(segs.map((s) => s.speaker)))
         speakers = unique.map((name) => ({ id: name, label: name }))
+      }
+    }
+
+    // Fallback for meetings recorded before diarized labels were persisted to
+    // `_segments.json`: those sidecars only carry the pre-diarization
+    // "Remote"/mic cache, while the `.txt` already has the real per-speaker
+    // lines. When the JSON looks pre-diarization AND the `.txt` names strictly
+    // more speakers, derive segments from the `.txt` so the renderer shows the
+    // speakers the diarizer actually found.
+    const jsonSpeakers = new Set((segments ?? []).map((s) => s.speaker))
+    if (looksPreDiarizationSpeakers(jsonSpeakers)) {
+      const fromTxt = parseEngineTxtSegments(transcript)
+      const txtSpeakerCount = new Set(fromTxt.segments.map((s) => s.speaker)).size
+      if (fromTxt.segments.length > 0 && txtSpeakerCount > jsonSpeakers.size) {
+        segments = fromTxt.segments
+        speakers = fromTxt.speakers
+        durationSeconds = Math.ceil(Math.max(...fromTxt.segments.map((s) => s.end)))
       }
     }
     return { meetingId, transcript, speakers, segments, durationSeconds }
