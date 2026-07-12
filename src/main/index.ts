@@ -19,7 +19,7 @@ import { setRecordingActiveProvider, startChromeProbe, stopChromeProbe } from '.
 import { writeEngineConfig } from './engineConfig'
 import { onStatusChange, startWatching } from './recording'
 import { isRecordingActive, startCaptureWatchdog, stopCaptureWatchdog } from './captureWatchdog'
-import { readEngineHeartbeat, startLiveRecorder, stopEngineGracefully } from './backend'
+import { isEngineAlive, readEngineHeartbeat, startLiveRecorder, stopEngineGracefully } from './backend'
 import {
   getRecordingHeartbeat,
   startEngineSupervisor,
@@ -316,6 +316,7 @@ app.whenReady().then(async () => {
   // covers the engine's first boot.
   startEngineSupervisor({
     readHeartbeat: readEngineHeartbeat,
+    isEngineAlive,
     restartEngine: async (reason: SuperviseReason) => {
       // Distinct-reason graceful escalation (the exported stop helper), then the reuse-aware
       // relaunch — which no-ops its own reuse gate against the just-killed
