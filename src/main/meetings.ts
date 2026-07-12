@@ -940,6 +940,17 @@ export async function readTranscript(
       }
     }
 
+    // The `.md` protocol is the LLM summary — surfaced in the Summary tab,
+    // independent of the raw transcript above. Absent for meetings whose
+    // pipeline skipped protocol generation.
+    let summaryMarkdown: string | undefined
+    try {
+      const md = await fs.readFile(mdPath, 'utf-8')
+      if (md.trim()) summaryMarkdown = md
+    } catch {
+      // No summary — the tab stays hidden.
+    }
+
     // v0.17+: parse the structured segments.json sidecar so the renderer
     // can render diarized rows, click-to-seek, and a speaker list — instead
     // of relying on parseLegacyTranscript regex matching on the .txt
@@ -980,7 +991,7 @@ export async function readTranscript(
         durationSeconds = Math.ceil(Math.max(...fromTxt.segments.map((s) => s.end)))
       }
     }
-    return { meetingId, transcript, speakers, segments, durationSeconds }
+    return { meetingId, transcript, speakers, segments, durationSeconds, summaryMarkdown }
   }
 
   // Default (imported) path — strip optional `imported:` prefix for legacy compatibility.
@@ -999,12 +1010,22 @@ export async function readTranscript(
   }
   const speakers = (await safeReadJson<SpeakerRecord[]>(join(folder, 'speakers.json'))) ?? []
   const tj = await safeReadJson<TranscriptJSON>(join(folder, 'transcript.json'))
+  // Imports don't write a summary today, but read one if present so the
+  // Summary tab lights up for any future import that does.
+  let summaryMarkdown: string | undefined
+  try {
+    const md = await fs.readFile(join(folder, 'summary.md'), 'utf-8')
+    if (md.trim()) summaryMarkdown = md
+  } catch {
+    // No summary.
+  }
   return {
     meetingId,
     transcript,
     speakers,
     segments: tj?.segments,
-    durationSeconds: tj?.duration
+    durationSeconds: tj?.duration,
+    summaryMarkdown
   }
 }
 
