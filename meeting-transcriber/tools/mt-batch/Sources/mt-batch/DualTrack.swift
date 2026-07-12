@@ -151,6 +151,7 @@ extension Transcribe {
             generatedAt: Date(),
             to: outputURL.appendingPathComponent("transcript.json"),
         )
+        emitMetricsIfRequested(labeled: labeled, outputURL: outputURL)
         try persistSpeakerDB(
             embeddings: engines.appDiar.embeddings,
             speakingTimes: engines.appDiar.speakingTimes,
