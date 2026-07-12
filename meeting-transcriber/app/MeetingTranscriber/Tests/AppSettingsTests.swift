@@ -56,6 +56,18 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.whisperKitModel, "openai_whisper-large-v3-v20240930_turbo")
         XCTAssertTrue(settings.perChannelIndicatorEnabled)
         XCTAssertEqual(settings.asymmetricSilenceWarningSeconds, 90.0)
+        // R5 fix: a fresh domain auto-detects the language instead of forcing
+        // German, so a headless Timbre-driven engine follows the meeting audio.
+        XCTAssertEqual(settings.whisperLanguage, "")
+        XCTAssertNil(settings.whisperLanguageOrNil)
+    }
+
+    /// The new auto default only affects fresh domains — a user who explicitly
+    /// chose a language keeps it across launches.
+    func testExplicitWhisperLanguageSurvivesReload() {
+        settings.whisperLanguage = "de"
+        let fresh = AppSettings(defaults: defaults)
+        XCTAssertEqual(fresh.whisperLanguage, "de")
     }
 
     // MARK: - Clamping

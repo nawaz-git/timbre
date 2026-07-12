@@ -475,7 +475,14 @@ final class AppSettings {
             .flatMap(TranscriptionEngineSetting.init(rawValue:))) ?? .whisperKit
         whisperKitModel = defaults.object(forKey: "whisperKitModel") as? String
             ?? "openai_whisper-large-v3-v20240930_turbo"
-        whisperLanguage = defaults.object(forKey: "whisperLanguage") as? String ?? "de"
+        // Default is now auto-detect (empty string), not forced German. Only a
+        // FRESH UserDefaults domain hits this fallback — an existing user who
+        // explicitly chose a language already has the key written and keeps it.
+        // The default therefore only affects new domains, which is exactly the
+        // headless Timbre-driven engine: it should follow the bridge's
+        // `asrLanguage` (or auto-detect) rather than transcribe every meeting as
+        // German. Fixes the forced-German live path (R5).
+        whisperLanguage = defaults.object(forKey: "whisperLanguage") as? String ?? ""
         parakeetLanguage = defaults.object(forKey: "parakeetLanguage") as? String ?? ""
         customVocabularyPath = defaults.string(forKey: "customVocabularyPath") ?? ""
         diarize = defaults.object(forKey: "diarize") as? Bool ?? true
