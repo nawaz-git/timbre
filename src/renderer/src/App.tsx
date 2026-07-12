@@ -10,6 +10,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { SettingsProvider, useSettings } from './state/settings'
 import { TagsProvider } from './state/tags'
+import { ToastProvider } from './state/toast'
 import { HomeView } from './views/Home'
 import { MeetingsView } from './views/Meetings'
 import { NetworkView } from './views/Network'
@@ -224,7 +225,9 @@ export default function App(): JSX.Element {
   return (
     <SettingsProvider>
       <TagsProvider>
-        <Root />
+        <ToastProvider>
+          <Root />
+        </ToastProvider>
       </TagsProvider>
     </SettingsProvider>
   )
