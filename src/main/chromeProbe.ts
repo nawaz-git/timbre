@@ -267,7 +267,9 @@ export async function probeOnce(): Promise<{
   }
   let sawRunningBrowser = false
   for (const browser of CHROMIUM_BROWSERS) {
-    if (!(await isAppRunning(browser.appName))) continue
+    // probeOnce is the wizard's one-shot Automation test, so read liveness fresh
+    // (useCache=false) rather than trusting capture's cadence-gated cache.
+    if (!(await isAppRunning(browser.appName, false))) continue
     sawRunningBrowser = true
     try {
       const urls = await fetchUrls(browser.appName)
