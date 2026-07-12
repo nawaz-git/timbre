@@ -266,6 +266,27 @@ export function SettingsView(): JSX.Element {
             ))}
           </div>
         </SettingsRow>
+
+        <SettingsRow
+          label="Disable app audio capture"
+          description="Record the microphone and screen only, without tapping the browser's audio. Turn this on if capturing meeting audio ever destabilises your browser — your voice is still recorded and transcribed."
+        >
+          <label className="toggle-switch" title="Disable app audio capture">
+            <input
+              type="checkbox"
+              checked={settings.disableAppAudioTap}
+              onChange={(e) => {
+                void setSettings({ disableAppAudioTap: e.target.checked })
+              }}
+            />
+            <span className="toggle-switch__track" aria-hidden="true">
+              <span className="toggle-switch__thumb" />
+            </span>
+            <span className="toggle-switch__label">
+              {settings.disableAppAudioTap ? 'On' : 'Off'}
+            </span>
+          </label>
+        </SettingsRow>
       </Section>
 
       {/* ── Appearance ─────────────────────────────────────────────── */}

@@ -8,10 +8,11 @@
  * each meeting (see `EngineConfig.read()` on the Swift side), which sidesteps
  * UserDefaults cross-process caching.
  *
- * The payload carries ONLY `screenCaptureScope`. `recordScreenVideo` is
- * deliberately NOT included: the engine keeps its own AppSettings/UserDefaults
- * gate for video on/off, untouched by this bridge. The microphone is always
- * recorded alongside the meeting audio, so there is no mic field.
+ * The payload carries `screenCaptureScope` plus the `disableAppAudioTap` kill
+ * switch. `recordScreenVideo` is deliberately NOT included: the engine keeps
+ * its own AppSettings/UserDefaults gate for video on/off, untouched by this
+ * bridge. The microphone is always recorded alongside the meeting audio, so
+ * there is no mic field.
  *
  * Written atomically (tmp + rename via `writeJsonAtomic`) so the engine never
  * reads a half-written file. Best-effort: a failure here must never break a
@@ -34,6 +35,7 @@ export async function writeEngineConfig(): Promise<void> {
     const settings = await readSettings()
     await writeJsonAtomic(ENGINE_CONFIG_FILE, {
       screenCaptureScope: settings.screenCaptureScope,
+      disableAppAudioTap: settings.disableAppAudioTap,
       updatedAt: Date.now()
     })
   } catch (err) {

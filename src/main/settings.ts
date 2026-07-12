@@ -40,6 +40,10 @@ function defaultSettings(): Settings {
     // meeting's Chrome window. The microphone is always captured alongside the
     // meeting audio (no toggle — the user's voice must be recorded).
     screenCaptureScope: 'chromeWindow',
+    // Kill switch for the app-audio CATap — off by default (normal dual-source
+    // capture). Flip on as an immediate field mitigation to record mic + screen
+    // only, with no CoreAudio process tap at all.
+    disableAppAudioTap: false,
     // Mintr is intended to behave like Tailscale / 1Password — quietly
     // watching in the background unless the user explicitly pauses it.
     // First launch auto-enrols into watch mode; the tray menu surfaces
@@ -77,6 +81,9 @@ export async function readSettings(): Promise<Settings> {
   const autoStartWatching =
     typeof autoStartWatchingRaw === 'boolean' ? autoStartWatchingRaw : defaults.autoStartWatching
   const screenCaptureScope = coerceScope(store.get<ScreenCaptureScope>('screenCaptureScope'))
+  const disableAppAudioTapRaw = store.get<boolean>('disableAppAudioTap')
+  const disableAppAudioTap =
+    typeof disableAppAudioTapRaw === 'boolean' ? disableAppAudioTapRaw : defaults.disableAppAudioTap
   // TICKET-IPC-002: undefined => wizard not completed (no default).
   const onboardingCompletedAtRaw = store.get<number>('onboardingCompletedAt')
   const onboardingCompletedAt =
@@ -87,6 +94,7 @@ export async function readSettings(): Promise<Settings> {
     numSpeakers,
     sidebarCollapsed,
     screenCaptureScope,
+    disableAppAudioTap,
     autoStartWatching,
     onboardingCompletedAt
   }
@@ -107,6 +115,9 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   }
   if (patch.screenCaptureScope !== undefined) {
     store.set('screenCaptureScope', coerceScope(patch.screenCaptureScope))
+  }
+  if (patch.disableAppAudioTap !== undefined) {
+    store.set('disableAppAudioTap', Boolean(patch.disableAppAudioTap))
   }
   // TICKET-IPC-002: use `in` (not `!== undefined`) so the reset path can
   // explicitly clear completion by passing `onboardingCompletedAt: undefined`.
