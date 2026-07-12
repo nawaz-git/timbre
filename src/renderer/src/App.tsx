@@ -83,6 +83,13 @@ function AppShell(): JSX.Element {
     setView('meetings')
   }, [])
 
+  // A "Transcript ready" notification (fired from the main process) can ask
+  // the UI to jump straight to the finished meeting. Same effect as clicking
+  // a recent-meeting row.
+  useEffect(() => {
+    return window.api.system.onOpenMeeting((id) => openMeeting(id))
+  }, [openMeeting])
+
   const toggleSidebar = useCallback(() => {
     void setSettings({ sidebarCollapsed: !collapsed })
   }, [collapsed, setSettings])
