@@ -16,26 +16,34 @@
                     namingSlug: job.namingSlug,
                 )
             }
+            // Nested sub-structs are hoisted into explicitly-typed lets rather
+            // than inline `.init(...)` so the type-checker solves each in
+            // isolation. The single combined literal sat right at the 300 ms
+            // `-warn-long-function-bodies` guard; splitting it keeps the check
+            // comfortably under budget without changing any value.
+            let pipeline = RPCStateSnapshot.Pipeline(
+                isProcessing: pipelineQueue.isProcessing,
+                activeJobCount: pipelineQueue.activeJobs.count,
+                waitingJobCount: pipelineQueue.pendingJobs.count,
+                pendingNamingJobCount: pendingJobs.count,
+            )
+            let speakerDB = RPCStateSnapshot.SpeakerDB(
+                count: stored.count,
+                recentNames: recentNames,
+                knownSpeakerNames: pipelineQueue.knownSpeakerNames,
+            )
+            let channelHealth = RPCStateSnapshot.ChannelHealth(
+                micSilent: micSilentActive,
+                appSilent: appSilentActive,
+                recordingSilent: recordingSilentActive,
+            )
             return RPCStateSnapshot(
-                pipeline: .init(
-                    isProcessing: pipelineQueue.isProcessing,
-                    activeJobCount: pipelineQueue.activeJobs.count,
-                    waitingJobCount: pipelineQueue.pendingJobs.count,
-                    pendingNamingJobCount: pendingJobs.count,
-                ),
-                speakerDB: .init(
-                    count: stored.count,
-                    recentNames: recentNames,
-                    knownSpeakerNames: pipelineQueue.knownSpeakerNames,
-                ),
+                pipeline: pipeline,
+                speakerDB: speakerDB,
                 pendingNamingJobs: pendingJobs,
                 engines: enginesSnapshot(),
                 lastJob: lastFinishedJobSnapshot(),
-                channelHealth: .init(
-                    micSilent: micSilentActive,
-                    appSilent: appSilentActive,
-                    recordingSilent: recordingSilentActive,
-                ),
+                channelHealth: channelHealth,
                 liveCaptions: liveCaptionsSnapshot(),
             )
         }
