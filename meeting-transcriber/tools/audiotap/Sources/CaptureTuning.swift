@@ -80,4 +80,17 @@ enum CaptureTuning {
 
     /// Consecutive sentinel probe timeouts before declaring the HAL unresponsive.
     static let halSentinelTimeoutsBeforeUnresponsive: Int = 2
+
+    // MARK: - Graceful-shutdown finalize cap
+
+    /// Generous ceiling on how long a graceful shutdown lets the recording
+    /// finalize (whole-file load + resample + mix) run before the engine
+    /// force-exits. The finalize now runs OFF the main actor with the heartbeat
+    /// still beating, so this is NOT the wedge deadline — the short teardown
+    /// deadline handles a genuinely stuck main. This cap only bounds a legitimately
+    /// long mix on a multi-hour meeting (tens of minutes of CPU/IO), so an engine
+    /// that outlives its Electron parent still self-terminates eventually rather
+    /// than lingering forever. The Electron stop-escalation extends its own grace
+    /// to the same order of magnitude while the heartbeat advertises `processing`.
+    static let finalizeShutdownCap: TimeInterval = 1800 // 30 minutes
 }

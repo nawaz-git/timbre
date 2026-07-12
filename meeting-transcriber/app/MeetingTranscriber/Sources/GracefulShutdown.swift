@@ -42,10 +42,16 @@ private actor RaceCell {
 /// the possibly-stuck operation task is left orphaned; the sole production
 /// caller force-exits immediately afterwards, so nothing leaks.
 ///
-/// Pure and side-effect-free — the caller owns the `exit`/`terminate` decision,
-/// which keeps this unit-testable with real (short) durations.
+/// `onTimeout`, when supplied, runs on the deadline task itself — i.e. OFF the
+/// (possibly wedged) caller actor — the instant the deadline fires, BEFORE this
+/// function returns. That makes the deadline able to terminate the process even
+/// when the caller's continuation can never be scheduled (e.g. a @MainActor
+/// caller whose main thread is blocked): pass `{ exit(0) }` for a real,
+/// preemptive self-deadline. Omit it (the default) to keep the pure
+/// caller-owns-the-decision behaviour used by the bounded SCK-teardown races.
 func raceAgainstDeadline(
     seconds: Double,
+    onTimeout: (@Sendable () -> Void)? = nil,
     operation: @Sendable @escaping () async -> Void,
 ) async -> ShutdownRaceOutcome {
     let cell = RaceCell()
@@ -55,6 +61,9 @@ func raceAgainstDeadline(
     }
     let deadlineTask = Task {
         try? await Task.sleep(for: .seconds(seconds))
+        // Fire the escape hatch off-main before resolving, so a wedged caller
+        // actor cannot swallow the termination.
+        onTimeout?()
         await cell.resolve(.timedOut)
     }
     let outcome = await cell.wait()

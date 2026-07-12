@@ -30,6 +30,33 @@ final class EngineHeartbeatTests: XCTestCase {
         )
     }
 
+    func testFinalizingOutranksEveryPhaseAsProcessing() {
+        // A recording finalize now runs off the main actor with the heartbeat still
+        // beating; advertising `processing` (not `recording`) is what lets Electron
+        // distinguish a legitimately long mix from a wedge and extend its grace.
+        XCTAssertEqual(
+            EngineHeartbeat.livenessState(
+                watchPhase: .recording, pipelineProcessing: false, finalizing: true,
+            ),
+            .processing,
+        )
+        XCTAssertEqual(
+            EngineHeartbeat.livenessState(
+                watchPhase: .idle, pipelineProcessing: false, finalizing: true,
+            ),
+            .processing,
+        )
+    }
+
+    func testDefaultFinalizingFalsePreservesLegacyPrecedence() {
+        // The added parameter is defaulted, so existing call sites keep the exact
+        // recording-wins precedence.
+        XCTAssertEqual(
+            EngineHeartbeat.livenessState(watchPhase: .recording, pipelineProcessing: true),
+            .recording,
+        )
+    }
+
     func testIdleAndErrorMapToIdleOrProcessing() {
         XCTAssertEqual(
             EngineHeartbeat.livenessState(watchPhase: .idle, pipelineProcessing: false),
