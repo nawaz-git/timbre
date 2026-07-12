@@ -752,6 +752,17 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
                       <span>PROCESSING</span>
                     </span>
                   )}
+                  {!m.isLive && m.status === 'refining' && (
+                    <span className="recent-card__processing-badge" aria-label="Refining">
+                      <Loader2
+                        size={10}
+                        strokeWidth={2}
+                        aria-hidden="true"
+                        className="home-status-icon--spin"
+                      />
+                      <span>REFINING</span>
+                    </span>
+                  )}
                 </div>
                 {m.isLive ? (
                   <div className="recent-card__meta recent-card__meta--live">

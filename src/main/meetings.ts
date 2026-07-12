@@ -502,6 +502,11 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
     // User-set title/tags live in the sidecar (written by renameMeetingTitle /
     // setMeetingTags). Fall back to the filename-derived title and no tags.
     const meta = await safeReadJson<MetadataFile>(engineMetaPath(prefix))
+    // MAX-tier refine in flight: the FAST transcript already landed (this row
+    // exists), but the engine is re-writing it. A `<prefix>.refining` marker
+    // signals that; it is removed on completion. Surfaced as `refining` so the
+    // UI shows an upgrade-in-progress state rather than a stuck "ready".
+    const refining = await pathExists(join(protocolsDir, `${prefix}.refining`))
     results.push({
       id: `engine:${prefix}`,
       title: meta?.title?.trim() ? meta.title : titleFromEnginePrefix(prefix),
@@ -515,9 +520,10 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       additionalSpeakers: Array.isArray(meta?.additionalSpeakers)
         ? meta.additionalSpeakers
         : [],
-      // These rows are derived from a landed protocols/<prefix>.txt — the
-      // engine pipeline has finished, so they are ready (not processing).
-      status: 'ready'
+      // A landed protocols/<prefix>.txt means the engine's FAST pipeline
+      // finished (ready) — unless a refine marker says a MAX upgrade is
+      // rewriting it right now.
+      status: refining ? 'refining' : 'ready'
     })
   }
   return results
