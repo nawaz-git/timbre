@@ -19,6 +19,11 @@ struct OfflineDiarizerTuning: Equatable {
     var warmStartFb: Double
     var minSegmentDurationSeconds: Double
     var excludeOverlap: Bool
+    /// Ask FluidAudio to populate `DiarizationResult.chunkEmbeddings` (the
+    /// per-chunk 256-d vectors). Off for FAST (nothing consumes them there);
+    /// the MAX utterance re-scoring pass turns it on so it can anchor each
+    /// utterance to a real embedding without a second extraction pass.
+    var exposeChunkEmbeddings: Bool
 
     /// Defaults matching FluidAudio's `Clustering.community` and `Embedding.community`.
     static let defaults = Self(
@@ -27,6 +32,7 @@ struct OfflineDiarizerTuning: Equatable {
         warmStartFb: 0.8,
         minSegmentDurationSeconds: 1.0,
         excludeOverlap: true,
+        exposeChunkEmbeddings: false,
     )
 
     /// Apply this tuning to an `OfflineDiarizerConfig`, preserving everything else
@@ -38,6 +44,7 @@ struct OfflineDiarizerTuning: Equatable {
         copy.clustering.warmStartFb = warmStartFb
         copy.embedding.minSegmentDurationSeconds = minSegmentDurationSeconds
         copy.embedding.excludeOverlap = excludeOverlap
+        copy.exposeChunkEmbeddings = exposeChunkEmbeddings
         return copy
     }
 }
@@ -223,6 +230,76 @@ final class FluidDiarizer: DiarizationProvider, @unchecked Sendable {
             }
         }
         return masks
+    }
+
+    /// Overlap spans from Sortformer posteriors: contiguous frame ranges where
+    /// ≥2 speakers exceed `threshold` (the inverse of `buildOverlapExcludedMasks`,
+    /// which zeroes those frames). Used by the MAX overlap second look to flag —
+    /// and, when a dominant stream can be mapped to a cluster, reassign — the
+    /// words there. Pure so it unit-tests without loading Sortformer.
+    ///
+    /// - Parameters:
+    ///   - predictions: flat `[numFrames × numSpeakers]` posteriors.
+    ///   - numSpeakers: speaker-slot count.
+    ///   - threshold: activity threshold (`timeline.config.onsetThreshold`).
+    ///   - frameDuration: seconds per frame (`timeline.config.frameDurationSeconds`).
+    ///   - minSpan: drop spans shorter than this (seconds) as posterior noise.
+    static func overlapSpans(
+        predictions: [Float],
+        numSpeakers: Int,
+        threshold: Float,
+        frameDuration: Double,
+        minSpan: Double = 0.2,
+    ) -> [(start: TimeInterval, end: TimeInterval)] {
+        guard numSpeakers > 0, frameDuration > 0, !predictions.isEmpty else { return [] }
+        let numFrames = predictions.count / numSpeakers
+        guard numFrames > 0 else { return [] }
+
+        var spans: [(start: TimeInterval, end: TimeInterval)] = []
+        var runStart: Int?
+        for frame in 0 ..< numFrames {
+            let base = frame * numSpeakers
+            var active = 0
+            for s in 0 ..< numSpeakers where predictions[base + s] >= threshold {
+                active += 1
+                if active > 1 { break }
+            }
+            if active > 1 {
+                if runStart == nil { runStart = frame }
+            } else if let start = runStart {
+                spans.append((Double(start) * frameDuration, Double(frame) * frameDuration))
+                runStart = nil
+            }
+        }
+        if let start = runStart {
+            spans.append((Double(start) * frameDuration, Double(numFrames) * frameDuration))
+        }
+        return spans.filter { $0.end - $0.start >= minSpan }
+    }
+
+    /// Run Sortformer purely to locate overlap regions (MAX pass P4). Returns
+    /// annotate-only spans (`dominantSpeaker: nil`) — mapping a Sortformer
+    /// stream back to a VBx cluster needs an extra embedding step measured
+    /// on-device, so the pure `resolveOverlap` fallback (flag, keep primary
+    /// speaker) is used until that lands. Loads Sortformer lazily; reuses the
+    /// instance across calls.
+    func detectOverlapSpans(audioPath: URL) async throws -> [DiarizationConsensus.OverlapSpan] {
+        if sortformerDiarizer == nil {
+            let diarizer = SortformerDiarizer()
+            let models = try await SortformerModels.loadFromHuggingFace(config: .default)
+            diarizer.initialize(models: models)
+            sortformerDiarizer = diarizer
+        }
+        // swiftlint:disable:next force_unwrapping
+        let timeline = try sortformerDiarizer!.processComplete(audioFileURL: audioPath)
+        let spans = Self.overlapSpans(
+            predictions: timeline.finalizedPredictions,
+            numSpeakers: timeline.config.numSpeakers,
+            threshold: timeline.config.onsetThreshold,
+            frameDuration: Double(timeline.config.frameDurationSeconds),
+        )
+        logger.info("Sortformer overlap pass: \(spans.count) overlap span(s)")
+        return spans.map { DiarizationConsensus.OverlapSpan(start: $0.start, end: $0.end, dominantSpeaker: nil) }
     }
 
     // MARK: - Shared Result Conversion

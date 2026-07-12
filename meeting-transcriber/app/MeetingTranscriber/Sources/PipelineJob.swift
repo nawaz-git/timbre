@@ -8,6 +8,11 @@ enum JobState: String, Codable {
     case generatingProtocol
     // swiftlint:disable:next raw_value_for_camel_cased_codable_enum
     case speakerNamingPending
+    /// MAX-tier background upgrade: the FAST transcript + segments are already
+    /// on disk (the meeting is usable), while the high-accuracy speaker-
+    /// attribution passes re-write them. A `<prefix>.refining` marker file
+    /// mirrors this to Timbre; the menu bar shows it as still-processing.
+    case refining
     case done
     case error
 
@@ -19,6 +24,7 @@ enum JobState: String, Codable {
         case .diarizing: "Diarizing..."
         case .generatingProtocol: "Generating Protocol..."
         case .speakerNamingPending: "Name Speakers..."
+        case .refining: "Refining Speakers..."
         case .done: "Done"
         case .error: "Error"
         }

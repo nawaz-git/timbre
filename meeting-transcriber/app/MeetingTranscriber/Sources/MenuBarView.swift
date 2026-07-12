@@ -234,6 +234,7 @@ struct MenuBarView: View {
         case .diarizing: .purple
         case .generatingProtocol: .orange
         case .speakerNamingPending: .purple
+        case .refining: .blue
         case .done: job.warnings.isEmpty ? .green : .yellow
         case .error: .red
         }

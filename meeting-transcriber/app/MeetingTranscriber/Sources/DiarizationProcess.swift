@@ -3,7 +3,11 @@ import Foundation
 import MTPipelineCore
 
 /// Result from diarization.
-struct DiarizationResult {
+///
+/// `Sendable` so it can cross the `MaxAccuracyPipeline` actor boundary via the
+/// injected model closures — every stored field is a value type of Sendable
+/// elements (`SpeakerSegment`, `[Float]`, `ChunkEmbedding`).
+struct DiarizationResult: Sendable {
     /// A speaker interval. Aliased to the shared `SpeakerSegment` so the
     /// word-attribution core in `MTPipelineCore` consumes these directly and
     /// every `DiarizationResult.Segment(start:end:speaker:)` call site keeps
