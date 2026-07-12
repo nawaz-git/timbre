@@ -86,14 +86,14 @@ struct Transcribe: AsyncParsableCommand {
 
     @Option(
         name: .long,
-        help: "Cosine-similarity threshold for auto-naming (default 0.70). Same voice + model typically scores 0.95+.",
+        help: "Cosine-similarity threshold for auto-naming (default 0.65). Same voice + model typically scores 0.95+.",
     )
     var matchThreshold: Float = GlobalSpeakerDB.defaultMatchThreshold
 
     @Option(
         name: .long,
         // swiftlint:disable:next line_length
-        help: "Required gap between top-1 and top-2 enrolled similarity scores (default 0.05). Prevents flip-flopping when two enrolled voices are both borderline.",
+        help: "Required gap between top-1 and top-2 enrolled similarity scores (default 0.08). Prevents flip-flopping when two enrolled voices are both borderline.",
     )
     var matchMargin: Float = GlobalSpeakerDB.defaultMatchMargin
 

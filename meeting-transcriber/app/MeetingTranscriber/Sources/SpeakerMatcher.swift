@@ -18,6 +18,29 @@ class SpeakerMatcher {
     /// into the centroid. Short snippets are still kept as fallback samples
     /// but don't pollute the running average.
     static let minSpeakingTimeForCentroid: TimeInterval = 3.0
+
+    // MARK: - Unified match decision rule
+
+    /// Canonical speaker-match decision rule, shared by BOTH matchers in the
+    /// project: this distance-based `SpeakerMatcher` and mt-batch's
+    /// similarity-based `GlobalSpeakerDB`. A detected voice is auto-named to an
+    /// enrolled speaker only when cosine SIMILARITY to that speaker is above
+    /// `matchSimilarityFloor` AND the top-1/top-2 similarity gap is at least
+    /// `matchSimilarityMargin`. Expressing the rule in similarity keeps the two
+    /// implementations in agreement.
+    ///
+    /// Provisional values — the enrolled-voice benchmark will re-fit them. This
+    /// is the single named source; `GlobalSpeakerDB` mirrors these numbers with
+    /// a cross-reference until the shared pipeline target lands and can import
+    /// them directly.
+    static let matchSimilarityFloor: Float = 0.65
+    /// Required top-1 − top-2 similarity gap. In distance space this is the same
+    /// number: `dist2 − dist1 = sim1 − sim2`, so it maps 1:1 to `confidenceMargin`.
+    static let matchSimilarityMargin: Float = 0.08
+    /// The similarity floor expressed as the cosine-DISTANCE ceiling this
+    /// matcher scores in (`distance = 1 − similarity`). A match requires
+    /// `distance < matchDistanceCeiling`, i.e. `similarity > matchSimilarityFloor`.
+    static let matchDistanceCeiling: Float = 1 - matchSimilarityFloor
     /// Process-wide lock for read-modify-write sequences against
     /// `speakers.json`. The RPC handlers, the pipeline-job confirmation
     /// path, the KnownVoices UI, and voice enrollment can all mutate the
@@ -28,7 +51,11 @@ class SpeakerMatcher {
     /// replacement at the FS level.
     private static let dbLock = NSLock()
 
-    init(dbPath: URL? = nil, threshold: Float = 0.40, confidenceMargin: Float = 0.10) {
+    init(
+        dbPath: URL? = nil,
+        threshold: Float = SpeakerMatcher.matchDistanceCeiling,
+        confidenceMargin: Float = SpeakerMatcher.matchSimilarityMargin,
+    ) {
         self.dbPath = dbPath ?? AppPaths.speakersDB
         self.threshold = threshold
         self.confidenceMargin = confidenceMargin
@@ -62,6 +89,53 @@ class SpeakerMatcher {
                 .appendingPathComponent("speakers.json.bak")
             try? FileManager.default.moveItem(at: dbPath, to: backup)
         }
+    }
+
+    /// One-time merge of the engine's legacy LOCAL `speakers.json` into the
+    /// unified GLOBAL DB (Timbre's `global-speakers.json`). Runs only when a
+    /// bridge override actually points somewhere other than the local file and
+    /// the merge hasn't run before (tracked by a marker file next to the global
+    /// DB). Entries are keyed by name; a collision folds via `merged(into:from:)`
+    /// so a voice enrolled in both DBs yields one combined entry, never a dupe.
+    ///
+    /// Idempotent and safe to call on every pipeline build — after the first run
+    /// the marker short-circuits it. The local file is left untouched (it stays
+    /// as a backup); the marker, not deletion, is what prevents re-merging.
+    static func migrateLocalDBIntoGlobalIfNeeded(
+        localPath: URL = AppPaths.speakersDB,
+        globalPath: URL,
+        fileManager: FileManager = .default,
+    ) {
+        // No override (or override resolves to the local file itself) → nothing
+        // to unify.
+        guard globalPath.standardizedFileURL != localPath.standardizedFileURL else { return }
+
+        let marker = globalPath.deletingLastPathComponent()
+            .appendingPathComponent(".engine-local-speakers-merged")
+        guard !fileManager.fileExists(atPath: marker.path) else { return }
+
+        // Drop the marker even when there's nothing to merge, so we don't rescan
+        // the local file on every subsequent pipeline build.
+        defer { try? Data().write(to: marker) }
+
+        guard fileManager.fileExists(atPath: localPath.path),
+              let data = try? Data(contentsOf: localPath),
+              let localEntries = try? JSONDecoder().decode([StoredSpeaker].self, from: data),
+              !localEntries.isEmpty
+        else { return }
+
+        // Reuse the global matcher's locked read-modify-write so a concurrent
+        // Electron enroll can't lose this merge.
+        SpeakerMatcher(dbPath: globalPath).mutateDB { global in
+            for local in localEntries {
+                if let idx = global.firstIndex(where: { $0.name == local.name }) {
+                    global[idx] = Self.merged(into: global[idx], from: local)
+                } else {
+                    global.append(local)
+                }
+            }
+        }
+        logger.info("Merged \(localEntries.count) local speaker(s) into the global DB at \(globalPath.path)")
     }
 
     /// Match diarization embeddings against stored speakers.

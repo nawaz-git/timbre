@@ -51,7 +51,12 @@ struct StoredSpeakerEntry: Codable {
         }
         centroid = try container.decodeIfPresent([Float].self, forKey: .centroid)
         centroidSampleCount = try container.decodeIfPresent(Int.self, forKey: .centroidSampleCount) ?? 0
-        lastUsed = try container.decodeIfPresent(Date.self, forKey: .lastUsed)
+        // `lastUsed` is Unix-epoch seconds on disk (the format Timbre/Electron
+        // writes) — decode/encode it explicitly, not via the default `Date`
+        // strategy (seconds-since-2001), so this reader stays byte-compatible
+        // with the unified global DB the main app and Electron share.
+        lastUsed = try container.decodeIfPresent(Double.self, forKey: .lastUsed)
+            .map(Date.init(timeIntervalSince1970:))
         useCount = try container.decodeIfPresent(Int.self, forKey: .useCount) ?? 0
         isSynthetic = try container.decodeIfPresent(Bool.self, forKey: .isSynthetic) ?? false
     }
@@ -64,7 +69,8 @@ struct StoredSpeakerEntry: Codable {
         if centroidSampleCount > 0 {
             try container.encode(centroidSampleCount, forKey: .centroidSampleCount)
         }
-        try container.encodeIfPresent(lastUsed, forKey: .lastUsed)
+        // Unix-epoch seconds — see the decode note; matches Electron's writer.
+        try container.encodeIfPresent(lastUsed?.timeIntervalSince1970, forKey: .lastUsed)
         if useCount > 0 {
             try container.encode(useCount, forKey: .useCount)
         }

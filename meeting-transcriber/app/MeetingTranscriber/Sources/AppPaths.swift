@@ -54,8 +54,20 @@ enum AppPaths {
         return downloads.appendingPathComponent("MeetingTranscriber")
     }()
 
-    /// Speaker voice profiles DB.
+    /// Speaker voice profiles DB (engine-local, legacy). For the unified DB the
+    /// batch pipeline reads/writes, resolve through `resolvedSpeakersDB(...)`.
     static let speakersDB = dataDir.appendingPathComponent("speakers.json")
+
+    /// The speaker DB the batch pipeline should read/write. Honours the Electron
+    /// bridge override (`EngineConfig.globalSpeakersDBPath` → Timbre's unified
+    /// `global-speakers.json` in Electron userData) so enrollment pays off
+    /// across the live + import paths; falls back to the engine-local
+    /// `speakersDB` when Timbre hasn't supplied a path (e.g. the standalone
+    /// Homebrew build).
+    static func resolvedSpeakersDB(bridgeOverride: String?) -> URL {
+        guard let path = bridgeOverride, !path.isEmpty else { return speakersDB }
+        return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    }
 
     /// Custom protocol prompt file.
     static let customPromptFile = dataDir.appendingPathComponent("protocol_prompt.md")
