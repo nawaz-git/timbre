@@ -135,6 +135,55 @@ final class ParakeetTokenGroupingTests: XCTestCase {
 
     // MARK: - Helpers
 
+    // MARK: - groupIntoWords (word-level detokenization)
+
+    func testGroupIntoWordsEmptyInputReturnsNoWords() {
+        XCTAssertTrue(ParakeetTokenGrouping.groupIntoWords([], source: .app).isEmpty)
+    }
+
+    func testGroupIntoWordsSplitsOnLeadingSpace() {
+        let words = ParakeetTokenGrouping.groupIntoWords([
+            timing("Hello", start: 0, end: 1),
+            timing(" world", start: 1, end: 2),
+        ], source: .app)
+        XCTAssertEqual(words.map(\.text), ["Hello", "world"])
+        XCTAssertEqual(words[0].start, 0, accuracy: 0.0001)
+        XCTAssertEqual(words[1].start, 1, accuracy: 0.0001)
+        XCTAssertEqual(words[1].end, 2, accuracy: 0.0001)
+    }
+
+    func testGroupIntoWordsSplitsOnSentencePieceUnderscore() {
+        let words = ParakeetTokenGrouping.groupIntoWords([
+            timing("\u{2581}Hello", start: 0, end: 1),
+            timing("\u{2581}world", start: 1, end: 2),
+        ], source: .mic)
+        XCTAssertEqual(words.map(\.text), ["Hello", "world"])
+        XCTAssertEqual(words.first?.source, .mic)
+    }
+
+    func testGroupIntoWordsMergesContinuationSubTokens() {
+        // A single word split across three sub-tokens spans first.start..last.end.
+        let words = ParakeetTokenGrouping.groupIntoWords([
+            timing("\u{2581}un", start: 0, end: 0.3),
+            timing("believ", start: 0.3, end: 0.6),
+            timing("able", start: 0.6, end: 0.9),
+        ], source: .app)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].text, "unbelievable")
+        XCTAssertEqual(words[0].start, 0, accuracy: 0.0001)
+        XCTAssertEqual(words[0].end, 0.9, accuracy: 0.0001)
+    }
+
+    func testGroupIntoWordsAveragesSubTokenConfidence() {
+        let words = ParakeetTokenGrouping.groupIntoWords([
+            TokenTiming(token: "\u{2581}h", tokenId: 0, startTime: 0, endTime: 0.5, confidence: 0.4),
+            TokenTiming(token: "i", tokenId: 0, startTime: 0.5, endTime: 1.0, confidence: 0.6),
+        ], source: .app)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].text, "hi")
+        XCTAssertEqual(try XCTUnwrap(words[0].probability), 0.5, accuracy: 0.0001)
+    }
+
     private func timing(_ token: String, start: TimeInterval, end: TimeInterval) -> TokenTiming {
         TokenTiming(token: token, tokenId: 0, startTime: start, endTime: end, confidence: 1.0)
     }
