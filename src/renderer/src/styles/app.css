@@ -3365,9 +3365,33 @@
   100% { background-position: -200% 0; }
 }
 
+/* Reduced-motion pass — one place that silences every looping pulse,
+   spinner, shimmer, one-shot flash, and popover/toast entrance, and
+   freezes the sliding tab indicator so it jumps instead of glides.
+   Audited against every `animation:`/motion `transition:` in this file.
+   Entrance animations become instant (opacity/transform end-state);
+   looping ones hold their first frame. */
 @media (prefers-reduced-motion: reduce) {
-  .skeleton-row { animation: none; }
-  .home-status-icon--spin { animation: none; }
+  .skeleton-row,
+  .home-status-icon--spin,
+  .home-status-icon--recording,
+  .hero__dot,
+  .status-dot--recording,
+  .status-dot--transcribing,
+  .recent-card__live-dot,
+  .meetings__row-live-dot,
+  .speaker-pill--pulse,
+  .speaker-pill--flash,
+  .speaker-picker,
+  .tag-picker,
+  .row-menu,
+  .network__detail,
+  .toast {
+    animation: none !important;
+  }
+  .tab-strip__indicator {
+    transition: none !important;
+  }
 }
 
 /*
@@ -4962,10 +4986,5 @@
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .toast {
-    animation: none;
   }
 }
