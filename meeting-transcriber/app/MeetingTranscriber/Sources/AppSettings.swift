@@ -504,7 +504,7 @@ final class AppSettings {
             protocolProvider = storedProvider ?? .claudeCLI
             claudeBin = defaults.object(forKey: "claudeBin") as? String ?? "claude"
         #endif
-        protocolLanguage = defaults.string(forKey: "protocolLanguage") ?? "German"
+        protocolLanguage = defaults.string(forKey: "protocolLanguage") ?? "English"
 
         openAIEndpoint = defaults.object(forKey: "openAIEndpoint") as? String
             ?? "http://localhost:11434/v1/chat/completions"
@@ -514,7 +514,7 @@ final class AppSettings {
         #if !APPSTORE
             debugRPCEnabled = defaults.object(forKey: "debugRPCEnabled") as? Bool ?? false
         #endif
-        checkForUpdates = defaults.object(forKey: "checkForUpdates") as? Bool ?? true
+        checkForUpdates = defaults.object(forKey: "checkForUpdates") as? Bool ?? false
         includePreReleases = defaults.object(forKey: "includePreReleases") as? Bool ?? false
     }
 
