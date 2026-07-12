@@ -45,7 +45,7 @@ struct CaptureFormat {
 @MainActor
 protocol RecordingProvider {
     /// - Parameter disableAppAudioTap: when true, record the microphone (and
-    ///   screen video) only — create NO CoreAudio process tap (the T13 kill
+    ///   screen video) only — create NO CoreAudio process tap (the kill
     ///   switch). The mix falls back to the mic track.
     func start(
         appPID: pid_t,
@@ -165,7 +165,7 @@ class DualSourceRecorder: RecordingProvider {
 
     /// Start recording app audio and optionally mic.
     ///
-    /// - Parameter disableAppAudioTap: when true (the T13 kill switch) the app
+    /// - Parameter disableAppAudioTap: when true (the kill switch) the app
     ///   audio process tap is skipped entirely — no aggregate device, no tap,
     ///   no IOProc — and the recording is mic-only. `buildRecording` already
     ///   falls the mix back to the mic track when the app track is absent.

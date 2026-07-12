@@ -550,7 +550,7 @@ final class AppState { // swiftlint:disable:this type_body_length
     // MARK: - Graceful Shutdown
 
     /// Hard deadline for the ordered teardown before we force-exit. Kept under
-    /// Electron's 8 s kill-escalation budget (T8) so the engine self-exits via
+    /// Electron's 8 s kill-escalation budget so the engine self-exits via
     /// SIGTERM well before Electron reaches SIGKILL.
     static let shutdownDeadlineSeconds: Double = 5
 
