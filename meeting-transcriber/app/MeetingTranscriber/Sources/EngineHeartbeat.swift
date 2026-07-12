@@ -42,23 +42,29 @@ struct EngineHeartbeat: Codable, Equatable {
     let tapPIDCount: Int?
     let updatedAt: Int64
 
-    /// Precedence: an active recording wins; otherwise a busy pipeline reads as
-    /// `processing`; otherwise the watch phase (watching / idle). A transient
-    /// `.error` watch phase reads as `idle` — the watch loop self-recovers to
-    /// watching, so advertising `error` would only flap the supervisor.
+    /// Precedence: a finalize-in-flight (or in-progress graceful shutdown) reads as
+    /// `processing` and OUTRANKS `recording`, so Electron can tell a legitimately
+    /// long, off-main recording finalize (heartbeat still beating) from a wedge and
+    /// extend its stop-grace instead of force-killing mid-mix; otherwise an active
+    /// recording wins; otherwise a busy pipeline reads as `processing`; otherwise
+    /// the watch phase (watching / idle). A transient `.error` watch phase reads as
+    /// `idle` — the watch loop self-recovers to watching, so advertising `error`
+    /// would only flap the supervisor.
     static func livenessState(
         watchPhase: WatchLoop.State,
         pipelineProcessing: Bool,
+        finalizing: Bool = false,
     ) -> EngineLivenessState {
+        if finalizing { return .processing }
         switch watchPhase {
         case .recording:
-            .recording
+            return .recording
 
         case .watching:
-            pipelineProcessing ? .processing : .watching
+            return pipelineProcessing ? .processing : .watching
 
         case .idle, .error:
-            pipelineProcessing ? .processing : .idle
+            return pipelineProcessing ? .processing : .idle
         }
     }
 

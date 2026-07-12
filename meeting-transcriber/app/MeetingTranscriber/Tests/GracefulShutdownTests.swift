@@ -38,6 +38,35 @@ final class GracefulShutdownTests: XCTestCase {
         )
     }
 
+    /// The `onTimeout` escape hatch fires when the deadline wins — the property
+    /// that lets a wedged @MainActor caller still force `exit(0)` off-main, before
+    /// the race returns.
+    func testOnTimeoutFiresWhenDeadlineWins() async {
+        nonisolated(unsafe) var fired = false
+        let outcome = await raceAgainstDeadline(
+            seconds: 0.05,
+            onTimeout: { fired = true },
+        ) {
+            try? await Task.sleep(for: .seconds(60))
+        }
+        XCTAssertEqual(outcome, .timedOut)
+        XCTAssertTrue(fired, "onTimeout must fire before the race returns when the deadline wins")
+    }
+
+    /// `onTimeout` must NOT fire when the operation completes first — the deadline
+    /// task is cancelled before its sleep elapses, so the escape hatch never runs.
+    func testOnTimeoutDoesNotFireWhenOperationCompletesFirst() async {
+        nonisolated(unsafe) var fired = false
+        let outcome = await raceAgainstDeadline(
+            seconds: 10,
+            onTimeout: { fired = true },
+        ) {
+            // returns immediately
+        }
+        XCTAssertEqual(outcome, .completed)
+        XCTAssertFalse(fired, "onTimeout must not fire when the operation wins the race")
+    }
+
     /// Even a teardown that IGNORES cancellation must not block the race past
     /// the deadline — this is the property that guarantees SIGTERM can always
     /// force the process to exit.
