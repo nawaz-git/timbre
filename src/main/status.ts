@@ -258,7 +258,17 @@ export function isProcessingStuck(
   return now - lastChangeMs > thresholdMs
 }
 
-/** Is any engine binary currently running? (`pgrep -f` on both known paths.) */
+/**
+ * Is any engine binary currently running? (`pgrep -f` on both known paths.)
+ *
+ * Deliberately GLOBAL, not per-meeting: the app doesn't map engine PIDs to
+ * meetings, so "some engine is alive" is the best available proxy for "this
+ * meeting could still finish." It biases toward NOT flagging stuck (a live
+ * engine could still complete the work) — acceptable because only one engine
+ * runs at a time in practice, so "any alive" is effectively "the one that would
+ * process this." The cost is a narrow false-negative: a genuinely stuck meeting
+ * stays unflagged while an unrelated engine instance runs.
+ */
 export function isEngineProcessAlive(): boolean {
   for (const pattern of ENGINE_PROCESS_PATTERNS) {
     try {
