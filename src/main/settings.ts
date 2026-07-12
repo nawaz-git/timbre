@@ -8,6 +8,7 @@ import type {
   TagDef,
   ThemeMode
 } from '../shared/types'
+import { coerceAsrLanguage, coerceProcessingMode } from './settingsCoercion'
 
 // electron-store v10 is ESM-only — load it via dynamic import the first time we need it.
 // We cache the resulting instance so subsequent gets/sets are synchronous-ish from callers.
@@ -48,7 +49,11 @@ function defaultSettings(): Settings {
     // watching in the background unless the user explicitly pauses it.
     // First launch auto-enrols into watch mode; the tray menu surfaces
     // a Pause toggle so users who want full control still have it.
-    autoStartWatching: true
+    autoStartWatching: true,
+    // Default post-processing tier: fast (today's latency). Max is opt-in.
+    processingMode: 'fast',
+    // Default ASR language: auto-detect (empty). No more forced German.
+    asrLanguage: ''
     // onboardingCompletedAt is intentionally absent from defaults —
     // `undefined` is the "wizard not yet completed" sentinel (TICKET-IPC-002).
   }
@@ -84,6 +89,8 @@ export async function readSettings(): Promise<Settings> {
   const disableAppAudioTapRaw = store.get<boolean>('disableAppAudioTap')
   const disableAppAudioTap =
     typeof disableAppAudioTapRaw === 'boolean' ? disableAppAudioTapRaw : defaults.disableAppAudioTap
+  const processingMode = coerceProcessingMode(store.get<string>('processingMode'))
+  const asrLanguage = coerceAsrLanguage(store.get<string>('asrLanguage'))
   // TICKET-IPC-002: undefined => wizard not completed (no default).
   const onboardingCompletedAtRaw = store.get<number>('onboardingCompletedAt')
   const onboardingCompletedAt =
@@ -96,6 +103,8 @@ export async function readSettings(): Promise<Settings> {
     screenCaptureScope,
     disableAppAudioTap,
     autoStartWatching,
+    processingMode,
+    asrLanguage,
     onboardingCompletedAt
   }
 }
@@ -118,6 +127,12 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   }
   if (patch.disableAppAudioTap !== undefined) {
     store.set('disableAppAudioTap', Boolean(patch.disableAppAudioTap))
+  }
+  if (patch.processingMode !== undefined) {
+    store.set('processingMode', coerceProcessingMode(patch.processingMode))
+  }
+  if (patch.asrLanguage !== undefined) {
+    store.set('asrLanguage', coerceAsrLanguage(patch.asrLanguage))
   }
   // TICKET-IPC-002: use `in` (not `!== undefined`) so the reset path can
   // explicitly clear completion by passing `onboardingCompletedAt: undefined`.
