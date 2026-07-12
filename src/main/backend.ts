@@ -337,28 +337,50 @@ export function forceKillEngine(signal: EngineSignal = 'SIGTERM'): { killed: num
 const ENGINE_TERM_GRACE_MS = 8000
 /** Poll cadence while waiting for the engine to exit. */
 const ENGINE_POLL_MS = 500
+/**
+ * Extended grace while the engine keeps advertising a FRESH `processing` finalize
+ * (its off-main recording mix). Coupled to the engine's `finalizeShutdownCapSeconds`
+ * (30 min): the engine self-exits at that cap, so keep this at the same order of
+ * magnitude — the engine's own exit(0) then wins the race and we never SIGKILL a
+ * valid mix. Change the two together.
+ */
+const ENGINE_FINALIZE_GRACE_MS = 30 * 60_000
+/** How fresh the heartbeat's `updatedAt` must be to count the engine as actively finalizing. */
+const HEARTBEAT_FINALIZE_FRESH_MS = 15_000
 
 export type EscalationAction = 'sigterm' | 'sigkill' | 'done'
 
 /**
  * Pure escalation policy for a graceful engine stop. Given the time elapsed
- * since the stop began and whether any engine helper is still alive, decide the
- * next action. The driver acts once on each transition ('sigterm' at t=0,
- * 'sigkill' at the grace boundary) and merely 'wait's in between:
- * The driver sends SIGTERM once (the first time it sees 'sigterm') and then just
- * polls until the engine exits or the grace window closes:
+ * since the stop began, whether any engine helper is still alive, and whether the
+ * engine is actively finalizing a recording, decide the next action. The driver
+ * sends SIGTERM once (the first time it sees 'sigterm') and then just polls until
+ * the engine exits or the grace window closes:
  *
- *   engine gone            → 'done'
- *   t < ENGINE_TERM_GRACE  → 'sigterm'  (graceful window; engine finalizes + exits)
- *   t >= ENGINE_TERM_GRACE → 'sigkill'  (last resort)
+ *   engine gone                        → 'done'
+ *   finalizing & t < finalizeCap       → 'sigterm'  (extended grace; don't kill a valid mix)
+ *   t < ENGINE_TERM_GRACE              → 'sigterm'  (normal graceful window)
+ *   otherwise                          → 'sigkill'  (last resort)
+ *
+ * `finalizing` is re-read each poll from the heartbeat: while the engine advertises
+ * a fresh `processing` state its recording mix runs off-main (heartbeat still
+ * beating), so we extend the grace to `finalizeCapMs` instead of the fixed 8 s.
+ * The moment it stops finalizing (exited → not alive, or heartbeat went stale →
+ * finalizing false) the normal 8 s → SIGKILL escalation resumes.
  *
  * 'sigterm' deliberately spans the WHOLE grace window rather than only t=0:
  * `isEngineAlive()` (a spawnSync) burns a few ms before the first elapsed is
  * measured, so a t<=0 check would miss the initial SIGTERM entirely and skip
  * straight to the SIGKILL at the grace boundary.
  */
-export function nextEscalationStep(elapsedMs: number, alive: boolean): EscalationAction {
+export function nextEscalationStep(
+  elapsedMs: number,
+  alive: boolean,
+  finalizing = false,
+  finalizeCapMs: number = ENGINE_FINALIZE_GRACE_MS
+): EscalationAction {
   if (!alive) return 'done'
+  if (finalizing && elapsedMs < finalizeCapMs) return 'sigterm'
   if (elapsedMs < ENGINE_TERM_GRACE_MS) return 'sigterm'
   return 'sigkill'
 }
@@ -385,7 +407,10 @@ export async function stopEngineGracefully(
 
   for (;;) {
     const alive = isEngineAlive()
-    const action = nextEscalationStep(Date.now() - started, alive)
+    // Re-read each poll: while the engine advertises a fresh `processing` finalize,
+    // extend the grace instead of SIGKILLing a valid off-main recording mix.
+    const finalizing = await isEngineFinalizing()
+    const action = nextEscalationStep(Date.now() - started, alive, finalizing)
 
     if (action === 'done') {
       console.log(`[live-recorder] engine exited gracefully (reason=${reason})`)
@@ -440,6 +465,20 @@ export async function readEngineHeartbeat(): Promise<EngineHeartbeat | null> {
   }
 }
 
+/**
+ * True when the engine advertises a FRESH `processing` state — i.e. its recording
+ * finalize (or an in-progress graceful shutdown) is running off-main with the
+ * heartbeat still beating. `stopEngineGracefully` uses this to extend its grace so
+ * a long, legitimate mix isn't SIGKILLed. Staleness collapses it back to false, so
+ * a genuinely wedged engine still escalates on the normal 8 s budget.
+ */
+async function isEngineFinalizing(): Promise<boolean> {
+  const hb = await readEngineHeartbeat()
+  if (!hb || hb.state !== 'processing') return false
+  const age = Date.now() - hb.updatedAt
+  return age >= 0 && age < HEARTBEAT_FINALIZE_FRESH_MS
+}
+
 export interface EngineReuseVerdict {
   reuse: boolean
   reason: string
@@ -467,6 +506,14 @@ export function evaluateEngineReuse(
       reuse: false,
       reason: `version-mismatch(${heartbeat.version}!=${expectedVersion})`
     }
+  }
+  // A `processing` engine is either finishing a meeting off-main or shutting down
+  // (graceful shutdown keeps the heartbeat beating as `processing` now) — both
+  // ambiguous and possibly dying, so never reuse it. The safe stop + relaunch path
+  // handles it; a healthy transcribing engine just eats a needless (but safe)
+  // kill+relaunch on the rare launch-during-processing.
+  if (heartbeat.state === 'processing') {
+    return { reuse: false, reason: 'engine-processing' }
   }
   return { reuse: true, reason: 'healthy' }
 }
