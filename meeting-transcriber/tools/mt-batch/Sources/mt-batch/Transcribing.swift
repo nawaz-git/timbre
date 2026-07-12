@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import FluidAudio
 import Foundation
+import MTPipelineCore
 import WhisperKit
 
 /// Engine choice surfaced on the CLI.
@@ -20,13 +21,17 @@ protocol Transcribing: Sendable {
     func loadModel() async throws
 
     /// Transcribe a 16 kHz mono WAV file, emitting progress in 0…1 via
-    /// `progressCallback` whenever a new chunk completes. The callback is
-    /// `@Sendable` because WhisperKit fires it from its internal task
-    /// queue.
-    func transcribeSegments(
+    /// `progressCallback` whenever a new chunk completes, and returning both
+    /// the display segments and the per-word timeline (each word stamped with
+    /// `source` so the dual-track pipeline can tell mic from app). `words` is
+    /// empty when the engine can't emit reliable word timings, in which case
+    /// the caller falls back to per-segment assignment. The callback is
+    /// `@Sendable` because WhisperKit fires it from its internal task queue.
+    func transcribeWords(
         audioPath: URL,
+        source: WordTimeline.Track,
         progressCallback: @escaping @Sendable (Double) -> Void,
-    ) async throws -> [TimedSegment]
+    ) async throws -> (segments: [TimedSegment], words: [WordTimeline.Word])
 }
 
 /// WhisperKit (Large-v3 Turbo by default) — CoreML/ANE, 99+ languages.
@@ -56,10 +61,11 @@ final class WhisperKitTranscriber: Transcribing, @unchecked Sendable {
         pipe = try await WhisperKit(config)
     }
 
-    func transcribeSegments(
+    func transcribeWords(
         audioPath: URL,
+        source: WordTimeline.Track,
         progressCallback: @escaping @Sendable (Double) -> Void,
-    ) async throws -> [TimedSegment] {
+    ) async throws -> (segments: [TimedSegment], words: [WordTimeline.Word]) {
         guard let pipe else {
             throw TranscriberError.modelNotLoaded("WhisperKit not loaded")
         }
@@ -67,7 +73,10 @@ final class WhisperKitTranscriber: Transcribing, @unchecked Sendable {
         // Estimate total 30 s windows so progress is monotonic.
         let totalWindows = max(1, Self.estimateWindowCount(audioPath: audioPath))
 
-        let options = DecodingOptions(language: language, wordTimestamps: false)
+        // wordTimestamps: DTW over cross-attention → per-word spans for the
+        // attribution core. The batch pipeline always wants them; the live
+        // path (which this CLI doesn't have) is the only place they'd be off.
+        let options = DecodingOptions(language: language, wordTimestamps: true)
         let results = await pipe.transcribe(
             audioPaths: [audioPath.path],
             decodeOptions: options,
@@ -78,10 +87,11 @@ final class WhisperKitTranscriber: Transcribing, @unchecked Sendable {
         }
 
         guard let firstResult = results.first, let transcriptionResults = firstResult else {
-            return []
+            return ([], [])
         }
 
         var segments: [TimedSegment] = []
+        var words: [WordTimeline.Word] = []
         var lastText = ""
         for segment in transcriptionResults.flatMap(\.segments) {
             let cleaned = Self.stripWhisperTokens(segment.text).trimmingCharacters(in: .whitespaces)
@@ -92,9 +102,20 @@ final class WhisperKitTranscriber: Transcribing, @unchecked Sendable {
                 end: TimeInterval(segment.end),
                 text: cleaned,
             ))
+            for wordTiming in segment.words ?? [] {
+                let token = Self.stripWhisperTokens(wordTiming.word).trimmingCharacters(in: .whitespaces)
+                guard !token.isEmpty else { continue }
+                words.append(WordTimeline.Word(
+                    start: TimeInterval(wordTiming.start),
+                    end: TimeInterval(wordTiming.end),
+                    text: token,
+                    probability: wordTiming.probability,
+                    source: source,
+                ))
+            }
         }
         progressCallback(1.0)
-        return segments
+        return (segments, words)
     }
 
     /// Strip Whisper special tokens like `<|startoftranscript|>`, `<|en|>`,
@@ -131,10 +152,11 @@ final class ParakeetTranscriber: Transcribing, @unchecked Sendable {
         asrManager = manager
     }
 
-    func transcribeSegments(
+    func transcribeWords(
         audioPath: URL,
-        progressCallback: @Sendable (Double) -> Void,
-    ) async throws -> [TimedSegment] {
+        source: WordTimeline.Track,
+        progressCallback: @escaping @Sendable (Double) -> Void,
+    ) async throws -> (segments: [TimedSegment], words: [WordTimeline.Word]) {
         guard let asrManager else {
             throw TranscriberError.modelNotLoaded("Parakeet not loaded")
         }
@@ -153,13 +175,27 @@ final class ParakeetTranscriber: Transcribing, @unchecked Sendable {
         progressCallback(1.0)
 
         // Without token timings, emit a single segment spanning the whole
-        // file. With timings, group into pause-separated segments.
+        // file and no words (caller falls back to per-segment assignment).
         guard let timings = result.tokenTimings, !timings.isEmpty else {
             let text = result.text.trimmingCharacters(in: .whitespaces)
-            if text.isEmpty { return [] }
-            return [TimedSegment(start: 0, end: result.duration, text: text)]
+            if text.isEmpty { return ([], []) }
+            return ([TimedSegment(start: 0, end: result.duration, text: text)], [])
         }
-        return Self.groupTokenTimings(timings, fallbackEnd: result.duration)
+        let segments = Self.groupTokenTimings(timings, fallbackEnd: result.duration)
+        let words = Self.wordsFromTimings(timings, source: source)
+        return (segments, words)
+    }
+
+    /// Detokenize FluidAudio Parakeet `TokenTiming`s into word-level
+    /// `WordTimeline.Word`s. Maps FluidAudio's token type onto the shared
+    /// `SubwordToken` and delegates the SentencePiece detokenization to
+    /// `WordTimeline.words` — the same code path the app's Parakeet engine
+    /// uses, so both pipelines detokenize identically.
+    static func wordsFromTimings(_ timings: [TokenTiming], source: WordTimeline.Track) -> [WordTimeline.Word] {
+        let tokens = timings.map {
+            WordTimeline.SubwordToken(token: $0.token, start: $0.startTime, end: $0.endTime, confidence: $0.confidence)
+        }
+        return WordTimeline.words(fromTokens: tokens, source: source)
     }
 
     /// Group per-token timings into sentence-ish segments by pause length.

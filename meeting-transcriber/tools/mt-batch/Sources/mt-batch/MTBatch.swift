@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import MTPipelineCore
 
 /// Headless batch transcription + speaker diarization CLI.
 ///
@@ -128,13 +129,14 @@ struct Transcribe: AsyncParsableCommand {
         let enrolled = loadEnrolledSpeakers()
         let prepared = try await prepareAudio(inputURL: inputURL, outputURL: outputURL)
         let (transcriber, diarizer) = try await loadModels(engineChoice: engineChoice)
-        let (transcript, diarization) = try await runEngines(
+        let (transcript, words, diarization) = try await runEngines(
             transcriber: transcriber,
             diarizer: diarizer,
             audioURL: prepared.audioURL,
         )
         try persistResults(
             transcript: transcript,
+            words: words,
             diarization: diarization,
             duration: prepared.duration,
             outputURL: outputURL,
@@ -221,7 +223,7 @@ struct Transcribe: AsyncParsableCommand {
         transcriber: any Transcribing,
         diarizer: DiarizerWrapper,
         audioURL: URL,
-    ) async throws -> (transcript: [TimedSegment], diarization: DiarizationOutput) {
+    ) async throws -> (transcript: [TimedSegment], words: [WordTimeline.Word], diarization: DiarizationOutput) {
         let transcribeStart = Date()
         // Coalesce progress callbacks to one event per 1 %-point change so
         // the JSONL stream isn't dominated by identical-progress lines.
@@ -229,8 +231,10 @@ struct Transcribe: AsyncParsableCommand {
         // Large-v3 Turbo most files complete in a single 30 s window and
         // the callback returns the same fraction many times.
         let progressBox = ProgressBox()
-        async let transcriptTask: [TimedSegment] = transcriber.transcribeSegments(
+        // Single-source import: one track, so every word carries `.app`.
+        async let transcriptTask = transcriber.transcribeWords(
             audioPath: audioURL,
+            source: .app,
         ) { fraction in
             if progressBox.shouldEmit(fraction) {
                 Events.transcribing(progress: fraction)
@@ -238,9 +242,9 @@ struct Transcribe: AsyncParsableCommand {
         }
         Events.diarizing()
         async let diarizationTask = diarizer.diarize(audioPath: audioURL)
-        let transcript = try await transcriptTask
+        let (transcript, words) = try await transcriptTask
         Log.info(
-            "Transcription complete: \(transcript.count) segments in " +
+            "Transcription complete: \(transcript.count) segments, \(words.count) words in " +
                 "\(PathHelpers.formatDuration(Date().timeIntervalSince(transcribeStart)))",
         )
         let diarization = try await diarizationTask
@@ -248,7 +252,7 @@ struct Transcribe: AsyncParsableCommand {
             "Diarization complete: \(diarization.segments.count) segments, " +
                 "\(diarization.speakingTimes.count) speakers",
         )
-        return (transcript, diarization)
+        return (transcript, words, diarization)
     }
 
     /// Stage 4: merge transcript + diarization timelines, optionally apply
@@ -256,6 +260,7 @@ struct Transcribe: AsyncParsableCommand {
     /// `transcript.json`, `speakers.json`).
     private func persistResults(
         transcript: [TimedSegment],
+        words: [WordTimeline.Word],
         diarization: DiarizationOutput,
         duration: TimeInterval,
         outputURL: URL,
@@ -278,9 +283,10 @@ struct Transcribe: AsyncParsableCommand {
             logMatchSummary(matchResults)
         }
 
-        let labeled = Merger.mergeTranscriptWithDiarization(
+        let labeled = Self.labelTranscript(
             transcript: transcript,
-            diarization: diarization.segments,
+            words: words,
+            diarization: diarization,
             nameOverrides: nameOverrides,
         )
         try writeTranscriptText(labeled, to: outputURL.appendingPathComponent("transcript.txt"))
@@ -298,6 +304,35 @@ struct Transcribe: AsyncParsableCommand {
             nameOverrides: nameOverrides,
             outputDir: outputURL,
         )
+    }
+
+    /// Speaker-label the transcript. Prefers word-level attribution — each
+    /// word assigned by midpoint against an exclusive turn timeline, so a turn
+    /// boundary that falls *inside* one ASR segment is honoured — when the
+    /// engine emitted word timings. Falls back to per-segment maximum-overlap
+    /// assignment when it didn't (Parakeet with no token timings, empty audio).
+    /// `nameOverrides` renames raw diarization labels to enrolled names before
+    /// attribution, same as the segment path.
+    static func labelTranscript(
+        transcript: [TimedSegment],
+        words: [WordTimeline.Word],
+        diarization: DiarizationOutput,
+        nameOverrides: [String: String],
+    ) -> [TimedSegment] {
+        guard !words.isEmpty else {
+            return Merger.mergeTranscriptWithDiarization(
+                transcript: transcript,
+                diarization: diarization.segments,
+                nameOverrides: nameOverrides,
+            )
+        }
+        let turns = diarization.segments.map {
+            SpeakerSegment(start: $0.start, end: $0.end, speaker: $0.speaker)
+        }
+        let attributed = WordTimeline.attribute(
+            words: words, diarization: turns, turnSpeakerMap: nameOverrides,
+        )
+        return TranscriptSegments.mergeConsecutiveSpeakers(attributed).map(TimedSegment.init)
     }
 
     /// Run the cluster-vs-enrolled match if an enrolled DB was provided.
