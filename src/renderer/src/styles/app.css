@@ -4918,3 +4918,59 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* ── Speaker naming panel — "Who was in this meeting?" ──────────
+   The single naming surface. Wraps the speaker pills with a prompt +
+   Done, shown while the meeting still has unnamed speakers. Solid
+   raised surface (never transparent), matching the cascade banner. */
+.naming-panel {
+  margin: var(--space-2, 8px) 0;
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--surface-raised, var(--bg-elevated));
+  border: 1px solid var(--divider);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-lg, 8px);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.04));
+}
+.naming-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3, 12px);
+  margin-bottom: var(--space-2, 8px);
+}
+.naming-panel__title {
+  font-size: var(--text-body-lg-size, 14px);
+  font-weight: 600;
+  color: var(--fg);
+}
+.naming-panel__done {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--text-caption-size, 12px);
+  font-weight: 500;
+  cursor: pointer;
+  padding: 2px var(--space-2, 8px);
+  border-radius: var(--radius-sm, 4px);
+  flex-shrink: 0;
+}
+.naming-panel__done:hover {
+  color: var(--fg);
+  background: var(--surface-hover);
+}
+.naming-panel__done:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+/* The pills row sits flush inside the panel (no extra label / margins). */
+.speaker-row--in-panel {
+  margin: 0;
+}
+.naming-panel__hint {
+  margin: var(--space-2, 8px) 0 0;
+  font-size: var(--text-caption-size, 12px);
+  color: var(--fg-muted);
+  line-height: 1.45;
+}

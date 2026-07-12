@@ -25,7 +25,12 @@ import {
   X
 } from 'lucide-react'
 import { formatDate, formatDateRelative, formatDuration } from '../state/format'
-import { filterMeetingsByQuery, groupMeetingsByDate, highlightParts } from '../state/meetingSearch'
+import {
+  filterMeetingsByQuery,
+  groupMeetingsByDate,
+  hasUnnamedSpeakers,
+  highlightParts
+} from '../state/meetingSearch'
 import { useTags } from '../state/tags'
 import { useAppStatus } from '../state/appStatus'
 import { ConfirmDialog } from '../components/ConfirmDialog'
@@ -378,16 +383,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // or when the user clicks "Later" (next rename re-populates).
   const [reassignQueue, setReassignQueue] = useState<string[]>([])
 
-  // "Name the speakers" nudge — shown ONCE per meeting that flips from
-  // processing → ready (segments first appear) so the user notices the
-  // existing SpeakerPicker pills the moment processing completes. We DON'T
-  // own the native post-processing speaker-naming popup (that lives in the
-  // Swift engine, out of scope); this is the Electron-side discoverability
-  // affordance for the in-app rename. `prevStatusRef` records the last-seen
-  // status per meeting id so we only fire on a genuine processing → ready
-  // transition (not on a meeting that was already ready when opened).
-  const prevStatusRef = useRef<Map<string, 'processing' | 'ready'>>(new Map())
-  const [namingNudgeForId, setNamingNudgeForId] = useState<string | null>(null)
+  // "Who was in this meeting?" naming panel — the in-app consolidation of
+  // speaker naming (design goal: one surface). It shows whenever the open
+  // meeting still has unnamed speakers and the user hasn't dismissed it for
+  // this meeting id (session-scoped). We don't own the native
+  // post-processing naming popup (Swift engine); `suppressSpeakerNamingWindow`
+  // rides the engine-config bridge to retire it once the engine honours it.
   const [namingNudgeDismissed, setNamingNudgeDismissed] = useState<Set<string>>(new Set())
 
   const refresh = useCallback(async () => {
@@ -469,20 +470,6 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     }, 4000)
     return () => window.clearInterval(id)
   }, [hasProcessing, refresh, loadTranscript])
-
-  // Detect a processing → ready transition for any meeting and arm the
-  // one-time "Name the speakers" nudge for it (unless already dismissed).
-  useEffect(() => {
-    const prev = prevStatusRef.current
-    for (const m of meetings) {
-      const status: 'processing' | 'ready' = m.status === 'processing' ? 'processing' : 'ready'
-      const before = prev.get(m.id)
-      if (before === 'processing' && status === 'ready' && !namingNudgeDismissed.has(m.id)) {
-        setNamingNudgeForId(m.id)
-      }
-      prev.set(m.id, status)
-    }
-  }, [meetings, namingNudgeDismissed])
 
   const loadEnrolled = useCallback(async () => {
     try {
@@ -1277,6 +1264,77 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const totalResults = visibleMeetings.length + transcriptOnlyHits.length
   const noResults = query.trim() !== '' && totalResults === 0
 
+  // Speaker pills for the detail-pane row — shared between the standalone
+  // "Speakers" row and the "Who was in this meeting?" naming panel so the
+  // pill markup lives in exactly one place.
+  const speakerPills = speakersInTranscript.map((name) => {
+    const pulsing = activeSpeaker === name
+    const flashing = flashedSpeaker === name
+    const color = colorForSpeaker(name)
+    return (
+      <div key={name} className="speaker-pill-wrap">
+        <button
+          className={
+            'speaker-pill' +
+            (pulsing ? ' speaker-pill--pulse' : '') +
+            (flashing ? ' speaker-pill--flash' : '')
+          }
+          style={{ ['--pill-color' as string]: color } as React.CSSProperties}
+          onClick={(e) => {
+            setPickerAnchor(e.currentTarget)
+            setPickerForCluster(name)
+          }}
+          title="Click to rename or assign an enrolled voice"
+        >
+          <span className="speaker-pill__dot" />
+          <span className="speaker-pill__name">{name}</span>
+          <ChevronDown
+            className="speaker-pill__edit"
+            size={12}
+            strokeWidth={2}
+            aria-hidden="true"
+          />
+        </button>
+        {pickerForCluster === name && (
+          <SpeakerPicker
+            current={name}
+            inThisMeeting={speakersInTranscript}
+            enrolled={enrolledSpeakers}
+            anchorEl={pickerAnchor}
+            onPick={(newName) => onPickSpeaker(name, newName)}
+            onRename={(newName) => onPickSpeaker(name, newName)}
+            onDelete={(target) => onDeleteSpeaker(name, target)}
+            onClose={() => {
+              setPickerForCluster(null)
+              setPickerAnchor(null)
+            }}
+          />
+        )}
+      </div>
+    )
+  })
+
+  // The naming panel shows whenever the open meeting still has unnamed
+  // speakers and hasn't been dismissed. Unlike a one-shot transition nudge,
+  // this makes it a reliable deep-link target (open a meeting → name people).
+  // The cascade banner (post-rename) takes the single inline-banner slot when
+  // it's queued, so the two never stack.
+  const showNamingPanel =
+    !!selectedMeeting &&
+    reassignQueue.length === 0 &&
+    !namingNudgeDismissed.has(selectedMeeting.id) &&
+    hasUnnamedSpeakers(speakersInTranscript)
+
+  const dismissNaming = (): void => {
+    if (!selectedMeeting) return
+    const id = selectedMeeting.id
+    setNamingNudgeDismissed((prev) => {
+      const next = new Set(prev)
+      next.add(id)
+      return next
+    })
+  }
+
   const renderMeetingRow = (m: MeetingSummary, snippet?: string): JSX.Element => {
     const isEditing = rowEditingId === m.id
     return (
@@ -1777,96 +1835,40 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
               </div>
             )}
 
-            {/* One-time "Name the speakers" nudge — shown the moment a
-                meeting finishes processing and its speaker pills appear, to
-                point the user at the existing in-app rename (the native
-                post-processing popup lives in the engine, out of scope). */}
-            {namingNudgeForId === selectedMeeting.id &&
-              !namingNudgeDismissed.has(selectedMeeting.id) &&
-              speakersInTranscript.length > 0 && (
-                <div className="cascade-banner" role="status">
-                  <span className="cascade-banner__icon" aria-hidden="true">
-                    <Check size={15} strokeWidth={2} />
-                  </span>
-                  <div className="cascade-banner__body">
-                    <div className="cascade-banner__line">
-                      Speakers detected — click a speaker pill below to name them.
-                    </div>
-                  </div>
-                  <div className="cascade-banner__actions">
-                    <button
-                      className="btn btn--small"
-                      onClick={() => {
-                        setNamingNudgeDismissed((prev) => {
-                          const next = new Set(prev)
-                          next.add(selectedMeeting.id)
-                          return next
-                        })
-                        setNamingNudgeForId(null)
-                      }}
-                    >
-                      Got it
+            {/* ── Speaker naming — one surface ──────────────────────────
+                When the meeting still has unnamed speakers, the pills live
+                inside a "Who was in this meeting?" panel that invites naming;
+                otherwise they show as the plain Speakers row. Either way the
+                pill markup comes from the single `speakerPills` render. The
+                native post-processing popup is retired via the engine-config
+                bridge (`suppressSpeakerNamingWindow`) — until the engine
+                honours it, both may briefly appear. */}
+            {speakersInTranscript.length > 0 &&
+              (showNamingPanel ? (
+                <div
+                  className="naming-panel"
+                  id="meeting-naming-panel"
+                  role="group"
+                  aria-label="Name the speakers"
+                >
+                  <div className="naming-panel__head">
+                    <span className="naming-panel__title">Who was in this meeting?</span>
+                    <button type="button" className="naming-panel__done" onClick={dismissNaming}>
+                      Done
                     </button>
                   </div>
+                  <div className="speaker-row speaker-row--in-panel">{speakerPills}</div>
+                  <p className="naming-panel__hint">
+                    Click a name to assign or rename. Named voices are recognised automatically next
+                    time.
+                  </p>
                 </div>
-              )}
-
-            {/* ── Speaker pills with picker ────────────────────────────── */}
-            {speakersInTranscript.length > 0 && (
-              <div className="speaker-row">
-                <span className="speaker-row__label">Speakers</span>
-                {speakersInTranscript.map((name) => {
-                  const pulsing = activeSpeaker === name
-                  const flashing = flashedSpeaker === name
-                  const color = colorForSpeaker(name)
-                  return (
-                    <div key={name} className="speaker-pill-wrap">
-                      <button
-                        className={
-                          'speaker-pill' +
-                          (pulsing ? ' speaker-pill--pulse' : '') +
-                          (flashing ? ' speaker-pill--flash' : '')
-                        }
-                        style={
-                          {
-                            ['--pill-color' as string]: color
-                          } as React.CSSProperties
-                        }
-                        onClick={(e) => {
-                          setPickerAnchor(e.currentTarget)
-                          setPickerForCluster(name)
-                        }}
-                        title="Click to rename or assign an enrolled voice"
-                      >
-                        <span className="speaker-pill__dot" />
-                        <span className="speaker-pill__name">{name}</span>
-                        <ChevronDown
-                          className="speaker-pill__edit"
-                          size={12}
-                          strokeWidth={2}
-                          aria-hidden="true"
-                        />
-                      </button>
-                      {pickerForCluster === name && (
-                        <SpeakerPicker
-                          current={name}
-                          inThisMeeting={speakersInTranscript}
-                          enrolled={enrolledSpeakers}
-                          anchorEl={pickerAnchor}
-                          onPick={(newName) => onPickSpeaker(name, newName)}
-                          onRename={(newName) => onPickSpeaker(name, newName)}
-                          onDelete={(target) => onDeleteSpeaker(name, target)}
-                          onClose={() => {
-                            setPickerForCluster(null)
-                            setPickerAnchor(null)
-                          }}
-                        />
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+              ) : (
+                <div className="speaker-row">
+                  <span className="speaker-row__label">Speakers</span>
+                  {speakerPills}
+                </div>
+              ))}
 
             {/* ── Audio player ─────────────────────────────────────────── */}
             {/* Hidden on the Video tab so only one media element owns
