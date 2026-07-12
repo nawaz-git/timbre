@@ -195,6 +195,14 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "whisperKitModel"), "openai_whisper-small")
     }
 
+    /// A fresh install must auto-detect the spoken language rather than force a
+    /// concrete hint on every recording (a forced hint mistranscribes audio in
+    /// any other language). Empty string maps to nil → WhisperKit auto-detect.
+    func testWhisperLanguageDefaultsToAutoDetect() {
+        XCTAssertEqual(settings.whisperLanguage, "")
+        XCTAssertNil(settings.whisperLanguageOrNil)
+    }
+
     func testMicNameSavedToDefaults() {
         settings.micName = "Speaker A"
         XCTAssertEqual(defaults.string(forKey: "micName"), "Speaker A")
@@ -219,6 +227,10 @@ final class AppSettingsTests: XCTestCase {
         // Verify a fresh instance reads it back from the same suite.
         let fresh = AppSettings(defaults: defaults)
         XCTAssertEqual(fresh.protocolProvider, .openAICompatible)
+    }
+
+    func testProtocolLanguageDefault() {
+        XCTAssertEqual(settings.protocolLanguage, "English")
     }
 
     func testOpenAIEndpointDefault() {
@@ -263,7 +275,9 @@ final class AppSettingsTests: XCTestCase {
     // MARK: - Update Settings
 
     func testCheckForUpdatesDefault() {
-        XCTAssertTrue(settings.checkForUpdates)
+        // Bundled engines run a fresh UserDefaults domain, so the default must
+        // not silently poll a third-party GitHub repo for releases.
+        XCTAssertFalse(settings.checkForUpdates)
     }
 
     func testIncludePreReleasesDefault() {
