@@ -499,20 +499,27 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   useEffect(() => {
     const q = query.trim()
     if (!q) return
+    // Guard against an out-of-order resolve: a slower earlier search must not
+    // overwrite a newer query's results. The cleanup marks this run cancelled
+    // before the next effect fires, so a late `searchTranscripts` is ignored.
+    let cancelled = false
     const handle = window.setTimeout(() => {
       void (async () => {
         try {
           const hits = await window.api.meetings.searchTranscripts(q)
-          setTxHits(hits)
+          if (!cancelled) setTxHits(hits)
         } catch (err) {
           console.warn('Transcript search failed', err)
-          setTxHits([])
+          if (!cancelled) setTxHits([])
         } finally {
-          setSearching(false)
+          if (!cancelled) setSearching(false)
         }
       })()
     }, 300)
-    return () => window.clearTimeout(handle)
+    return () => {
+      cancelled = true
+      window.clearTimeout(handle)
+    }
   }, [query])
 
   // ⌘F focuses the search field while the Meetings view is mounted (it only
