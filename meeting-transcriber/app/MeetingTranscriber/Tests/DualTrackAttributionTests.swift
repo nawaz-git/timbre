@@ -64,13 +64,18 @@ final class DualTrackAttributionTests: XCTestCase {
     // MARK: - echo/bleed dedup
 
     func testEchoedMicUtteranceDropped() {
-        // No headphones: the mic re-records the app's own "hello world".
+        // No headphones: the mic re-records the app's own "hello world" through
+        // the speakers, so the mic copy is measurably quieter than the app copy
+        // (the echo-attenuation signature). That loudness evidence — never a
+        // bare text+time match — is what lets the dedup drop it.
         let result = DualTrackAttribution.attribute(
             appWords: [word(0, 1, "hello"), word(1, 2, "world")],
             micWords: [word(0, 1, "hello", source: .mic), word(1, 2, "world", source: .mic)],
             appTurns: [turn(0, 2, "SPEAKER_0")],
             micTurns: nil,
             micLabel: "Me",
+            micRMS: { _ in -25 },
+            appRMS: { _ in -10 },
         )
         XCTAssertEqual(result.droppedCount, 1)
         XCTAssertEqual(result.kept.count, 1)
