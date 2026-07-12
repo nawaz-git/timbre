@@ -464,6 +464,13 @@ final class AppState { // swiftlint:disable:this type_body_length
                 if let health = permissionHealth {
                     loop.permissionChecker = { health }
                 }
+                // Refresh the permission verdict on the watch cadence so the
+                // headless engine's verdict file doesn't age past the desktop
+                // reader's staleness gate while idle-watching. checkPermissions()
+                // runs the live probe + writes the verdict JSON/health log.
+                loop.onPeriodicPermissionCheck = { [weak self] in
+                    await self?.checkPermissions()
+                }
 
                 configurePipelineCallbacks()
 

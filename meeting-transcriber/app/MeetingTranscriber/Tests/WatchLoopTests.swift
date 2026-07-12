@@ -12,6 +12,29 @@ final class WatchLoopTests: XCTestCase {
         )
     }
 
+    // MARK: - Permission recheck cadence
+
+    func testPermissionRecheckDueAfterInterval() {
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        // Not yet due before the interval elapses.
+        XCTAssertFalse(
+            WatchLoop.isPermissionRecheckDue(
+                now: base.addingTimeInterval(299), lastCheck: base, interval: 300,
+            ),
+        )
+        // Due exactly at, and beyond, the interval.
+        XCTAssertTrue(
+            WatchLoop.isPermissionRecheckDue(
+                now: base.addingTimeInterval(300), lastCheck: base, interval: 300,
+            ),
+        )
+        XCTAssertTrue(
+            WatchLoop.isPermissionRecheckDue(
+                now: base.addingTimeInterval(901), lastCheck: base, interval: 300,
+            ),
+        )
+    }
+
     // MARK: - Initial State
 
     func testInitialState() {
