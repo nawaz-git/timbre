@@ -13,17 +13,20 @@ import Foundation
 ///
 /// The two matchers used to duplicate these numbers with a cross-reference
 /// comment because they lived in separate SPM packages; this shared target now
-/// gives them one definition to import. Provisional values — the enrolled-voice
-/// benchmark will re-fit them; when it does, change them **here only**.
+/// gives them one definition to import. These are the **mainline-equivalent**
+/// defaults (the app matcher's distance ceiling 0.40 = similarity floor 0.60,
+/// margin 0.10), so already-enrolled voices keep matching. The enrolled-voice
+/// quality lane re-fits them from data; when it does, change them **here only**.
 public enum SpeakerMatchRule {
-    /// Minimum cosine similarity for the primary match. Same-voice embeddings
-    /// from the WeSpeaker model typically score 0.95+; the 0.65 floor is
-    /// conservative enough that a cross-talk-contaminated centroid can't
-    /// quietly steal a different speaker's name.
-    public static let similarityFloor: Float = 0.65
+    /// Minimum cosine similarity for the primary match (distance ceiling 0.40 on
+    /// the app matcher). Same-voice WeSpeaker embeddings typically score 0.95+;
+    /// 0.60 is conservative enough that a cross-talk-contaminated centroid can't
+    /// quietly steal a different speaker's name, without regressing existing
+    /// enrolments that match around 0.6.
+    public static let similarityFloor: Float = 0.60
 
     /// Required top-1 − top-2 similarity gap. Stops the case where two enrolled
     /// speakers both score around the floor — without the gap the matcher would
     /// flip-flop between them on tiny embedding noise.
-    public static let similarityMargin: Float = 0.08
+    public static let similarityMargin: Float = 0.10
 }
