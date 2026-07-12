@@ -67,8 +67,12 @@ const api = {
       speakerName: string
     ): Promise<{ speakerCount: number }> =>
       ipcRenderer.invoke(IPC.meetingsRemoveSpeakerLabel, meetingId, speakerName),
-    reanalyze: (meetingId: string, numSpeakers?: number): Promise<BackendJob> =>
-      ipcRenderer.invoke(IPC.meetingsReanalyze, meetingId, numSpeakers),
+    reanalyze: (
+      meetingId: string,
+      numSpeakers?: number,
+      mode?: 'fast' | 'max'
+    ): Promise<BackendJob> =>
+      ipcRenderer.invoke(IPC.meetingsReanalyze, meetingId, numSpeakers, mode),
     renameTitle: (meetingId: string, newTitle: string): Promise<{ title: string }> =>
       ipcRenderer.invoke(IPC.meetingsRenameTitle, meetingId, newTitle),
     export: (

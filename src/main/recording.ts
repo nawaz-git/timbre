@@ -179,6 +179,7 @@ export async function reanalyzeMeetingProc(opts: {
   jobId: string
   numSpeakers?: number
   language?: string
+  mode?: 'fast' | 'max'
 }): Promise<BatchInvocationResult> {
   const { reanalyzeMeeting } = await import('./meetings')
   internal.state = 'transcribing'
@@ -199,6 +200,7 @@ export async function reanalyzeMeetingProc(opts: {
       jobId: opts.jobId,
       numSpeakers: opts.numSpeakers,
       language: opts.language,
+      mode: opts.mode,
       onEvent: (ev) => {
         if (ev.event === 'transcribing') {
           internal.progressPercent = Math.round(ev.progress * 100)
