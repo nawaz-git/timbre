@@ -54,7 +54,12 @@ protocol RecordingProvider {
         debugLogging: Bool,
         disableAppAudioTap: Bool,
     ) throws
-    func stop() throws -> RecordingResult
+    /// Stop capture and produce the mixed recording. `async` because the heavy
+    /// finalize (whole-file load + resample + mix) is offloaded off the MainActor
+    /// so a long meeting's minutes-long mix can't freeze the heartbeat / signal
+    /// handlers. Callers must `await`; the synchronous tap/HAL teardown still
+    /// happens on the caller before the offload.
+    func stop() async throws -> RecordingResult
 
     /// Instantaneous app-audio level in dBFS. -120 when no capture session is
     /// active or the tap stopped delivering buffers in the last 0.5 s.
@@ -140,7 +145,7 @@ class DualSourceRecorder: RecordingProvider {
 
     /// Suffix on the merged-output WAV file, used by downstream code (the
     /// record-only sidecar writer) to recover the recording basename.
-    static let mixFilenameSuffix = RecordingFileSuffix.mix
+    nonisolated static let mixFilenameSuffix = RecordingFileSuffix.mix
 
     /// Remove leftover `*_app_raw.tmp` files from a previous crash.
     static func cleanupTempFiles(recordingsDir: URL = AppPaths.recordingsDir) {
@@ -230,10 +235,12 @@ class DualSourceRecorder: RecordingProvider {
         }
     }
 
-    /// Stop recording and produce a mixed WAV. The capture session is the only
-    /// hardware-bound part; everything after `session.stop()` is delegated to
-    /// the testable `buildRecording`.
-    func stop() throws -> RecordingResult {
+    /// Stop recording and produce a mixed WAV. The capture session teardown (the
+    /// only hardware-bound part) runs synchronously on the caller — its tap/HAL
+    /// destroy keeps the existing single-flight `captureControl` semantics — and
+    /// only then is the heavy, testable `buildRecording` offloaded off the
+    /// MainActor.
+    func stop() async throws -> RecordingResult {
         guard isRecording else {
             throw RecorderError.notRecording
         }
@@ -244,7 +251,9 @@ class DualSourceRecorder: RecordingProvider {
         let recordingStart = recordingStartTime
         isRecording = false
 
-        // Stop capture session and get result
+        // Stop capture session and get result — synchronous tap/HAL teardown,
+        // deliberately kept on the caller (its `captureControl` barriers own the
+        // lifecycle) and off the offloaded finalize below.
         guard let session = captureSession else {
             throw RecorderError.noAudioData
         }
@@ -259,14 +268,28 @@ class DualSourceRecorder: RecordingProvider {
         let ts = startTimestamp ?? Self.timestamp()
         startTimestamp = nil
 
-        return try Self.buildRecording(
-            from: captureResult,
-            recordingsDir: Self.recordingsDir,
-            timestamp: ts,
-            recordingStart: recordingStart,
-            format: CaptureFormat(requestedChannels: appChannels, requestedRate: recordRate, targetRate: targetRate),
-            recordingStopUptime: stopUptime,
+        let recordingsDir = Self.recordingsDir
+        let format = CaptureFormat(
+            requestedChannels: appChannels, requestedRate: recordRate, targetRate: targetRate,
         )
+        // Offload the whole-file load + resample + mix off the MainActor: on a
+        // multi-hour meeting this runs for minutes, and doing it inline froze the
+        // @MainActor heartbeat (Electron then read the engine as wedged and killed
+        // it mid-mix). `Task.detached` does NOT inherit the caller's cancellation,
+        // so a cancelled watch task still finalizes to completion — awaiting
+        // `.value` rethrows only what `buildRecording` throws, never a
+        // CancellationError of the awaiter — preserving the runs-past-cancellation
+        // + ordering (finalize → enqueue) guarantee.
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.buildRecording(
+                from: captureResult,
+                recordingsDir: recordingsDir,
+                timestamp: ts,
+                recordingStart: recordingStart,
+                format: format,
+                recordingStopUptime: stopUptime,
+            )
+        }.value
     }
 
     /// Convert a finished `AudioCaptureResult` (raw app `.tmp` + optional mic
@@ -274,7 +297,12 @@ class DualSourceRecorder: RecordingProvider {
     /// + resample the app track, load the mic track, then mix or fall back to a
     /// single track. Pure file-processing — no capture session, no `@available`
     /// gate — so it is unit-testable with fixture files.
-    static func buildRecording( // swiftlint:disable:this function_body_length
+    ///
+    /// `nonisolated` so `stop()` can run it inside a detached (off-MainActor) task
+    /// without hopping back to the main actor — the whole point of the offload. It
+    /// touches no instance or main-actor state (only the file arguments + a global
+    /// logger), so it stays directly callable from tests on any actor.
+    nonisolated static func buildRecording( // swiftlint:disable:this function_body_length
         from captureResult: AudioCaptureResult,
         recordingsDir recDir: URL,
         timestamp ts: String,
@@ -449,7 +477,8 @@ class DualSourceRecorder: RecordingProvider {
     }
 
     /// Downmix interleaved multi-channel audio to mono. Passthrough if already mono.
-    static func downmixToMono(_ samples: [Float], channels: Int) -> [Float] {
+    /// `nonisolated` (pure) so the off-MainActor `buildRecording` can call it.
+    nonisolated static func downmixToMono(_ samples: [Float], channels: Int) -> [Float] {
         guard channels >= 2, samples.count >= channels else { return samples }
         let n = samples.count - (samples.count % channels)
         var mono = [Float](repeating: 0, count: n / channels)
@@ -466,8 +495,8 @@ class DualSourceRecorder: RecordingProvider {
 
     /// Cross-check the device-reported sample rate against raw file size and mic duration.
     /// Returns the corrected rate (snapped to standard), or the device rate if cross-check
-    /// is unavailable or agrees.
-    static func crossCheckAppRate(
+    /// is unavailable or agrees. `nonisolated` (pure) for the off-MainActor finalize.
+    nonisolated static func crossCheckAppRate(
         deviceRate: Int,
         appRawBytes: Int,
         appChannels: Int,
@@ -511,7 +540,8 @@ class DualSourceRecorder: RecordingProvider {
     ///   from (the device rate when no mismatch, otherwise the snapped inferred
     ///   true rate); `report` is nil when within tolerance, else a forensic
     ///   string the caller logs at error level before self-correcting.
-    static func wallClockRateCheck( // swiftlint:disable:this function_parameter_count
+    /// `nonisolated` (pure) for the off-MainActor finalize.
+    nonisolated static func wallClockRateCheck( // swiftlint:disable:this function_parameter_count
         producedFrames: Int,
         targetRate: Int,
         elapsedSeconds: Double,

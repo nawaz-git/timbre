@@ -285,7 +285,7 @@ class MockRecorder: RecordingProvider {
         disableAppAudioTapArg = disableAppAudioTap
     }
 
-    func stop() throws -> RecordingResult {
+    func stop() async throws -> RecordingResult {
         stopCalled = true
         stopCallCount += 1
         guard let mix = mixPath else {
