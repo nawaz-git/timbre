@@ -1,13 +1,20 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { TagDef } from '../../../shared/types'
+import type { TagDef, TagKind } from '../../../shared/types'
 
 interface TagsContextValue {
   tags: TagDef[]
+  /** Tags with `kind === 'project'` (memoised subset of `tags`). */
+  projects: TagDef[]
+  /** Tags that are plain filters — `kind !== 'project'` (memoised subset). */
+  labels: TagDef[]
   loading: boolean
   refresh: () => Promise<void>
-  addTag: (name: string, color: string) => Promise<TagDef>
-  updateTag: (id: string, patch: { name?: string; color?: string }) => Promise<TagDef>
+  addTag: (name: string, color: string, kind?: TagKind) => Promise<TagDef>
+  updateTag: (
+    id: string,
+    patch: { name?: string; color?: string; kind?: TagKind }
+  ) => Promise<TagDef>
   deleteTag: (id: string) => Promise<void>
   byId: (id: string) => TagDef | undefined
 }
@@ -35,8 +42,8 @@ export function TagsProvider({ children }: { children: ReactNode }): JSX.Element
   }, [refresh])
 
   const addTag = useCallback(
-    async (name: string, color: string) => {
-      const tag = await window.api.tags.add(name, color)
+    async (name: string, color: string, kind?: TagKind) => {
+      const tag = await window.api.tags.add(name, color, kind)
       await refresh()
       return tag
     },
@@ -44,7 +51,7 @@ export function TagsProvider({ children }: { children: ReactNode }): JSX.Element
   )
 
   const updateTag = useCallback(
-    async (id: string, patch: { name?: string; color?: string }) => {
+    async (id: string, patch: { name?: string; color?: string; kind?: TagKind }) => {
       const tag = await window.api.tags.update(id, patch)
       await refresh()
       return tag
@@ -64,9 +71,15 @@ export function TagsProvider({ children }: { children: ReactNode }): JSX.Element
     tags
   ])
 
+  // Derived, memoised partitions so consumers don't re-filter on every render.
+  // `labels` is the complement of `projects` (kind absent ⇒ label), matching
+  // the read-boundary coercion in the main process.
+  const projects = useMemo(() => tags.filter((t) => t.kind === 'project'), [tags])
+  const labels = useMemo(() => tags.filter((t) => t.kind !== 'project'), [tags])
+
   const value = useMemo<TagsContextValue>(
-    () => ({ tags, loading, refresh, addTag, updateTag, deleteTag, byId }),
-    [tags, loading, refresh, addTag, updateTag, deleteTag, byId]
+    () => ({ tags, projects, labels, loading, refresh, addTag, updateTag, deleteTag, byId }),
+    [tags, projects, labels, loading, refresh, addTag, updateTag, deleteTag, byId]
   )
 
   return <TagsContext.Provider value={value}>{children}</TagsContext.Provider>

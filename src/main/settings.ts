@@ -6,6 +6,7 @@ import type {
   ScreenCaptureScope,
   Settings,
   TagDef,
+  TagKind,
   ThemeMode
 } from '../shared/types'
 import { coerceAsrLanguage, coerceProcessingMode } from './settingsCoercion'
@@ -197,9 +198,22 @@ function defaultTagSeed(): TagDef[] {
 }
 
 /**
+ * Normalise a raw stored tag at the read boundary. `kind` is the only field
+ * that can be absent (tags written before the project/label distinction
+ * existed) or malformed: anything that isn't the explicit `'project'` opt-in
+ * becomes `'label'`, so every legacy tag keeps its original plain-filter
+ * behaviour. We deliberately do NOT write the coerced value back — reads must
+ * not mutate the store (avoids write amplification / churn on every list).
+ */
+function coerceTag(raw: TagDef): TagDef {
+  return { ...raw, kind: raw.kind === 'project' ? 'project' : 'label' }
+}
+
+/**
  * Read the user's tag list, seeding defaults on first ever access. After
  * the first call the key is present in the store (even if the user clears
- * every tag) so we won't re-seed.
+ * every tag) so we won't re-seed. Every entry is coerced so callers always
+ * see a concrete `kind`.
  */
 export async function readTags(): Promise<TagDef[]> {
   const store = await getStore()
@@ -207,12 +221,16 @@ export async function readTags(): Promise<TagDef[]> {
   if (raw === undefined) {
     const seeded = defaultTagSeed()
     store.set('tags', seeded)
-    return seeded
+    return seeded.map(coerceTag)
   }
-  return Array.isArray(raw) ? raw : []
+  return Array.isArray(raw) ? raw.map(coerceTag) : []
 }
 
-export async function addTag(name: string, color: string): Promise<TagDef> {
+export async function addTag(
+  name: string,
+  color: string,
+  kind: TagKind = 'label'
+): Promise<TagDef> {
   const trimmed = name.trim()
   if (!trimmed) throw new Error('Tag name must not be empty')
   const store = await getStore()
@@ -220,7 +238,7 @@ export async function addTag(name: string, color: string): Promise<TagDef> {
   if (tags.some((t) => t.name.toLowerCase() === trimmed.toLowerCase())) {
     throw new Error(`Tag "${trimmed}" already exists`)
   }
-  const tag: TagDef = { id: randomUUID(), name: trimmed, color }
+  const tag: TagDef = { id: randomUUID(), name: trimmed, color, kind }
   store.set('tags', [...tags, tag])
   return tag
 }
@@ -233,7 +251,8 @@ export async function updateTag(id: string, patch: Partial<Omit<TagDef, 'id'>>):
   const merged: TagDef = {
     ...tags[idx],
     ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
-    ...(patch.color !== undefined ? { color: patch.color } : {})
+    ...(patch.color !== undefined ? { color: patch.color } : {}),
+    ...(patch.kind !== undefined ? { kind: patch.kind } : {})
   }
   const next = [...tags]
   next[idx] = merged

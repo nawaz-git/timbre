@@ -365,7 +365,21 @@ export interface TagDef {
   name: string
   /** CSS color (hex). */
   color: string
+  /**
+   * What this tag represents. `'project'` = a body of work that meetings roll
+   * up under (surfaces as its own node with rollups in the Network view);
+   * `'label'` = a plain filter such as a meeting type or context. Absent means
+   * `'label'`, so every pre-existing tag keeps exactly its current behaviour.
+   */
+  kind?: 'project' | 'label'
 }
+
+/**
+ * Discriminates a project tag (meetings roll up under it) from a plain filter
+ * label. Kept as a named alias so the CRUD/IPC/preload layers can thread the
+ * value without re-spelling the union.
+ */
+export type TagKind = 'project' | 'label'
 
 export interface TranscriptSegment {
   speaker: string
