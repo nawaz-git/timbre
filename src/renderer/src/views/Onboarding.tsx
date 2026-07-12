@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { ShieldCheck } from 'lucide-react'
-import mintrMark from '../assets/mintr-mark.png'
+import timbreMark from '../assets/timbre-mark.png'
 import { PermissionChecklist } from '../components/PermissionChecklist'
 import {
   allGranted,
@@ -31,7 +31,7 @@ export function Onboarding({ onDone }: { onDone?: () => void }): JSX.Element {
       <div className="onboarding__panel">
         <header className="onboarding__welcome">
           <span className="onboarding__mark" aria-hidden="true">
-            <img src={mintrMark} alt="" width={48} height={48} draggable={false} />
+            <img src={timbreMark} alt="" width={48} height={48} draggable={false} />
           </span>
           <h1 className="onboarding__title">Welcome to Timbre</h1>
           <p className="onboarding__lede">

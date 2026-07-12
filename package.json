@@ -5,7 +5,7 @@
   "description": "Timbre — Mac desktop app for on-device meeting transcription.",
   "main": "./out/main/index.js",
   "author": "contact@nawaz.ai",
-  "homepage": "https://github.com/nawazpasha/meeting-transcriber",
+  "homepage": "https://github.com/nawaz-git/timbre",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",

@@ -172,10 +172,10 @@ export function globalSpeakersDBPath(): string {
 function defaultTagSeed(): TagDef[] {
   return [
     { id: 'general', name: 'General', color: '#9aa0a6' },
-    { id: 'standup', name: 'Standup', color: '#8ab4f8' },
-    { id: 'eod-sync', name: 'EOD Sync', color: '#a1e3a1' },
-    { id: 'internal', name: 'Internal', color: '#fdd663' },
-    { id: 'lanco', name: 'Lanco', color: '#c58af9' }
+    { id: 'one-on-one', name: '1:1', color: '#8ab4f8' },
+    { id: 'team', name: 'Team', color: '#a1e3a1' },
+    { id: 'client', name: 'Client', color: '#fdd663' },
+    { id: 'interview', name: 'Interview', color: '#c58af9' }
   ]
 }
 

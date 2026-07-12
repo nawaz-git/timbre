@@ -13,7 +13,7 @@ import {
   Tag as TagIcon,
   Trash2
 } from 'lucide-react'
-import mintrMark from '../assets/mintr-mark.png'
+import timbreMark from '../assets/timbre-mark.png'
 import { PermissionChecklist } from '../components/PermissionChecklist'
 import { useSettings } from '../state/settings'
 import { useOnboardingComplete } from '../state/onboarding'
@@ -492,7 +492,7 @@ export function SettingsView(): JSX.Element {
       <Section icon={<Info size={16} />} title="About">
         <div className="about-brand">
           <span className="about-brand__mark" aria-hidden="true">
-            <img src={mintrMark} alt="" width={36} height={36} draggable={false} />
+            <img src={timbreMark} alt="" width={36} height={36} draggable={false} />
           </span>
           <div className="about-brand__copy">
             <div className="about-brand__name">Timbre</div>
@@ -504,12 +504,12 @@ export function SettingsView(): JSX.Element {
         </div>
         <div className="about-links">
           <a
-            href="https://github.com/nawazpasha/meeting-transcriber"
+            href="https://github.com/nawaz-git/timbre"
             target="_blank"
             rel="noreferrer"
             className="about-links__link"
           >
-            github.com/nawazpasha/meeting-transcriber
+            github.com/nawaz-git/timbre
           </a>
         </div>
       </Section>
