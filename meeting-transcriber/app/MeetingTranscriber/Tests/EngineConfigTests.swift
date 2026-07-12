@@ -101,4 +101,120 @@ final class EngineConfigTests: XCTestCase {
         XCTAssertFalse(EngineConfig.default.disableAppAudioTap)
         XCTAssertFalse(EngineConfig.read(from: tempURL()).disableAppAudioTap)
     }
+
+    // MARK: - Diarization-quality bridge fields
+
+    /// A full payload round-trips every field the diarization bridge carries.
+    func testReadsFullDiarizationPayload() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"""
+        {
+          "screenCaptureScope": "entireScreen",
+          "processingMode": "max",
+          "asrLanguage": "en",
+          "transcriptionEngine": "parakeet",
+          "numSpeakersHint": 3,
+          "globalSpeakersDBPath": "/Users/x/global-speakers.json",
+          "llmRepair": { "enabled": true }
+        }
+        """#, to: url)
+
+        let cfg = EngineConfig.read(from: url)
+        XCTAssertEqual(cfg.screenCaptureScope, .entireScreen)
+        XCTAssertEqual(cfg.processingMode, .max)
+        XCTAssertEqual(cfg.asrLanguage, "en")
+        XCTAssertEqual(cfg.transcriptionEngine, .parakeet)
+        XCTAssertEqual(cfg.numSpeakersHint, 3)
+        XCTAssertEqual(cfg.globalSpeakersDBPath, "/Users/x/global-speakers.json")
+        XCTAssertTrue(cfg.llmRepairEnabled)
+    }
+
+    /// Every new field falls back to its default when the payload only carries
+    /// the (pre-existing) scope key — the additive-bridge contract.
+    func testPartialPayloadDefaultsNewFields() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"{"screenCaptureScope":"chromeWindow"}"#, to: url)
+
+        let cfg = EngineConfig.read(from: url)
+        XCTAssertEqual(cfg.processingMode, .fast)
+        XCTAssertEqual(cfg.asrLanguage, "")
+        XCTAssertNil(cfg.transcriptionEngine)
+        XCTAssertEqual(cfg.numSpeakersHint, 0)
+        XCTAssertNil(cfg.globalSpeakersDBPath)
+        XCTAssertFalse(cfg.llmRepairEnabled)
+    }
+
+    /// The whole default matches the documented fallback shape.
+    func testDefaultCarriesFastAutoNoOverride() {
+        let cfg = EngineConfig.default
+        XCTAssertEqual(cfg.processingMode, .fast)
+        XCTAssertEqual(cfg.asrLanguage, "")
+        XCTAssertNil(cfg.transcriptionEngine)
+        XCTAssertEqual(cfg.numSpeakersHint, 0)
+        XCTAssertNil(cfg.globalSpeakersDBPath)
+        XCTAssertFalse(cfg.llmRepairEnabled)
+    }
+
+    /// Legacy `"qwen3"` engine values migrate to WhisperKit (Qwen3 was dropped
+    /// upstream) rather than leaving the engine unset.
+    func testLegacyQwen3EngineMigratesToWhisperKit() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"{"transcriptionEngine":"qwen3"}"#, to: url)
+
+        XCTAssertEqual(EngineConfig.read(from: url).transcriptionEngine, .whisperKit)
+    }
+
+    /// The engine string is case-insensitive so the lowercase bridge contract
+    /// and the app enum's camelCase raw value both resolve.
+    func testEngineStringIsCaseInsensitive() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"{"transcriptionEngine":"WhisperKit"}"#, to: url)
+
+        XCTAssertEqual(EngineConfig.read(from: url).transcriptionEngine, .whisperKit)
+    }
+
+    /// An unknown engine string is treated as "no override" (nil), not a crash.
+    func testUnknownEngineIsNoOverride() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"{"transcriptionEngine":"someFutureEngine"}"#, to: url)
+
+        XCTAssertNil(EngineConfig.read(from: url).transcriptionEngine)
+    }
+
+    /// An unknown processing mode coerces to the safe `.fast` default.
+    func testUnknownProcessingModeDefaultsFast() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"{"processingMode":"turbo"}"#, to: url)
+
+        XCTAssertEqual(EngineConfig.read(from: url).processingMode, .fast)
+    }
+
+    /// An empty `globalSpeakersDBPath` (what Timbre serialises when nothing is
+    /// configured) is normalised to nil so the engine falls back to its local DB.
+    func testEmptyGlobalDBPathNormalisesToNil() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"{"globalSpeakersDBPath":""}"#, to: url)
+
+        XCTAssertNil(EngineConfig.read(from: url).globalSpeakersDBPath)
+    }
+
+    /// A malformed payload still yields the full default (every new field
+    /// included), never a partially-initialised config.
+    func testMalformedJsonReturnsFullDefault() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("{ not json", to: url)
+
+        let cfg = EngineConfig.read(from: url)
+        XCTAssertEqual(cfg.processingMode, .fast)
+        XCTAssertEqual(cfg.asrLanguage, "")
+        XCTAssertNil(cfg.transcriptionEngine)
+    }
 }
