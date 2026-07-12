@@ -211,7 +211,9 @@ function createWindow(): BrowserWindow {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
+      // Renderer runs sandboxed: the preload uses only @electron-toolkit/preload
+      // + ipcRenderer (both sandbox-compatible), so nothing here needs Node.
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false
     }
