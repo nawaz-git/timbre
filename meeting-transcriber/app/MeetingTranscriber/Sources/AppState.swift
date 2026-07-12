@@ -879,6 +879,11 @@ final class AppState { // swiftlint:disable:this type_body_length
             case .error:
                 if let err = loop?.lastError {
                     notifier.notify(title: "Error", body: err)
+                    // A watch-level failure (e.g. a recording that never started
+                    // because TCC was revoked) produces no pipeline job, so no
+                    // per-job error sidecar is written. Persist a standalone
+                    // last-error file the product UI can read instead.
+                    _ = try? EngineLastError(error: err).write()
                 }
                 self?.stopChannelHealthMonitoring()
                 self?.stopHALSentinel()

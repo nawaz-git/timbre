@@ -219,6 +219,50 @@ final class PipelineQueueTests: XCTestCase {
         XCTAssertEqual(queue.pendingJobs.count, 2)
     }
 
+    // MARK: - Error sidecar
+
+    private func errorSidecarFilenames(in dir: URL) -> [String] {
+        let protocolsDir = dir.appendingPathComponent("protocols")
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: protocolsDir.path)) ?? []
+        return entries.filter { $0.hasSuffix(".error.json") }
+    }
+
+    func testErrorTransitionWritesSidecar() throws {
+        let outputQueue = PipelineQueue(logDir: tmpDir, outputDir: tmpDir)
+        let job = makeJob(title: "Silent Meeting")
+        outputQueue.enqueue(job)
+        outputQueue.updateJobState(id: job.id, to: .error, error: "Empty transcript")
+
+        let names = errorSidecarFilenames(in: tmpDir)
+        XCTAssertEqual(names.count, 1, "an .error transition must write exactly one sidecar")
+        let url = tmpDir.appendingPathComponent("protocols").appendingPathComponent(names[0])
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(JobErrorSidecar.self, from: Data(contentsOf: url))
+        XCTAssertEqual(decoded.error, "Empty transcript")
+        XCTAssertEqual(decoded.title, "Silent Meeting")
+        XCTAssertEqual(decoded.mixPath, "/tmp/mix.wav")
+    }
+
+    func testDoneTransitionWritesNoSidecar() {
+        let outputQueue = PipelineQueue(logDir: tmpDir, outputDir: tmpDir)
+        let job = makeJob()
+        outputQueue.enqueue(job)
+        outputQueue.updateJobState(id: job.id, to: .done)
+        XCTAssertTrue(errorSidecarFilenames(in: tmpDir).isEmpty)
+    }
+
+    func testCancelledJobWritesNoSidecar() {
+        let outputQueue = PipelineQueue(logDir: tmpDir, outputDir: tmpDir)
+        var job = makeJob()
+        job.state = .transcribing
+        outputQueue.enqueue(job)
+        // Cancellation removes the job without an `.error` transition, so no
+        // sidecar should ever be written for a user-cancelled job.
+        outputQueue.cancelJob(id: job.id)
+        XCTAssertTrue(errorSidecarFilenames(in: tmpDir).isEmpty)
+    }
+
     func testRemoveCompletedJob() {
         var job = makeJob()
         job.state = .done
