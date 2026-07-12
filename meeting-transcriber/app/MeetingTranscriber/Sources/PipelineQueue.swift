@@ -50,6 +50,11 @@ class PipelineQueue {
     /// carries the quality report for the completion notification.
     var onRefineComplete: ((PipelineJob, RefineQualityReport) -> Void)?
 
+    /// Called once the LAST in-flight refine finishes (the refine queue drains),
+    /// so the owner can release refine-only resources — notably the dedicated
+    /// WhisperKit instance, which the next refine reloads lazily.
+    var onRefineQueueDrained: (() -> Void)?
+
     // MARK: - MAX-tier refinement
 
     /// Factory for the background MAX refiner. `nil` = MAX refinement
@@ -62,8 +67,13 @@ class PipelineQueue {
     /// In-flight refine tasks, keyed by job so `cancelJob` can stop one.
     private var refineTasks: [UUID: Task<Void, Never>] = [:]
     /// Jobs already routed into a refine, so the refine's own terminal `.done`
-    /// can't re-trigger another refine.
+    /// can't re-trigger another refine. Cleared on completion AND cancel.
     private var refiningJobIDs: Set<UUID> = []
+    /// Tail of the FIFO refine chain. Each new refine awaits the previous one's
+    /// task before starting its own work, so only ONE heavy MAX refine runs at a
+    /// time — they share the dedicated refine WhisperKit instance and contend
+    /// for the ANE / RAM. Reset to `nil` when the queue drains.
+    private var refineChain: Task<Void, Never>?
 
     /// Marker-file extension the engine writes next to a meeting's `.txt` while
     /// a MAX refine is in flight; Timbre reads its presence to show a "Refining"
@@ -477,10 +487,13 @@ class PipelineQueue {
 
         case .refining:
             // Stop the background MAX upgrade but KEEP the FAST result already
-            // on disk — the meeting stays usable. Cancel the refine task,
-            // remove the marker, and settle the job at `.done`.
+            // on disk — the meeting stays usable. Cancel the refine task, drop
+            // it from the in-flight set (so it can't leak or block a re-refine),
+            // remove the marker, and settle the job at `.done`. The cancelled
+            // task still runs its own cleanup + drain check via `runRefine`.
             refineTasks[id]?.cancel()
             refineTasks[id] = nil
+            refiningJobIDs.remove(id)
             removeRefineMarker(jobID: id)
             updateJobState(id: id, to: .done)
 
@@ -1383,13 +1396,20 @@ class PipelineQueue {
         let namingSlug = jobs[idx].namingSlug
         updateJobState(id: jobID, to: .refining)
         logger.info("[\(PipelineJob.shortID(for: jobID), privacy: .public)] max_refine_start")
-        refineTasks[jobID] = Task { [weak self] in
+        // FIFO gate: wait for the previous refine (if any) before doing work, so
+        // refines never overlap on the shared refine WhisperKit. A cancelled
+        // predecessor still completes its task, so the chain never stalls.
+        let previous = refineChain
+        let task = Task { [weak self] in
+            await previous?.value
             await self?.runRefine(
                 jobID: jobID, refiner: refiner, input: input,
                 transcriptPath: transcriptPath, namingSlug: namingSlug,
                 title: title, outputDir: outputDir,
             )
         }
+        refineTasks[jobID] = task
+        refineChain = task
     }
 
     private func runRefine(
@@ -1427,10 +1447,18 @@ class PipelineQueue {
         }
         removeRefineMarker(transcriptPath: transcriptPath)
         refineTasks[jobID] = nil
+        refiningJobIDs.remove(jobID)
         // Only settle here if cancel didn't already (cancel sets `.done` first).
         if let job = jobs.first(where: { $0.id == jobID }), job.state == .refining {
             updateJobState(id: jobID, to: .done)
             if let report { onRefineComplete?(job, report) }
+        }
+        // Queue drained (this was the last refine) → let the owner free the
+        // dedicated refine WhisperKit. A refine queued after this one is already
+        // in `refiningJobIDs`, so it keeps the model alive.
+        if refiningJobIDs.isEmpty {
+            refineChain = nil
+            onRefineQueueDrained?()
         }
     }
 
@@ -1486,9 +1514,13 @@ class PipelineQueue {
     }
 
     /// Test hook: await every in-flight MAX refine task so a test can assert on
-    /// the post-refine state without racing the background upgrade.
+    /// the post-refine state without racing the background upgrade. Also awaits
+    /// the chain tail so a cancelled refine's own unwind (marker cleanup, drain
+    /// callback) has completed — `cancelJob` removes the task from
+    /// `refineTasks`, but the chain still runs it to completion.
     func awaitRefineTasks() async {
         for task in refineTasks.values { await task.value }
+        await refineChain?.value
     }
 
     // MARK: - Late re-apply speaker names

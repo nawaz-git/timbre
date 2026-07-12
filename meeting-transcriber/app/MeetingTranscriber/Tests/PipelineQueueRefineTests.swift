@@ -124,6 +124,72 @@ final class PipelineQueueRefineTests: XCTestCase {
         XCTAssertNil(queue.jobs.first { $0.id == job.id }, "the interrupted refine job is discarded")
     }
 
+    func testRefineQueueDrainedFiresOnCompletion() async {
+        let output = RefineOutput(
+            segments: [TimestampedSegment(start: 0, end: 1, text: "R", speaker: "Alice")],
+            transcript: "[00:00:00] Alice: R", report: stubReport(),
+        )
+        let (queue, jobID, _, _) = makeQueueWithCompletedJob(refiner: { StubRefiner(output: output) })
+        var drainedCount = 0
+        queue.onRefineQueueDrained = { drainedCount += 1 }
+
+        queue.markFastComplete(jobID: jobID)
+        await queue.awaitRefineTasks()
+        XCTAssertEqual(drainedCount, 1, "drain callback fires exactly once when the last refine finishes")
+    }
+
+    func testRefineQueueDrainedFiresOnCancel() async {
+        let output = RefineOutput(segments: [], transcript: "X", report: stubReport())
+        let (queue, jobID, _, _) = makeQueueWithCompletedJob(
+            refiner: { StubRefiner(output: output, delay: .seconds(5)) },
+        )
+        var drained = false
+        queue.onRefineQueueDrained = { drained = true }
+
+        queue.markFastComplete(jobID: jobID)
+        queue.cancelJob(id: jobID)
+        await queue.awaitRefineTasks()
+        XCTAssertTrue(drained, "drain fires after a cancelled refine unwinds so refine resources are freed")
+    }
+
+    func testConcurrentRefinesRunOneAtATime() async {
+        // Two completed FAST jobs whose refines must NOT overlap — they share
+        // the dedicated refine engine, so the queue serializes them FIFO.
+        let tracker = OverlapTracker()
+        let out = RefineOutput(segments: [], transcript: "X", report: stubReport())
+        let queue = PipelineQueue(
+            logDir: root.appendingPathComponent("ipc"),
+            outputDir: root,
+            maxRefinerFactory: { OverlapRefiner(tracker: tracker, output: out) },
+            processingModeProvider: { .max },
+        )
+        func makeJob(_ stem: String) -> UUID {
+            let txtURL = root.appendingPathComponent("protocols/\(stem).txt")
+            try? "FAST".write(to: txtURL, atomically: true, encoding: .utf8)
+            try? Data([0]).write(to: root.appendingPathComponent("recordings/\(stem)_app.wav"))
+            let slug = "\(stem)_abcd1234"
+            let segs = [TimestampedSegment(start: 0, end: 1, text: "FAST", speaker: "Remote")]
+            try? JSONEncoder().encode(segs).write(to: root.appendingPathComponent("recordings/\(slug)_segments.json"))
+            var job = PipelineJob(meetingTitle: stem, appName: "Chrome", mixPath: nil, appPath: nil, micPath: nil, micDelay: 0)
+            job.transcriptPath = txtURL
+            job.namingSlug = slug
+            job.state = .generatingProtocol
+            queue.insertJobForTesting(job)
+            return job.id
+        }
+        let id1 = makeJob("20260712_1500_a")
+        let id2 = makeJob("20260712_1600_b")
+
+        queue.markFastComplete(jobID: id1)
+        queue.markFastComplete(jobID: id2)
+        await queue.awaitRefineTasks()
+
+        let peak = await tracker.maxConcurrent
+        XCTAssertEqual(peak, 1, "refines never overlap on the shared refine engine")
+        XCTAssertEqual(queue.jobs.first { $0.id == id1 }?.state, .done)
+        XCTAssertEqual(queue.jobs.first { $0.id == id2 }?.state, .done)
+    }
+
     func testFastModeSkipsRefine() async {
         // processingMode fast → no refine, straight to done.
         let stem = "20260712_1300_fast"
@@ -142,6 +208,37 @@ final class PipelineQueueRefineTests: XCTestCase {
 
         queue.markFastComplete(jobID: job.id)
         XCTAssertEqual(queue.jobs.first { $0.id == job.id }?.state, .done, "FAST mode never enters refining")
+    }
+}
+
+/// Tracks the peak number of concurrently-executing refines, so a test can
+/// assert the FIFO gate never lets two overlap.
+private actor OverlapTracker {
+    private(set) var maxConcurrent = 0
+    private var active = 0
+    func enter() { active += 1; maxConcurrent = max(maxConcurrent, active) }
+    func leave() { active -= 1 }
+}
+
+/// A refiner that marks itself active for a short window so two of them would
+/// visibly overlap if the queue failed to serialize them.
+private final class OverlapRefiner: MaxRefining, @unchecked Sendable {
+    let tracker: OverlapTracker
+    let output: RefineOutput
+
+    init(tracker: OverlapTracker, output: RefineOutput) {
+        self.tracker = tracker
+        self.output = output
+    }
+
+    func refine(
+        _: RefineInput,
+        progress _: @escaping @Sendable (RefineStage, Double) -> Void,
+    ) async throws -> RefineOutput {
+        await tracker.enter()
+        try? await Task.sleep(for: .milliseconds(50))
+        await tracker.leave()
+        return output
     }
 }
 
