@@ -45,9 +45,15 @@ export function ConfirmDialog({
     }
   }, [])
 
-  // Initial focus on Cancel — the non-destructive choice.
+  // Initial focus on Cancel — the non-destructive choice — and restore focus to
+  // whatever was focused when the dialog opened (usually the trigger button) on
+  // close, so keyboard users aren't dumped back to <body>.
   useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null
     cancelRef.current?.focus()
+    return () => {
+      previouslyFocused?.focus?.()
+    }
   }, [])
 
   const handleConfirm = useCallback(() => {
