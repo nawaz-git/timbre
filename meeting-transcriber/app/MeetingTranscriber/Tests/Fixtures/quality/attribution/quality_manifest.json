@@ -1,0 +1,76 @@
+{
+  "note": "Fixture matrix + per-tier WDER/DER targets for the attribution quality lane. Synthetic fixtures are committed; AMI-derived fixtures (real overlap, >3 speakers, long meetings) are a CI/first-run download into this directory and share the schema.",
+  "fixtures": [
+    {
+      "name": "synth_dualtrack_2spk",
+      "kind": "dualtrack",
+      "class": "dualtrack",
+      "committed": true,
+      "speakers": 3,
+      "notes": "clean headset-style dual track"
+    },
+    {
+      "name": "synth_dualtrack_2spk_bleed",
+      "kind": "dualtrack",
+      "class": "bleed",
+      "committed": true,
+      "speakers": 3,
+      "notes": "app bled into mic at -18 dB / 40 ms"
+    },
+    {
+      "name": "synth_mixed_3spk",
+      "kind": "mixed",
+      "class": "mixed",
+      "committed": true,
+      "speakers": 3,
+      "notes": "single combined track, import path"
+    },
+    {
+      "name": "ami_dualtrack_sim_*",
+      "kind": "dualtrack",
+      "class": "dualtrack",
+      "committed": false,
+      "notes": "AMI headset channels, real turns \u2014 CI download"
+    },
+    {
+      "name": "ami_mix_*",
+      "kind": "mixed",
+      "class": "mixed",
+      "committed": false,
+      "notes": "AMI mix, 4 speakers real overlap \u2014 CI download"
+    },
+    {
+      "name": "overlap_dense_*",
+      "kind": "mixed",
+      "class": "overlap",
+      "committed": false,
+      "notes": ">=20% overlapped speech \u2014 CI download"
+    }
+  ],
+  "targets": {
+    "dualtrack": {
+      "wder_fast": 0.1,
+      "wder_max": 0.05,
+      "der_fast": 0.14,
+      "der_max": 0.09
+    },
+    "mixed": {
+      "wder_fast": 0.15,
+      "wder_max": 0.08,
+      "der_fast": 0.22,
+      "der_max": 0.15
+    },
+    "overlap_recall": {
+      "fast": 0.3,
+      "max": 0.6
+    },
+    "duplicate_line_rate_per_10min": {
+      "max": 1.0
+    }
+  },
+  "ratchet": {
+    "baseline_file": "app/MeetingTranscriber/Tests/Quality/attribution_baselines.json",
+    "tolerance_relative": 0.1,
+    "note": "Recorded on the first CI run over real fixtures; the lane then fails on a >10% relative WDER regression."
+  }
+}

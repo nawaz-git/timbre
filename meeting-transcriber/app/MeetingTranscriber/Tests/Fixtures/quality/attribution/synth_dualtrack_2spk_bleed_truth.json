@@ -1,0 +1,321 @@
+{
+  "fixture": "synth_dualtrack_2spk_bleed",
+  "kind": "dualtrack",
+  "sampleRate": 16000,
+  "duration": 16.293563,
+  "words": [
+    {
+      "w": "Good",
+      "start": 0.0,
+      "end": 0.34284,
+      "speaker": "A"
+    },
+    {
+      "w": "morning",
+      "start": 0.34284,
+      "end": 0.68568,
+      "speaker": "A"
+    },
+    {
+      "w": "everyone",
+      "start": 0.68568,
+      "end": 1.028521,
+      "speaker": "A"
+    },
+    {
+      "w": "and",
+      "start": 1.028521,
+      "end": 1.371361,
+      "speaker": "A"
+    },
+    {
+      "w": "welcome",
+      "start": 1.371361,
+      "end": 1.714201,
+      "speaker": "A"
+    },
+    {
+      "w": "to",
+      "start": 1.714201,
+      "end": 2.057041,
+      "speaker": "A"
+    },
+    {
+      "w": "the",
+      "start": 2.057041,
+      "end": 2.399882,
+      "speaker": "A"
+    },
+    {
+      "w": "weekly",
+      "start": 2.399882,
+      "end": 2.742722,
+      "speaker": "A"
+    },
+    {
+      "w": "sync.",
+      "start": 2.742722,
+      "end": 3.085562,
+      "speaker": "A"
+    },
+    {
+      "w": "Thanks",
+      "start": 3.585562,
+      "end": 3.896312,
+      "speaker": "Me"
+    },
+    {
+      "w": "let",
+      "start": 3.896312,
+      "end": 4.207062,
+      "speaker": "Me"
+    },
+    {
+      "w": "me",
+      "start": 4.207062,
+      "end": 4.517812,
+      "speaker": "Me"
+    },
+    {
+      "w": "quickly",
+      "start": 4.517812,
+      "end": 4.828562,
+      "speaker": "Me"
+    },
+    {
+      "w": "share",
+      "start": 4.828562,
+      "end": 5.139312,
+      "speaker": "Me"
+    },
+    {
+      "w": "the",
+      "start": 5.139312,
+      "end": 5.450062,
+      "speaker": "Me"
+    },
+    {
+      "w": "current",
+      "start": 5.450062,
+      "end": 5.760812,
+      "speaker": "Me"
+    },
+    {
+      "w": "status.",
+      "start": 5.760812,
+      "end": 6.071562,
+      "speaker": "Me"
+    },
+    {
+      "w": "The",
+      "start": 6.571562,
+      "end": 6.877843,
+      "speaker": "B"
+    },
+    {
+      "w": "backend",
+      "start": 6.877843,
+      "end": 7.184125,
+      "speaker": "B"
+    },
+    {
+      "w": "migration",
+      "start": 7.184125,
+      "end": 7.490406,
+      "speaker": "B"
+    },
+    {
+      "w": "is",
+      "start": 7.490406,
+      "end": 7.796687,
+      "speaker": "B"
+    },
+    {
+      "w": "done",
+      "start": 7.796687,
+      "end": 8.102968,
+      "speaker": "B"
+    },
+    {
+      "w": "and",
+      "start": 8.102968,
+      "end": 8.40925,
+      "speaker": "B"
+    },
+    {
+      "w": "all",
+      "start": 8.40925,
+      "end": 8.715531,
+      "speaker": "B"
+    },
+    {
+      "w": "tests",
+      "start": 8.715531,
+      "end": 9.021812,
+      "speaker": "B"
+    },
+    {
+      "w": "are",
+      "start": 9.021812,
+      "end": 9.328094,
+      "speaker": "B"
+    },
+    {
+      "w": "green.",
+      "start": 9.328094,
+      "end": 9.634375,
+      "speaker": "B"
+    },
+    {
+      "w": "Great",
+      "start": 10.134375,
+      "end": 10.451063,
+      "speaker": "A"
+    },
+    {
+      "w": "work",
+      "start": 10.451063,
+      "end": 10.76775,
+      "speaker": "A"
+    },
+    {
+      "w": "how",
+      "start": 10.76775,
+      "end": 11.084437,
+      "speaker": "A"
+    },
+    {
+      "w": "is",
+      "start": 11.084437,
+      "end": 11.401125,
+      "speaker": "A"
+    },
+    {
+      "w": "the",
+      "start": 11.401125,
+      "end": 11.717813,
+      "speaker": "A"
+    },
+    {
+      "w": "frontend",
+      "start": 11.717813,
+      "end": 12.0345,
+      "speaker": "A"
+    },
+    {
+      "w": "coming",
+      "start": 12.0345,
+      "end": 12.351187,
+      "speaker": "A"
+    },
+    {
+      "w": "along",
+      "start": 12.351187,
+      "end": 12.667875,
+      "speaker": "A"
+    },
+    {
+      "w": "this",
+      "start": 12.667875,
+      "end": 12.984562,
+      "speaker": "A"
+    },
+    {
+      "w": "week.",
+      "start": 12.984562,
+      "end": 13.30125,
+      "speaker": "A"
+    },
+    {
+      "w": "I",
+      "start": 13.80125,
+      "end": 14.050481,
+      "speaker": "Me"
+    },
+    {
+      "w": "will",
+      "start": 14.050481,
+      "end": 14.299713,
+      "speaker": "Me"
+    },
+    {
+      "w": "send",
+      "start": 14.299713,
+      "end": 14.548944,
+      "speaker": "Me"
+    },
+    {
+      "w": "the",
+      "start": 14.548944,
+      "end": 14.798175,
+      "speaker": "Me"
+    },
+    {
+      "w": "meeting",
+      "start": 14.798175,
+      "end": 15.047406,
+      "speaker": "Me"
+    },
+    {
+      "w": "notes",
+      "start": 15.047406,
+      "end": 15.296638,
+      "speaker": "Me"
+    },
+    {
+      "w": "right",
+      "start": 15.296638,
+      "end": 15.545869,
+      "speaker": "Me"
+    },
+    {
+      "w": "after",
+      "start": 15.545869,
+      "end": 15.7951,
+      "speaker": "Me"
+    },
+    {
+      "w": "this",
+      "start": 15.7951,
+      "end": 16.044332,
+      "speaker": "Me"
+    },
+    {
+      "w": "call.",
+      "start": 16.044332,
+      "end": 16.293563,
+      "speaker": "Me"
+    }
+  ],
+  "turns": [
+    {
+      "speaker": "A",
+      "start": 0.0,
+      "end": 3.085562
+    },
+    {
+      "speaker": "Me",
+      "start": 3.585562,
+      "end": 6.071562
+    },
+    {
+      "speaker": "B",
+      "start": 6.571562,
+      "end": 9.634375
+    },
+    {
+      "speaker": "A",
+      "start": 10.134375,
+      "end": 13.30125
+    },
+    {
+      "speaker": "Me",
+      "start": 13.80125,
+      "end": 16.293563
+    }
+  ],
+  "appAudio": "synth_dualtrack_2spk_app.wav",
+  "micAudio": "synth_dualtrack_2spk_bleed_mic.wav",
+  "micDelay": 0.0,
+  "micSpeaker": "Me"
+}

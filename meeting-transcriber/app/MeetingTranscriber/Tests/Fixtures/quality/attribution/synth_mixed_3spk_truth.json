@@ -1,0 +1,294 @@
+{
+  "fixture": "synth_mixed_3spk",
+  "kind": "mixed",
+  "sampleRate": 16000,
+  "duration": 15.995437,
+  "words": [
+    {
+      "w": "Let",
+      "start": 0.0,
+      "end": 0.324719,
+      "speaker": "A"
+    },
+    {
+      "w": "us",
+      "start": 0.324719,
+      "end": 0.649438,
+      "speaker": "A"
+    },
+    {
+      "w": "start",
+      "start": 0.649438,
+      "end": 0.974156,
+      "speaker": "A"
+    },
+    {
+      "w": "with",
+      "start": 0.974156,
+      "end": 1.298875,
+      "speaker": "A"
+    },
+    {
+      "w": "the",
+      "start": 1.298875,
+      "end": 1.623594,
+      "speaker": "A"
+    },
+    {
+      "w": "quarterly",
+      "start": 1.623594,
+      "end": 1.948312,
+      "speaker": "A"
+    },
+    {
+      "w": "planning",
+      "start": 1.948313,
+      "end": 2.273031,
+      "speaker": "A"
+    },
+    {
+      "w": "review.",
+      "start": 2.273031,
+      "end": 2.59775,
+      "speaker": "A"
+    },
+    {
+      "w": "I",
+      "start": 3.09775,
+      "end": 3.401618,
+      "speaker": "B"
+    },
+    {
+      "w": "have",
+      "start": 3.401618,
+      "end": 3.705486,
+      "speaker": "B"
+    },
+    {
+      "w": "prepared",
+      "start": 3.705486,
+      "end": 4.009354,
+      "speaker": "B"
+    },
+    {
+      "w": "the",
+      "start": 4.009354,
+      "end": 4.313222,
+      "speaker": "B"
+    },
+    {
+      "w": "roadmap",
+      "start": 4.313222,
+      "end": 4.61709,
+      "speaker": "B"
+    },
+    {
+      "w": "for",
+      "start": 4.61709,
+      "end": 4.920958,
+      "speaker": "B"
+    },
+    {
+      "w": "the",
+      "start": 4.920958,
+      "end": 5.224826,
+      "speaker": "B"
+    },
+    {
+      "w": "next",
+      "start": 5.224826,
+      "end": 5.528694,
+      "speaker": "B"
+    },
+    {
+      "w": "release.",
+      "start": 5.528694,
+      "end": 5.832562,
+      "speaker": "B"
+    },
+    {
+      "w": "The",
+      "start": 6.332562,
+      "end": 6.647984,
+      "speaker": "C"
+    },
+    {
+      "w": "design",
+      "start": 6.647984,
+      "end": 6.963406,
+      "speaker": "C"
+    },
+    {
+      "w": "team",
+      "start": 6.963406,
+      "end": 7.278828,
+      "speaker": "C"
+    },
+    {
+      "w": "finished",
+      "start": 7.278828,
+      "end": 7.59425,
+      "speaker": "C"
+    },
+    {
+      "w": "the",
+      "start": 7.59425,
+      "end": 7.909671,
+      "speaker": "C"
+    },
+    {
+      "w": "new",
+      "start": 7.909671,
+      "end": 8.225093,
+      "speaker": "C"
+    },
+    {
+      "w": "onboarding",
+      "start": 8.225093,
+      "end": 8.540515,
+      "speaker": "C"
+    },
+    {
+      "w": "flow.",
+      "start": 8.540515,
+      "end": 8.855937,
+      "speaker": "C"
+    },
+    {
+      "w": "Perfect",
+      "start": 9.355937,
+      "end": 9.701145,
+      "speaker": "A"
+    },
+    {
+      "w": "can",
+      "start": 9.701145,
+      "end": 10.046354,
+      "speaker": "A"
+    },
+    {
+      "w": "we",
+      "start": 10.046354,
+      "end": 10.391562,
+      "speaker": "A"
+    },
+    {
+      "w": "ship",
+      "start": 10.391562,
+      "end": 10.73677,
+      "speaker": "A"
+    },
+    {
+      "w": "the",
+      "start": 10.73677,
+      "end": 11.081979,
+      "speaker": "A"
+    },
+    {
+      "w": "onboarding",
+      "start": 11.081979,
+      "end": 11.427187,
+      "speaker": "A"
+    },
+    {
+      "w": "before",
+      "start": 11.427187,
+      "end": 11.772395,
+      "speaker": "A"
+    },
+    {
+      "w": "the",
+      "start": 11.772395,
+      "end": 12.117604,
+      "speaker": "A"
+    },
+    {
+      "w": "deadline.",
+      "start": 12.117604,
+      "end": 12.462812,
+      "speaker": "A"
+    },
+    {
+      "w": "Yes",
+      "start": 12.962812,
+      "end": 13.29977,
+      "speaker": "C"
+    },
+    {
+      "w": "it",
+      "start": 13.29977,
+      "end": 13.636729,
+      "speaker": "C"
+    },
+    {
+      "w": "is",
+      "start": 13.636729,
+      "end": 13.973687,
+      "speaker": "C"
+    },
+    {
+      "w": "ready",
+      "start": 13.973687,
+      "end": 14.310645,
+      "speaker": "C"
+    },
+    {
+      "w": "pending",
+      "start": 14.310645,
+      "end": 14.647604,
+      "speaker": "C"
+    },
+    {
+      "w": "a",
+      "start": 14.647604,
+      "end": 14.984562,
+      "speaker": "C"
+    },
+    {
+      "w": "final",
+      "start": 14.984562,
+      "end": 15.32152,
+      "speaker": "C"
+    },
+    {
+      "w": "accessibility",
+      "start": 15.32152,
+      "end": 15.658479,
+      "speaker": "C"
+    },
+    {
+      "w": "pass.",
+      "start": 15.658479,
+      "end": 15.995437,
+      "speaker": "C"
+    }
+  ],
+  "turns": [
+    {
+      "speaker": "A",
+      "start": 0.0,
+      "end": 2.59775
+    },
+    {
+      "speaker": "B",
+      "start": 3.09775,
+      "end": 5.832562
+    },
+    {
+      "speaker": "C",
+      "start": 6.332562,
+      "end": 8.855937
+    },
+    {
+      "speaker": "A",
+      "start": 9.355937,
+      "end": 12.462812
+    },
+    {
+      "speaker": "C",
+      "start": 12.962812,
+      "end": 15.995437
+    }
+  ],
+  "audio": "synth_mixed_3spk_mix.wav"
+}
