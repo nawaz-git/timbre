@@ -6,6 +6,7 @@ import { app, type WebContents } from 'electron'
 import type { EnrolledSpeaker, EngineHeartbeat, NumSpeakersHint } from '../shared/types'
 import { globalSpeakersDBPath } from './settings'
 import { ENGINE_IPC_DIR } from './chromeProbe'
+import { readEngineCaptureHealthy } from './enginePermissions'
 
 // Re-export so existing importers of `EngineHeartbeat` from this module keep
 // working after the type moved to the shared surface (imported on both sides).
@@ -486,15 +487,19 @@ export interface EngineReuseVerdict {
 
 /**
  * Pure decision: can a running engine be reused instead of killed + relaunched?
- * Reuse only when the heartbeat is present, fresh (< HEARTBEAT_FRESH_MS old),
- * and its embedded version matches the version this Timbre build expects. Any
- * doubt — no heartbeat, stale, clock-skewed, or version mismatch — declines, so
- * the caller falls back to the always-safe graceful stop + relaunch.
+ * Reuse only when the heartbeat is present, fresh (< HEARTBEAT_FRESH_MS old), its
+ * embedded version matches the version this Timbre build expects, AND its
+ * capture permissions are healthy (`permissionsHealthy`, sourced by the caller
+ * from the engine's verdict file). Any doubt — no heartbeat, stale, clock-skewed,
+ * version mismatch, stale-denied TCC, or a busy `processing` state — declines, so
+ * the caller falls back to the always-safe graceful stop + relaunch (which
+ * re-runs the engine's permission preflight).
  */
 export function evaluateEngineReuse(
   heartbeat: EngineHeartbeat | null,
   expectedVersion: string,
-  nowMs: number
+  nowMs: number,
+  permissionsHealthy: boolean
 ): EngineReuseVerdict {
   if (!heartbeat) return { reuse: false, reason: 'no-heartbeat' }
   const age = nowMs - heartbeat.updatedAt
@@ -506,6 +511,13 @@ export function evaluateEngineReuse(
       reuse: false,
       reason: `version-mismatch(${heartbeat.version}!=${expectedVersion})`
     }
+  }
+  // A surviving engine can hold stale-DENIED TCC (macOS never refreshes a running
+  // process's grants); reusing it would keep writing zero audio. Only reuse when
+  // the capture-critical permissions are healthy — otherwise relaunch, which
+  // re-runs the engine's preflight.
+  if (!permissionsHealthy) {
+    return { reuse: false, reason: 'permissions-unhealthy' }
   }
   // A `processing` engine is either finishing a meeting off-main or shutting down
   // (graceful shutdown keeps the heartbeat beating as `processing` now) — both
@@ -574,12 +586,23 @@ export async function startLiveRecorder(env: Record<string, string> = {}): Promi
 
   // Step 0: reuse a healthy running engine instead of the kill-mid-IO +
   // relaunch that every routine Timbre launch used to do. A fresh,
-  // version-matched heartbeat means the engine is already watching with
-  // current permissions, so relaunching would needlessly SIGTERM a live audio
-  // tap. (Until the engine writes the heartbeat this always misses and we fall
-  // through to the safe stop + relaunch below.) The extra isEngineAlive() call
-  // closes the fresh-heartbeat-but-just-died race.
-  const verdict = evaluateEngineReuse(await readEngineHeartbeat(), app.getVersion(), Date.now())
+  // version-matched heartbeat with healthy capture permissions means the engine
+  // is already watching with current TCC, so relaunching would needlessly SIGTERM
+  // a live audio tap. Reading the engine's own permission verdict here is the
+  // cheapest robust guard against reusing an engine sitting on stale-denied TCC.
+  // (Until the engine writes the heartbeat this always misses and we fall through
+  // to the safe stop + relaunch below.) The extra isEngineAlive() call closes the
+  // fresh-heartbeat-but-just-died race.
+  const [heartbeat, permissionsHealthy] = await Promise.all([
+    readEngineHeartbeat(),
+    readEngineCaptureHealthy()
+  ])
+  const verdict = evaluateEngineReuse(
+    heartbeat,
+    app.getVersion(),
+    Date.now(),
+    permissionsHealthy
+  )
   if (verdict.reuse && isEngineAlive()) {
     console.log('[live-recorder] reusing healthy engine (skipping kill + relaunch)')
     return { ok: true, appPath, reused: true }
