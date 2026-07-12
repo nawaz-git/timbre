@@ -25,6 +25,23 @@ protocol StreamingTranscribingEngine: TranscribingEngine {
     func transcribeSamples(_ samples: [Float]) async throws -> String
 }
 
+/// Engines that can additionally emit per-word timestamps, enabling
+/// `WordTimeline` word-level speaker attribution. Kept as a capability
+/// protocol (like `StreamingTranscribingEngine`) so a backend without
+/// reliable word timings simply doesn't conform and the pipeline falls back
+/// to per-segment assignment. Word emission is batch-only — the live-captions
+/// `transcribeSamples` path is deliberately untouched.
+@MainActor
+protocol WordTimestampingEngine: TranscribingEngine {
+    /// Transcribe a 16 kHz mono WAV and return both the display segments (same
+    /// shape as `transcribeSegments`) and the per-word timeline, each word
+    /// stamped with `source` so the dual-source pipeline can tell mic from app.
+    func transcribeWords(
+        audioPath: URL,
+        source: WordTimeline.Track,
+    ) async throws -> (segments: [TimestampedSegment], words: [WordTimeline.Word])
+}
+
 extension TranscribingEngine {
     /// Label and merge pre-transcribed app/mic segments by timestamp.
     func mergeDualSourceSegments(
