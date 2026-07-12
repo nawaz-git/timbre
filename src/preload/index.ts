@@ -47,7 +47,7 @@ const api = {
   },
   meetings: {
     list: (): Promise<MeetingSummary[]> => ipcRenderer.invoke(IPC.meetingsList),
-    open: (folderPath: string): Promise<string> => ipcRenderer.invoke(IPC.meetingsOpen, folderPath),
+    open: (meetingId: string): Promise<string> => ipcRenderer.invoke(IPC.meetingsOpen, meetingId),
     transcript: (meetingId: string): Promise<MeetingTranscript> =>
       ipcRenderer.invoke(IPC.meetingsTranscript, meetingId),
     renameSpeaker: (
@@ -147,8 +147,8 @@ const api = {
     import: (): Promise<ImportResult> => ipcRenderer.invoke(IPC.fileImport)
   },
   backend: {
-    spawn: (filePath: string, outputDir: string): Promise<BackendJob> =>
-      ipcRenderer.invoke(IPC.backendSpawn, filePath, outputDir),
+    spawn: (filePath: string): Promise<BackendJob> =>
+      ipcRenderer.invoke(IPC.backendSpawn, filePath),
     /**
      * Subscribe to progress events for any in-flight backend job. Returns
      * an unsubscribe function. Each event includes the originating `jobId`

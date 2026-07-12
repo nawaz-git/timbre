@@ -248,7 +248,7 @@ export function HomeView({ onOpenMeeting, onViewAll }: HomeViewProps): JSX.Eleme
       })
       return
     }
-    const job = await window.api.backend.spawn(result.filePath, settings.outputFolder)
+    const job = await window.api.backend.spawn(result.filePath)
     setBanner({
       jobId: job.jobId,
       filePath: result.filePath,

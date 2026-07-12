@@ -1,6 +1,7 @@
 import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
 import { randomUUID } from 'crypto'
-import { promises as fs } from 'fs'
+import { promises as fs, existsSync } from 'fs'
+import { isAbsolute } from 'path'
 import { IPC } from '../../shared/types'
 import type {
   AppStatus,
@@ -53,6 +54,11 @@ import {
 } from '../meetings'
 import { withMeetingLock } from '../meetingLock'
 import {
+  isSpawnPathAllowed,
+  isTraversalSafeMeetingId,
+  resolveMeetingOpenPath
+} from '../ipcValidation'
+import {
   getStatus,
   importFile,
   reanalyzeMeetingProc,
@@ -62,6 +68,20 @@ import {
 import { addTag, deleteTag, readSettings, readTags, updateTag, writeSettings } from '../settings'
 import * as onboarding from '../onboarding'
 
+/**
+ * The absolute path the user most recently picked via the native import
+ * dialog. `backend:spawn` may only run against this exact path — never an
+ * arbitrary renderer-supplied string — and it is cleared once consumed.
+ */
+let lastPickedImportPath: string | null = null
+
+/** Reject a malformed / traversal-bearing meeting id before it touches disk or the lock. */
+function requireValidMeetingId(meetingId: string): void {
+  if (!isTraversalSafeMeetingId(meetingId)) {
+    throw new Error('Invalid meeting id.')
+  }
+}
+
 /** Register every IPC handler. Called once after `app.whenReady()`. */
 export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.settingsGet, async (): Promise<Settings> => {
@@ -69,6 +89,21 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.settingsSet, async (_event, patch: Partial<Settings>): Promise<Settings> => {
+    // Validate an outgoing Output Folder change before persisting it: it must
+    // be an absolute path we can create. This keeps a relative or fabricated
+    // path from silently becoming the record root.
+    if (patch.outputFolder !== undefined) {
+      if (typeof patch.outputFolder !== 'string' || !isAbsolute(patch.outputFolder)) {
+        throw new Error('Output folder must be an absolute path.')
+      }
+      try {
+        await fs.mkdir(patch.outputFolder, { recursive: true })
+      } catch (err) {
+        throw new Error(
+          `Could not create the output folder: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
     const result = await writeSettings(patch)
     // Re-emit the engine bridge so a scope/mic change takes effect on the next
     // meeting. Best-effort — a failed bridge write must never fail the save.
@@ -121,8 +156,16 @@ export function registerIpcHandlers(): void {
     return listMeetings(settings.outputFolder)
   })
 
-  ipcMain.handle(IPC.meetingsOpen, async (_event, folderPath: string): Promise<string> => {
-    return shell.openPath(folderPath)
+  ipcMain.handle(IPC.meetingsOpen, async (_event, meetingId: string): Promise<string> => {
+    // Resolve the folder to reveal main-side from the meeting id — never open a
+    // renderer-supplied path directly (that would let a crafted path launch an
+    // arbitrary .app). Confirm the resolved folder exists before opening it.
+    const settings = await readSettings()
+    const target = resolveMeetingOpenPath(meetingId, settings.outputFolder, liveRecordingsRoot)
+    if (!target || !existsSync(target)) {
+      return 'Meeting folder not found.'
+    }
+    return shell.openPath(target)
   })
 
   ipcMain.handle(
@@ -151,6 +194,9 @@ export function registerIpcHandlers(): void {
           ]
         })
     if (result.canceled || result.filePaths.length === 0) return {}
+    // Remember the picked path so backend:spawn can verify a later spawn runs
+    // against a file the user actually chose, not an arbitrary renderer string.
+    lastPickedImportPath = result.filePaths[0]
     return { filePath: result.filePaths[0] }
   })
 
@@ -176,26 +222,33 @@ export function registerIpcHandlers(): void {
     return { filePath: result.filePaths[0] }
   })
 
-  ipcMain.handle(
-    IPC.backendSpawn,
-    async (_event, filePath: string, outputDir: string): Promise<BackendJob> => {
-      const jobId = randomUUID()
-      const settings = await readSettings()
-      const numSpeakers = numSpeakersToArg(settings.numSpeakers)
-      console.log('[backend:spawn]', { jobId, filePath, outputDir, numSpeakers })
-      // Fire-and-forget: kicks off transcription in main, surfaces progress
-      // via `backend:event` IPC + recording.status polling. The renderer
-      // receives the jobId immediately so it can correlate later events.
-      importFile(filePath, outputDir, jobId, numSpeakers, settings.asrLanguage)
-        .then((result) => {
-          console.log('[backend:spawn] done', result)
-        })
-        .catch((err: Error) => {
-          console.error('[backend:spawn] failed', err.message)
-        })
-      return { jobId, filePath, outputDir }
+  ipcMain.handle(IPC.backendSpawn, async (_event, filePath: string): Promise<BackendJob> => {
+    // Only spawn against the file the user just picked via the native dialog —
+    // never an arbitrary renderer-supplied path.
+    if (!isSpawnPathAllowed(filePath, lastPickedImportPath)) {
+      throw new Error('Import path was not picked via the file dialog.')
     }
-  )
+    // The output dir is read main-side from settings, not trusted from the
+    // renderer (it previously passed exactly this anyway).
+    const settings = await readSettings()
+    const outputDir = settings.outputFolder
+    const jobId = randomUUID()
+    const numSpeakers = numSpeakersToArg(settings.numSpeakers)
+    // Consume the picked path — a second spawn must re-pick.
+    lastPickedImportPath = null
+    console.log('[backend:spawn]', { jobId, filePath, outputDir, numSpeakers })
+    // Fire-and-forget: kicks off transcription in main, surfaces progress
+    // via `backend:event` IPC + recording.status polling. The renderer
+    // receives the jobId immediately so it can correlate later events.
+    importFile(filePath, outputDir, jobId, numSpeakers, settings.asrLanguage)
+      .then((result) => {
+        console.log('[backend:spawn] done', result)
+      })
+      .catch((err: Error) => {
+        console.error('[backend:spawn] failed', err.message)
+      })
+    return { jobId, filePath, outputDir }
+  })
 
   ipcMain.handle(
     IPC.meetingsRenameSpeaker,
@@ -205,6 +258,7 @@ export function registerIpcHandlers(): void {
       oldName: string,
       newName: string
     ): Promise<{ enrolled: boolean }> => {
+      requireValidMeetingId(meetingId)
       const settings = await readSettings()
       return withMeetingLock(meetingId, () =>
         renameSpeakerInMeeting(settings.outputFolder, meetingId, oldName, newName)
@@ -220,6 +274,7 @@ export function registerIpcHandlers(): void {
       segmentIndex: number,
       newSpeaker: string
     ): Promise<{ speakerCount: number; newSpeaker: string }> => {
+      requireValidMeetingId(meetingId)
       const settings = await readSettings()
       return withMeetingLock(meetingId, () =>
         reassignSegmentSpeaker(settings.outputFolder, meetingId, segmentIndex, newSpeaker)
@@ -234,6 +289,7 @@ export function registerIpcHandlers(): void {
       meetingId: string,
       speakerName: string
     ): Promise<{ additionalSpeakers: string[] }> => {
+      requireValidMeetingId(meetingId)
       const settings = await readSettings()
       return withMeetingLock(meetingId, () =>
         addSpeakerToMeeting(settings.outputFolder, meetingId, speakerName)
@@ -244,6 +300,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC.meetingsRemoveSpeakerLabel,
     async (_event, meetingId: string, speakerName: string): Promise<{ speakerCount: number }> => {
+      requireValidMeetingId(meetingId)
       const settings = await readSettings()
       return withMeetingLock(meetingId, () =>
         removeSpeakerLabelInMeeting(settings.outputFolder, meetingId, speakerName)
@@ -320,6 +377,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC.meetingsRenameTitle,
     async (_event, meetingId: string, newTitle: string): Promise<{ title: string }> => {
+      requireValidMeetingId(meetingId)
       const settings = await readSettings()
       return withMeetingLock(meetingId, () =>
         renameMeetingTitle(settings.outputFolder, meetingId, newTitle)
@@ -401,6 +459,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC.meetingsSetTags,
     async (_event, meetingId: string, tagIds: string[]): Promise<{ tagIds: string[] }> => {
+      requireValidMeetingId(meetingId)
       const settings = await readSettings()
       return withMeetingLock(meetingId, () =>
         setMeetingTags(settings.outputFolder, meetingId, tagIds)
@@ -409,6 +468,7 @@ export function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(IPC.meetingsDelete, async (_event, meetingId: string): Promise<DeleteOutcome> => {
+    requireValidMeetingId(meetingId)
     const settings = await readSettings()
     return withMeetingLock(meetingId, () => deleteMeeting(settings.outputFolder, meetingId))
   })
