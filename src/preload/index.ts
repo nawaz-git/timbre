@@ -20,7 +20,8 @@ import type {
   PrivacyPane,
   RecordingStatus,
   Settings,
-  TagDef
+  TagDef,
+  TranscriptSearchHit
 } from '../shared/types'
 
 /**
@@ -109,7 +110,12 @@ const api = {
     setTags: (meetingId: string, tagIds: string[]): Promise<{ tagIds: string[] }> =>
       ipcRenderer.invoke(IPC.meetingsSetTags, meetingId, tagIds),
     delete: (meetingId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.meetingsDelete, meetingId)
+      ipcRenderer.invoke(IPC.meetingsDelete, meetingId),
+    /** Full-text search across transcript `.txt` files. Empty query → []. */
+    searchTranscripts: (query: string): Promise<TranscriptSearchHit[]> =>
+      ipcRenderer.invoke(IPC.meetingsSearchTranscripts, query),
+    /** Reveal a file in Finder (e.g. an exported transcript). */
+    reveal: (filePath: string): Promise<void> => ipcRenderer.invoke(IPC.meetingsReveal, filePath)
   },
   speakers: {
     list: (): Promise<EnrolledSpeaker[]> => ipcRenderer.invoke(IPC.speakersList),

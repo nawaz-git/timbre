@@ -263,6 +263,14 @@ export interface MeetingSummary {
    */
   additionalSpeakers: string[]
   /**
+   * Distinct speaker display names in this meeting (diarized/named labels),
+   * derived cheaply from data the listers already read (segments sidecar or
+   * flat transcript / speakers.json). Powers client-side "search by who was
+   * in it" without loading each transcript. Empty when unknown (e.g. a
+   * still-processing meeting). The knowledge-graph stream also consumes this.
+   */
+  speakerNames: string[]
+  /**
    * Set on synthesised placeholder rows the main process injects while a
    * Meet is detected but the engine hasn't written a file yet (TICKET-001).
    * Real, filesystem-backed entries leave this `undefined` (falsy). The
@@ -302,6 +310,14 @@ export interface MeetingSummary {
  *       the Settings UI control lands.
  */
 export const LIVE_PLACEHOLDER_DEFAULT_MS = 10_000
+
+/** One full-text transcript search hit — a meeting id plus a match snippet. */
+export interface TranscriptSearchHit {
+  /** Meeting id (`engine:<prefix>` or `imported:<folder>`). */
+  id: string
+  /** ±60-char excerpt around the first match; the query term is highlighted client-side. */
+  snippet: string
+}
 
 /** A category label that can be applied to one or more meetings. */
 export interface TagDef {
@@ -422,6 +438,10 @@ export const IPC = {
   meetingsExportPreview: 'meetings:exportPreview',
   meetingsSetTags: 'meetings:setTags',
   meetingsDelete: 'meetings:delete',
+  /** Full-text search across transcript/protocol `.txt` files → TranscriptSearchHit[]. */
+  meetingsSearchTranscripts: 'meetings:searchTranscripts',
+  /** Reveal a file in Finder (`shell.showItemInFolder`) — e.g. an exported file. */
+  meetingsReveal: 'meetings:reveal',
   tagsList: 'tags:list',
   tagsAdd: 'tags:add',
   tagsUpdate: 'tags:update',

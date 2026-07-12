@@ -19,7 +19,7 @@ import { useAppStatus } from '../state/appStatus'
 import { useSettings } from '../state/settings'
 import { useTags } from '../state/tags'
 import { usePermissions, useChromeMeet, useCaptureWatchdog } from '../state/permissions'
-import { formatDate, formatDuration } from '../state/format'
+import { formatDateRelative, formatDuration } from '../state/format'
 import type {
   ActivityKind,
   AppStatus,
@@ -464,7 +464,14 @@ export function HomeView({ onOpenMeeting, onViewAll }: HomeViewProps): JSX.Eleme
       </section>
 
       <div className="recent-meetings">
-        <h3 className="recent-meetings__heading">Recent meetings</h3>
+        <div className="recent-meetings__header">
+          <h3 className="recent-meetings__heading">Recent meetings</h3>
+          {recent.length > 0 && (
+            <button type="button" className="recent-meetings__view-all" onClick={onViewAll}>
+              View all →
+            </button>
+          )}
+        </div>
         {recentLoading && (
           <div className="recent-meetings__grid" aria-hidden="true">
             <div className="skeleton-row" />
@@ -535,7 +542,7 @@ export function HomeView({ onOpenMeeting, onViewAll }: HomeViewProps): JSX.Eleme
                   </div>
                 ) : (
                   <div className="recent-card__meta">
-                    <span>{formatDate(m.date)}</span>
+                    <span>{formatDateRelative(m.date)}</span>
                     <span aria-hidden="true">·</span>
                     <span className="recent-card__meta-duration">
                       {formatDuration(m.durationSeconds)}
