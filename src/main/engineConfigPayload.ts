@@ -11,9 +11,10 @@ import type { Settings } from '../shared/types'
 /**
  * Build the bridge payload (minus `updatedAt`). Side-effect-free: the caller
  * injects the resolved global-speakers DB path. The `'auto'` num-speakers hint
- * maps to 0 (the engine's auto-detect sentinel). Fields Timbre has no control
- * for (engine override, LLM repair) are intentionally omitted — the engine
- * falls back to its own defaults when a key is absent.
+ * maps to 0 (the engine's auto-detect sentinel). The engine-override field is
+ * intentionally omitted (no Timbre control) — the engine falls back to its own
+ * default when a key is absent. `llmRepair` is nested to match the engine's
+ * `{ enabled }` shape.
  */
 export function buildEngineConfigPayload(
   settings: Settings,
@@ -25,6 +26,7 @@ export function buildEngineConfigPayload(
     processingMode: settings.processingMode,
     asrLanguage: settings.asrLanguage,
     numSpeakersHint: typeof settings.numSpeakers === 'number' ? settings.numSpeakers : 0,
-    globalSpeakersDBPath: globalDBPath
+    globalSpeakersDBPath: globalDBPath,
+    llmRepair: { enabled: settings.llmRepair === true }
   }
 }

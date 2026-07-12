@@ -14,6 +14,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     autoStartWatching: true,
     processingMode: 'fast',
     asrLanguage: '',
+    llmRepair: false,
     ...overrides
   }
 }
@@ -34,7 +35,8 @@ test('buildEngineConfigPayload carries every bridge field', () => {
     processingMode: 'max',
     asrLanguage: 'en',
     numSpeakersHint: 3,
-    globalSpeakersDBPath: '/Users/x/global-speakers.json'
+    globalSpeakersDBPath: '/Users/x/global-speakers.json',
+    llmRepair: { enabled: false }
   })
 })
 
@@ -54,8 +56,15 @@ test('payload does not carry updatedAt (added by the writer)', () => {
   assert.equal('updatedAt' in payload, false)
 })
 
-test('the engine override + llm-repair keys are omitted (engine defaults them)', () => {
+test('the engine-override key is omitted (engine defaults it)', () => {
   const payload = buildEngineConfigPayload(makeSettings(), '/db.json')
   assert.equal('transcriptionEngine' in payload, false)
-  assert.equal('llmRepair' in payload, false)
+})
+
+test('llmRepair rides the bridge nested as { enabled }, default false', () => {
+  assert.deepEqual(buildEngineConfigPayload(makeSettings(), '/db.json').llmRepair, { enabled: false })
+  assert.deepEqual(
+    buildEngineConfigPayload(makeSettings({ llmRepair: true }), '/db.json').llmRepair,
+    { enabled: true }
+  )
 })

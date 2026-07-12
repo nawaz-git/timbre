@@ -92,6 +92,13 @@ export interface Settings {
    */
   asrLanguage: string
   /**
+   * MAX-tier LLM speaker-repair toggle. When on (and a protocol provider is
+   * configured), the refine's optional LLM pass fixes speaker labels under a
+   * strict relabel-only validator. Rides the bridge as `llmRepair.enabled`;
+   * default false. Only meaningful with `processingMode: 'max'`.
+   */
+  llmRepair: boolean
+  /**
    * Wall-clock ms epoch when the user finished (or skipped) the onboarding
    * wizard. `undefined` => the wizard has not been completed and App.tsx
    * mounts it instead of the normal shell. Set via `onboarding:complete`,
@@ -187,8 +194,14 @@ export interface MeetingSummary {
    * of being invisible for the whole processing window. Once the `.txt`
    * lands it is re-derived as `status: 'ready'`. OPTIONAL — every existing
    * call site omits it; the renderer treats `undefined` as 'ready'.
+   *
+   * `refining` is the MAX-tier background upgrade: the FAST transcript is
+   * already on disk (the meeting is usable) while the engine re-writes it with
+   * better speaker attribution. It is derived from a `<prefix>.refining` marker
+   * file the engine writes during the refine and removes on completion —
+   * processing-not-stuck, so a stale-status cap should treat it as in-progress.
    */
-  status?: 'processing' | 'ready'
+  status?: 'processing' | 'ready' | 'refining'
 }
 
 /**

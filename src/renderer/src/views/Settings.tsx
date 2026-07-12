@@ -321,6 +321,26 @@ export function SettingsView(): JSX.Element {
         </SettingsRow>
 
         <SettingsRow
+          label="LLM speaker repair (Max accuracy)"
+          description="During a Max-accuracy refine, use your configured LLM (Claude CLI or a local model) to fix speaker labels — under a strict validator that only lets it relabel, never change your words. Requires a protocol provider and only runs in Max mode."
+        >
+          <label className="toggle-switch" title="LLM speaker repair">
+            <input
+              type="checkbox"
+              checked={settings.llmRepair}
+              disabled={settings.processingMode !== 'max'}
+              onChange={(e) => {
+                void setSettings({ llmRepair: e.target.checked })
+              }}
+            />
+            <span className="toggle-switch__track" aria-hidden="true">
+              <span className="toggle-switch__thumb" />
+            </span>
+            <span className="toggle-switch__label">{settings.llmRepair ? 'On' : 'Off'}</span>
+          </label>
+        </SettingsRow>
+
+        <SettingsRow
           label="Transcription language"
           description="Auto-detect works for most meetings. Pick a language to lock it in if detection drifts."
         >
