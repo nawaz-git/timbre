@@ -2313,4 +2313,78 @@ final class PipelineQueueTests: XCTestCase {
         XCTAssertEqual(loaded1?.mapping["SPEAKER_0"], "Alice")
         XCTAssertEqual(loaded2?.mapping["SPEAKER_0"], "Bob")
     }
+
+    // MARK: - Idle model unload
+
+    private func makeIdleUnloadQueue(
+        engine: MockEngine,
+        interval: TimeInterval,
+        shouldUnload: @escaping () -> Bool = { true },
+    ) -> PipelineQueue {
+        PipelineQueue(
+            engine: engine,
+            diarizationFactory: { MockDiarization() },
+            protocolGeneratorFactory: { MockProtocolGen() },
+            outputDir: tmpDir,
+            logDir: tmpDir,
+            idleUnloadInterval: interval,
+            shouldUnloadIdleModel: shouldUnload,
+        )
+    }
+
+    func testIdleUnloadArmsAndFiresAfterQueueDrains() async throws {
+        let engine = MockEngine()
+        let idleQueue = makeIdleUnloadQueue(engine: engine, interval: 0.1)
+
+        // A job reaching a terminal state with nothing else queued leaves the
+        // queue drained → the idle-unload timer arms.
+        let job = makeJob()
+        idleQueue.insertJobForTesting(job)
+        idleQueue.updateJobState(id: job.id, to: .done)
+        XCTAssertTrue(idleQueue.hasPendingIdleUnloadForTesting)
+
+        try await Task.sleep(for: .seconds(0.5))
+
+        XCTAssertEqual(engine.unloadCallCount, 1)
+        XCTAssertEqual(engine.modelState, .unloaded)
+        XCTAssertFalse(idleQueue.hasPendingIdleUnloadForTesting)
+    }
+
+    func testIdleUnloadCancelledByNewEnqueue() {
+        let engine = MockEngine()
+        let idleQueue = makeIdleUnloadQueue(engine: engine, interval: 0.1)
+
+        let done = makeJob()
+        idleQueue.insertJobForTesting(done)
+        idleQueue.updateJobState(id: done.id, to: .done)
+        XCTAssertTrue(idleQueue.hasPendingIdleUnloadForTesting)
+
+        // New work must cancel the pending unload synchronously so the model
+        // stays resident for the incoming job.
+        idleQueue.enqueue(makeJob())
+        XCTAssertFalse(idleQueue.hasPendingIdleUnloadForTesting)
+        XCTAssertEqual(engine.unloadCallCount, 0)
+    }
+
+    func testIdleUnloadSkippedWhenGateDisallows() {
+        let engine = MockEngine()
+        let idleQueue = makeIdleUnloadQueue(engine: engine, interval: 0.1, shouldUnload: { false })
+
+        let job = makeJob()
+        idleQueue.insertJobForTesting(job)
+        idleQueue.updateJobState(id: job.id, to: .done)
+
+        // Gate returns false (e.g. live captions holding the model) → never arm.
+        XCTAssertFalse(idleQueue.hasPendingIdleUnloadForTesting)
+    }
+
+    func testIdleUnloadNotArmedWithoutEngine() {
+        // The engine-less queue used at early app startup has nothing to
+        // unload and must never arm the timer.
+        let englessQueue = PipelineQueue(logDir: tmpDir, idleUnloadInterval: 0.1)
+        let job = makeJob()
+        englessQueue.insertJobForTesting(job)
+        englessQueue.updateJobState(id: job.id, to: .done)
+        XCTAssertFalse(englessQueue.hasPendingIdleUnloadForTesting)
+    }
 }

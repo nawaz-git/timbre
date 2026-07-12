@@ -33,6 +33,18 @@ class PipelineQueue {
 
     let completedJobLifetime: TimeInterval
 
+    /// How long the queue stays idle (drained, nothing processing) before the
+    /// transcription model is unloaded to reclaim its resident memory. The
+    /// model reloads lazily on the next job, so this trades a one-time reload
+    /// latency for a much lower idle footprint on the always-running engine.
+    /// Injectable so tests can use a short fuse.
+    let idleUnloadInterval: TimeInterval
+
+    /// Gate for the idle unload — return false to keep the model resident
+    /// (e.g. while the live-captions path is using it). Injected so the queue
+    /// stays decoupled from `AppSettings`.
+    let shouldUnloadIdleModel: () -> Bool
+
     /// Cached FluidVAD instance — reused across jobs to avoid model reload.
     private var vad: FluidVAD?
 
@@ -41,6 +53,8 @@ class PipelineQueue {
     private(set) var isProcessing = false
     private var elapsedTimer: Task<Void, Never>?
     private var processTask: Task<Void, Never>?
+    /// Pending idle model-unload timer; cancelled the moment new work arrives.
+    private var unloadTask: Task<Void, Never>?
     private var cancelledJobIDs = Set<UUID>()
 
     /// Called when a job completes (success or error) — for notifications
@@ -308,6 +322,8 @@ class PipelineQueue {
         completedJobLifetime: TimeInterval = 60,
         maxRefinerFactory: (() -> any MaxRefining)? = nil,
         processingModeProvider: @escaping () -> ProcessingMode = { .fast },
+        idleUnloadInterval: TimeInterval = 600,
+        shouldUnloadIdleModel: @escaping () -> Bool = { true },
     ) {
         self.logDir = logDir ?? AppPaths.ipcDir
         self.engine = nil
@@ -325,6 +341,8 @@ class PipelineQueue {
         self.completedJobLifetime = completedJobLifetime
         self.maxRefinerFactory = maxRefinerFactory
         self.processingModeProvider = processingModeProvider
+        self.idleUnloadInterval = idleUnloadInterval
+        self.shouldUnloadIdleModel = shouldUnloadIdleModel
     }
 
     // MARK: - Known speaker names (issue #155)
@@ -389,6 +407,8 @@ class PipelineQueue {
         completedJobLifetime: TimeInterval = 60,
         maxRefinerFactory: (() -> any MaxRefining)? = nil,
         processingModeProvider: @escaping () -> ProcessingMode = { .fast },
+        idleUnloadInterval: TimeInterval = 600,
+        shouldUnloadIdleModel: @escaping () -> Bool = { true },
     ) {
         self.logDir = logDir ?? AppPaths.ipcDir
         self.engine = engine
@@ -406,6 +426,8 @@ class PipelineQueue {
         self.completedJobLifetime = completedJobLifetime
         self.maxRefinerFactory = maxRefinerFactory
         self.processingModeProvider = processingModeProvider
+        self.idleUnloadInterval = idleUnloadInterval
+        self.shouldUnloadIdleModel = shouldUnloadIdleModel
     }
 
     var activeJobs: [PipelineJob] {
@@ -421,6 +443,8 @@ class PipelineQueue {
     }
 
     func enqueue(_ job: PipelineJob) {
+        // New work is arriving — keep the model resident (or reload it).
+        cancelIdleUnload()
         jobs.append(job)
         appendLog(jobID: job.id, event: "enqueued", from: nil, to: job.state)
         saveSnapshot()
@@ -520,6 +544,14 @@ class PipelineQueue {
                 self?.removeJob(id: id)
             }
         }
+        if newState == .done || newState == .error {
+            // A job reached a terminal state. If this leaves the queue fully
+            // drained (e.g. a late-diarization re-run finishing out of band),
+            // arm the idle-unload timer. The main processing path is still
+            // marked `isProcessing` here, so it arms instead from the tail of
+            // `processNext`.
+            scheduleIdleUnloadIfDrained()
+        }
     }
 
     func addWarning(id: UUID, _ message: String) {
@@ -555,11 +587,67 @@ class PipelineQueue {
     private func triggerProcessing() {
         guard !isProcessing else { return }
         guard pendingJobs.first != nil else { return }
+        // About to use the model — cancel any pending idle unload.
+        cancelIdleUnload()
         isProcessing = true
         processTask = Task { [weak self] in
             await self?.processNext()
         }
     }
+
+    // MARK: - Idle model unload
+
+    /// Cancel a pending idle model-unload so the model stays resident for
+    /// imminent work.
+    private func cancelIdleUnload() {
+        unloadTask?.cancel()
+        unloadTask = nil
+    }
+
+    /// Arm the idle-unload timer, but only once the queue is fully drained
+    /// (no waiting jobs, nothing processing) and the injected gate allows it.
+    /// Re-arming simply resets the fuse.
+    private func scheduleIdleUnloadIfDrained() {
+        guard engine != nil else { return }
+        guard pendingJobs.isEmpty, !isProcessing else { return }
+        guard shouldUnloadIdleModel() else { return }
+        unloadTask?.cancel()
+        let interval = idleUnloadInterval
+        unloadTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(interval))
+            guard !Task.isCancelled else { return }
+            await self?.unloadIdleModel()
+        }
+    }
+
+    /// Release the transcription model and log the resident-memory delta.
+    /// Re-checks the drain state after the timer fires so a job that arrived
+    /// during the fuse isn't unloaded out from under.
+    private func unloadIdleModel() async {
+        guard pendingJobs.isEmpty, !isProcessing, let engine else { return }
+        let before = Self.residentMemoryBytes()
+        await engine.unloadModel()
+        unloadTask = nil
+        let after = Self.residentMemoryBytes()
+        logger.info(
+            "Idle model unloaded: resident \(before / 1_048_576, privacy: .public) MB → \(after / 1_048_576, privacy: .public) MB",
+        )
+    }
+
+    /// Current process resident memory in bytes (0 if the query fails).
+    private static func residentMemoryBytes() -> UInt64 {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? info.resident_size : 0
+    }
+
+    /// Test seam: whether an idle model-unload is currently scheduled.
+    var hasPendingIdleUnloadForTesting: Bool { unloadTask != nil }
 
     /// Process the first waiting job through the full pipeline:
     /// resample → transcribe → (diarize) → save transcript → generate protocol → save protocol.
@@ -701,6 +789,10 @@ class PipelineQueue {
 
         isProcessing = false
         triggerProcessing()
+        // If `triggerProcessing` found no further work, the queue is now
+        // drained — arm the idle-unload timer. (When it did pick up more work
+        // it set `isProcessing`, so the guard below no-ops.)
+        scheduleIdleUnloadIfDrained()
     }
 
     // MARK: - Pipeline stages

@@ -29,6 +29,15 @@ final class WhisperKitEngineTests: XCTestCase {
         XCTAssertEqual(engine.language, "de")
     }
 
+    /// `unloadModel` on a never-loaded engine is a safe no-op: no crash and the
+    /// state stays `.unloaded`. Guards the idle-unload timer firing on an engine
+    /// that deferred its launch-time load.
+    func testUnloadModelWhenNotLoadedIsSafe() async {
+        let engine = WhisperKitEngine()
+        await engine.unloadModel()
+        XCTAssertEqual(engine.modelState, .unloaded)
+    }
+
     /// Integration test: downloads whisper-small model and transcribes a German audio fixture.
     func testTranscribeGermanAudio() async throws {
         let fixture = fixtureURL()
@@ -68,6 +77,36 @@ final class WhisperKitEngineTests: XCTestCase {
             foundGerman,
             "Transcript should contain German words, got: \(transcript)",
         )
+    }
+
+    /// Integration test: after `unloadModel`, the engine reports `.unloaded`
+    /// and a subsequent `transcribeSegments` transparently reloads (via
+    /// `ensureModel`) and still produces output — the lazy-load / idle-unload
+    /// contract the memory-lifecycle policy relies on.
+    func testUnloadReleasesModelThenReloadsOnNextTranscribe() async throws {
+        let fixture = fixtureURL()
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: fixture.path),
+            "Test fixture not found at \(fixture.path)",
+        )
+
+        let engine = WhisperKitEngine()
+        engine.modelVariant = "openai_whisper-small"
+        engine.language = "de"
+
+        await engine.loadModel()
+        XCTAssertEqual(engine.modelState, .loaded)
+
+        let first = try await engine.transcribeSegments(audioPath: fixture)
+        XCTAssertFalse(first.isEmpty, "First transcription should produce segments")
+
+        await engine.unloadModel()
+        XCTAssertEqual(engine.modelState, .unloaded, "unloadModel should release the pipeline")
+
+        // No explicit reload — transcribeSegments must lazy-load via ensureModel.
+        let second = try await engine.transcribeSegments(audioPath: fixture)
+        XCTAssertFalse(second.isEmpty, "Engine should reload transparently after unload")
+        XCTAssertEqual(engine.modelState, .loaded, "Engine should be loaded again after reuse")
     }
 
     /// Streaming entry point: same fixture, fed as a raw 16 kHz Float32

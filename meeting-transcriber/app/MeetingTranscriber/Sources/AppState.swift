@@ -864,6 +864,11 @@ final class AppState { // swiftlint:disable:this type_body_length
                 }
                 self?.startChannelHealthMonitoring()
                 self?.startHALSentinel()
+                // Prewarm the ASR model while the meeting records, so
+                // post-meeting processing starts warm even when the engine
+                // deferred its model load at launch. Fire-and-forget;
+                // loadModel dedupes if a load is already in flight.
+                Task { await self?.activeTranscriptionEngine.loadModel() }
 
             case .watching:
                 // Channel-health only runs during recording, but the HAL sentinel
@@ -1212,6 +1217,9 @@ final class AppState { // swiftlint:disable:this type_body_length
             // mid-session switch to Max accuracy is honoured on the next meeting.
             maxRefinerFactory: { [self] in makeMaxRefiner(globalSpeakersDBPath: dbPath) },
             processingModeProvider: { EngineConfig.read().processingMode },
+            // Skip idle model unload while live captions are active — that path
+            // holds its own model usage independent of the pipeline queue.
+            shouldUnloadIdleModel: { [settings] in !settings.liveTranscriptionEnabled },
         )
         queue.loadSnapshot()
         // Fire-and-forget: dir scan + per-file attr probes run off-main so
