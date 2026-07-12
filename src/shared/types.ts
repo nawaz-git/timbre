@@ -657,12 +657,24 @@ export type GrantStatus = 'granted' | 'denied' | 'not-determined' | 'unknown'
  * bundle id. `watchLoopRunning` is the engine-health signal the wizard waits
  * for after a restart-and-verify.
  */
+/**
+ * Engine notification-authorization state, surfaced so the product can tell the
+ * user when engine alerts are muted (error details then appear in-app instead).
+ * `not-determined` normalises the engine's `notDetermined` wire value.
+ */
+export type NotificationAuthStatus = 'authorized' | 'denied' | 'not-determined' | 'provisional'
+
 export interface HelperPermissionSnapshot {
   screenRecording: GrantStatus
   microphone: GrantStatus
   accessibility: GrantStatus
   /** True once the engine has logged "Watch mode started" since last (re)launch. */
   watchLoopRunning: boolean
+  /**
+   * Engine notification-auth state from the verdict JSON. Optional — absent when
+   * the engine build predates the verdict file or didn't name the field.
+   */
+  notifications?: NotificationAuthStatus
 }
 
 /** Result of `onboarding:restartEngine`. */

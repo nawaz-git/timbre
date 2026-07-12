@@ -11,17 +11,20 @@
  * Electron/AppKit API (see qa-002-permission-health-check.md §"Can Mintr
  * Pre-Flight Each Required Permission?").
  *
- * We recover the helper's verdict from two read-only sources, in order of
+ * We recover the helper's verdict from read-only sources, in order of
  * authority:
  *
- *   1. The engine's own live verdict file `/tmp/mt-permission.log`. The
- *      engine writes its `CGPreflightScreenCaptureAccess()` /
- *      `AVCaptureDevice.authorizationStatus` / `AXIsProcessTrusted()`
- *      results there as `checkScreenRecordingLive: … → denied` lines plus
- *      a `[PermissionHealthCheck] screen=… mic=… ax=…` summary
- *      (REQ-001 §1 evidence block). This is the MOST authoritative — it's
- *      the engine's live self-assessment — so we prefer it when present.
- *   2. The unified TCC subsystem log filtered to the helper's bundle id,
+ *   1. The engine's structured verdict JSON (`permission_verdict.json` under
+ *      the Application Support ipc dir) — the engine's live self-assessment,
+ *      written atomically with an `updatedAt` stamp. Preferred when fresh
+ *      (ignored when older than 10 min so a stale verdict can't mask reality).
+ *      Also carries the engine's notification-auth status.
+ *   2. The engine's health log (`permission_health.log`, same dir) — the same
+ *      `checkScreenRecordingLive: … → denied` / `[PermissionHealthCheck]
+ *      screen=… mic=… ax=…` lines the engine appends. Used when the JSON is
+ *      absent/stale. A legacy `/tmp/mt-permission.log` is read as a last-ditch
+ *      fallback for one release (older engine builds still write it).
+ *   3. The unified TCC subsystem log filtered to the helper's bundle id,
  *      using the EXACT `log show … subsystem == "com.apple.TCC" AND
  *      eventMessage CONTAINS "ai.nawaz.mintr-engine"` pattern already
  *      proven in `captureWatchdog.ts → classifyHelperFailure`. We parse
@@ -33,8 +36,10 @@
  */
 import { execFile } from 'child_process'
 import { promises as fsp } from 'fs'
+import { join } from 'path'
 import { shell } from 'electron'
 import { openPrivacyPane } from './permissions'
+import { ENGINE_IPC_DIR } from './chromeProbe'
 import { forceKillEngine, resolveLiveRecorderApp, startLiveRecorder } from './backend'
 import { resetCaptureWatchdog } from './captureWatchdog'
 import { confirmIfRecording, isEngineProcessAlive } from './status'
@@ -42,6 +47,7 @@ import { writeSettings } from './settings'
 import type {
   GrantStatus,
   HelperPermissionSnapshot,
+  NotificationAuthStatus,
   OnboardingRestartResult,
   OnboardingService,
   OnboardingVerifyResult,
@@ -50,8 +56,22 @@ import type {
 
 /** Bundle id of the bundled MintrEngine.app helper (per Info.plist). */
 const ENGINE_BUNDLE_ID = 'ai.nawaz.mintr-engine'
-/** The engine's live permission-verdict file (REQ-001 §1, qa-002). */
-const ENGINE_VERDICT_FILE = '/tmp/mt-permission.log'
+/**
+ * The engine's structured permission verdict — the primary, most-authoritative
+ * source. JSON under the Application Support ipc dir (same dir as
+ * `active_meeting.json`), written atomically by the engine, staleness-gated
+ * (ignored when older than VERDICT_JSON_MAX_AGE_MS).
+ */
+const ENGINE_VERDICT_JSON = join(ENGINE_IPC_DIR, 'permission_verdict.json')
+/** The engine's health log (verdict lines) — fallback when the JSON is absent/stale. */
+const ENGINE_HEALTH_LOG = join(ENGINE_IPC_DIR, 'permission_health.log')
+/**
+ * Legacy fixed-path verdict log. Read only as a last-ditch fallback for one
+ * release, in case an older engine build (still writing /tmp) is installed.
+ */
+const LEGACY_TMP_VERDICT = '/tmp/mt-permission.log'
+/** A verdict JSON older than this is treated as stale and ignored. */
+const VERDICT_JSON_MAX_AGE_MS = 10 * 60_000
 /** Per-call timeout for each `log show` invocation. Mirrors captureWatchdog. */
 const LOG_SHOW_TIMEOUT_MS = 2500
 /** How long verifyEngine polls the engine log for "Watch mode started". */
@@ -62,33 +82,54 @@ const VERIFY_POLL_MS = 1000
 // ─── Public API ────────────────────────────────────────────────────────
 
 /**
- * Probe the HELPER's per-service TCC state. Prefers the engine's own
- * `/tmp/mt-permission.log` verdict (most authoritative); falls back to
- * the tccd subsystem log per-service. `watchLoopRunning` comes from the
- * engine subsystem log regardless.
+ * Probe the HELPER's per-service TCC state. Precedence per service:
+ *   1. the engine's fresh structured verdict JSON (most authoritative)
+ *   2. the engine's health log (new path, then the legacy /tmp fallback)
+ *   3. the tccd subsystem log's Auth Right verdict
+ * `broken` from the engine collapses to `denied`. `watchLoopRunning` and the
+ * notification-auth status come from the engine regardless.
  */
 export async function probeHelperPermissions(): Promise<HelperPermissionSnapshot> {
   // Run all reads in parallel — they're independent and each is bounded.
-  const [verdict, tccLog, watchLoopRunning] = await Promise.all([
-    readEngineVerdictFile(),
+  const [json, logVerdict, tccLog, watchLoopRunning] = await Promise.all([
+    readVerdictJson(),
+    readVerdictLog(),
     runTccLogShow(),
     probeWatchLoopRunning()
   ])
   const fromTcc = parseTccAuthRights(tccLog)
 
-  // Prefer the engine's live verdict file when it named the service;
-  // fall back to the tccd Auth Right verdict otherwise.
-  const pick = (
-    fromFile: GrantStatus | null,
-    fromLog: GrantStatus
-  ): GrantStatus => (fromFile !== null ? fromFile : fromLog)
-
   return {
-    screenRecording: pick(verdict.screenRecording, fromTcc.screenRecording),
-    microphone: pick(verdict.microphone, fromTcc.microphone),
-    accessibility: pick(verdict.accessibility, fromTcc.accessibility),
-    watchLoopRunning
+    screenRecording: resolveGrant(
+      json?.verdict.screenRecording ?? null,
+      logVerdict.screenRecording,
+      fromTcc.screenRecording
+    ),
+    microphone: resolveGrant(
+      json?.verdict.microphone ?? null,
+      logVerdict.microphone,
+      fromTcc.microphone
+    ),
+    accessibility: resolveGrant(
+      json?.verdict.accessibility ?? null,
+      logVerdict.accessibility,
+      fromTcc.accessibility
+    ),
+    watchLoopRunning,
+    ...(json?.notifications ? { notifications: json.notifications } : {})
   }
+}
+
+/**
+ * Precedence resolver for a single service's grant: a fresh JSON verdict wins,
+ * else the log-file verdict, else the tccd Auth Right. Pure — unit-tested.
+ */
+export function resolveGrant(
+  fromJson: GrantStatus | null,
+  fromLog: GrantStatus | null,
+  fromTcc: GrantStatus
+): GrantStatus {
+  return fromJson ?? fromLog ?? fromTcc
 }
 
 /**
@@ -166,7 +207,7 @@ export async function reset(): Promise<void> {
   await writeSettings({ onboardingCompletedAt: undefined })
 }
 
-// ─── Source 1: engine verdict file (/tmp/mt-permission.log) ─────────────
+// ─── Sources 1 & 2: engine verdict JSON + health log ───────────────────
 
 interface VerdictFromFile {
   screenRecording: GrantStatus | null
@@ -175,31 +216,22 @@ interface VerdictFromFile {
 }
 
 /**
- * Read + parse the engine's live verdict file. Returns `null` per service
- * when the file is absent or the service wasn't named (so the caller can
- * fall back to the tccd log).
+ * Parse the engine's health-log text into a per-service verdict. Returns `null`
+ * per service when the service wasn't named (so the caller falls back).
  *
- * Two shapes are handled (REQ-001 §1):
+ * Two shapes are handled:
  *   - per-service lines: `checkScreenRecordingLive: … → denied`,
  *     `checkMicrophoneLive: authStatus=authorized → healthy`,
  *     `checkAccessibilityLive: trusted=false → denied`
  *   - summary line: `[PermissionHealthCheck] screen=… mic=… ax=…`
- * Per-service lines win over the summary (more specific); we read the
- * LAST occurrence of each (the file is append-only across launches, so
- * the latest line is the freshest verdict).
+ * Per-service lines win over the summary (more specific); we read the LAST
+ * occurrence of each (the log is append-only, so the latest is freshest).
  */
-async function readEngineVerdictFile(): Promise<VerdictFromFile> {
+export function parseVerdictLog(raw: string): VerdictFromFile {
   const out: VerdictFromFile = {
     screenRecording: null,
     microphone: null,
     accessibility: null
-  }
-  let raw: string
-  try {
-    raw = await fsp.readFile(ENGINE_VERDICT_FILE, 'utf-8')
-  } catch {
-    // Absent / unreadable — caller falls back to tccd log.
-    return out
   }
   if (!raw.trim()) return out
 
@@ -231,6 +263,83 @@ async function readEngineVerdictFile(): Promise<VerdictFromFile> {
     }
   }
   return out
+}
+
+/**
+ * Read the engine's health log — the new Application Support path first, then
+ * the legacy `/tmp` path (one-release transition). Returns the first source
+ * that named at least one service; all-null when neither exists.
+ */
+async function readVerdictLog(): Promise<VerdictFromFile> {
+  for (const path of [ENGINE_HEALTH_LOG, LEGACY_TMP_VERDICT]) {
+    let raw: string
+    try {
+      raw = await fsp.readFile(path, 'utf-8')
+    } catch {
+      continue
+    }
+    const parsed = parseVerdictLog(raw)
+    if (parsed.screenRecording || parsed.microphone || parsed.accessibility) {
+      return parsed
+    }
+  }
+  return { screenRecording: null, microphone: null, accessibility: null }
+}
+
+/**
+ * Read + parse the engine's structured verdict JSON. Returns null when the file
+ * is absent or the payload is unparseable/stale (see parseVerdictJson).
+ */
+async function readVerdictJson(): Promise<
+  { verdict: VerdictFromFile; notifications?: NotificationAuthStatus } | null
+> {
+  let raw: string
+  try {
+    raw = await fsp.readFile(ENGINE_VERDICT_JSON, 'utf-8')
+  } catch {
+    return null
+  }
+  return parseVerdictJson(raw, Date.now())
+}
+
+/**
+ * Parse the engine verdict JSON `{ screen, mic, ax, notifications, updatedAt }`.
+ * Returns null (caller falls back to the log / tccd) when the payload is
+ * unparseable, lacks `updatedAt`, or is STALE (older than `maxAgeMs`) — a stale
+ * verdict must never mask the live tccd state. `broken` collapses to `denied`
+ * via mapEngineVerdict. Pure — unit-tested for precedence + staleness.
+ */
+export function parseVerdictJson(
+  raw: string,
+  nowMs: number,
+  maxAgeMs = VERDICT_JSON_MAX_AGE_MS
+): { verdict: VerdictFromFile; notifications?: NotificationAuthStatus } | null {
+  let obj: unknown
+  try {
+    obj = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof obj !== 'object' || obj === null) return null
+  const rec = obj as Record<string, unknown>
+  const updatedAt = typeof rec.updatedAt === 'number' ? rec.updatedAt : null
+  if (updatedAt === null || nowMs - updatedAt > maxAgeMs) return null
+  const verdict: VerdictFromFile = {
+    screenRecording: typeof rec.screen === 'string' ? mapEngineVerdict(rec.screen) : null,
+    microphone: typeof rec.mic === 'string' ? mapEngineVerdict(rec.mic) : null,
+    accessibility: typeof rec.ax === 'string' ? mapEngineVerdict(rec.ax) : null
+  }
+  const notifications = mapNotifications(rec.notifications)
+  return notifications ? { verdict, notifications } : { verdict }
+}
+
+/** Map the engine's notification-auth wire value to our NotificationAuthStatus. */
+function mapNotifications(v: unknown): NotificationAuthStatus | undefined {
+  if (v === 'authorized') return 'authorized'
+  if (v === 'denied') return 'denied'
+  if (v === 'provisional') return 'provisional'
+  if (v === 'notDetermined' || v === 'not-determined') return 'not-determined'
+  return undefined
 }
 
 function matchKV(line: string, re: RegExp): string | null {
