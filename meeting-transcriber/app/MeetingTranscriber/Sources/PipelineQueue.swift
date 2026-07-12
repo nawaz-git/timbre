@@ -538,6 +538,12 @@ class PipelineQueue {
         if newState == .done || newState == .error {
             markProcessed(mixPath: jobs[index].mixPath)
         }
+        if newState == .error {
+            // Surface the failure to the product UI. Cancelled jobs never reach
+            // this `.error` transition (see `cancelJob` / `processNext`'s catch),
+            // so a sidecar is only ever written for a genuine pipeline failure.
+            writeJobErrorSidecar(for: jobs[index])
+        }
         if newState == .done {
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(self?.completedJobLifetime ?? 60))
@@ -558,6 +564,38 @@ class PipelineQueue {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
         guard !jobs[index].warnings.contains(message) else { return }
         jobs[index].warnings.append(message)
+    }
+
+    /// Write a `<prefix>.error.json` sidecar into the output `protocols/` dir so
+    /// a failed job becomes a visible failed row in the product UI (and can be
+    /// retried from its recorded source paths). Best-effort: a sidecar write
+    /// failure must never mask or replace the underlying job error.
+    private func writeJobErrorSidecar(for job: PipelineJob) {
+        guard let outputDir else { return }
+        let sidecar = JobErrorSidecar(
+            title: job.meetingTitle,
+            error: job.error ?? "Unknown error",
+            jobShortID: job.shortID,
+            mixPath: job.mixPath,
+            appPath: job.appPath,
+            micPath: job.micPath,
+            micDelay: job.micDelay,
+            warnings: job.warnings,
+        )
+        let accessing = outputDir.startAccessingSecurityScopedResource()
+        defer { if accessing { outputDir.stopAccessingSecurityScopedResource() } }
+        let protocolsDir = outputDir.appendingPathComponent("protocols")
+        let filename = ProtocolGenerator.filename(
+            title: job.meetingTitle, ext: JobErrorSidecar.filenameExtension,
+        )
+        do {
+            let url = try sidecar.write(toDirectory: protocolsDir, filename: filename)
+            logger.info("Wrote job error sidecar: \(url.lastPathComponent, privacy: .public)")
+        } catch {
+            logger.error(
+                "Failed to write job error sidecar: \(error.localizedDescription, privacy: .public)",
+            )
+        }
     }
 
     /// Reset the elapsed timer for a new pipeline stage.
