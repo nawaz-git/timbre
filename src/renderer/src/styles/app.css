@@ -414,43 +414,11 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
-/*
- * Live "Google Meet detected in Chrome" card.
- *
- * Driven by the AppleScript probe in `src/main/chromeProbe.ts`. When a
- * meet.google.com tab is open in Chrome / Brave / Edge / Arc, this card
- * appears above the status card to confirm the user that Mintr SEES the
- * meeting — addressing the v0.11 complaint where there was no UI
- * acknowledgement that detection had happened.
- *
- * The pulsing dot is the same colour as the standard macOS recording
- * indicator; the card itself uses a subtle mint-tinted surface so it
- * reads as "this is the live signal" without competing with the rest of
- * the chrome.
- */
-.meet-live-card {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3, 12px);
-  padding: var(--space-4, 14px) var(--space-4, 16px);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-lg, 10px);
-  background: rgba(16, 185, 129, 0.06);
-  color: var(--fg);
-}
-[data-theme='dark'] .meet-live-card {
-  background: rgba(16, 185, 129, 0.08);
-}
-.meet-live-card__dot {
-  flex-shrink: 0;
-  width: 10px;
-  height: 10px;
-  margin-top: 4px;
-  border-radius: 999px;
-  background: var(--status-recording, #ef4444);
-  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.16);
-  animation: meet-live-pulse 1.6s ease-in-out infinite;
-}
+/* Shared live-signal pulse — used by the Recent-meetings live dot
+   (`.recent-card__live-dot`) and the meeting-row live dot
+   (`.meetings__row-live-dot`). The former `.meet-live-card` /
+   `.capture-live-card` surfaces that also used it were replaced by the
+   single status hero and pruned. */
 @keyframes meet-live-pulse {
   0%, 100% {
     box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.16);
@@ -459,133 +427,6 @@
     box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.04);
   }
 }
-.meet-live-card__body {
-  min-width: 0;
-  flex: 1;
-}
-.meet-live-card__title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font: 600 14px/1.3 var(--font-sans);
-  color: var(--fg);
-  margin-bottom: 4px;
-}
-.meet-live-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: baseline;
-  font: 400 12.5px/1.5 var(--font-sans);
-  color: var(--fg-muted);
-}
-.meet-live-card__id {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-  font-weight: 500;
-  color: var(--fg);
-  font-size: 12.5px;
-}
-.meet-live-card__url {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-  word-break: break-all;
-}
-.meet-live-card__hint {
-  font: 400 12px/1.5 var(--font-sans);
-  color: var(--fg-subtle);
-  margin-top: 4px;
-}
-
-/*
- * Active-capture card (v0.14+).
- *
- * Distinct from `.meet-live-card`: that one says "we see a Meet tab" but
- * the engine may or may not have started capturing. This one fires only
- * once the bundled MeetingTranscriber helper has actually written files
- * to disk in the last few seconds — proof of actual capture, not just
- * detection. Bigger, more prominent surface because it's the answer to
- * the v0.13 question "but is it ACTUALLY recording?".
- *
- * Visual treatment: same mint-green border as `.meet-live-card` so the
- * user reads them as the same family; one transitions into the other
- * (Meet detected → capture confirmed) over ~5 seconds when things go
- * right. Header has a pulsing dot + "Recording" label + timer chip;
- * body has the meeting title + start time + transcript-coming hint.
- */
-.capture-live-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3, 12px);
-  padding: var(--space-4, 16px);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-lg, 10px);
-  background: rgba(16, 185, 129, 0.07);
-  color: var(--fg);
-}
-[data-theme='dark'] .capture-live-card {
-  background: rgba(16, 185, 129, 0.10);
-}
-.capture-live-card__header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2, 8px);
-  font: 600 11px/1 var(--font-sans);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--accent);
-}
-.capture-live-card__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--status-recording, #ef4444);
-  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.18);
-  animation: meet-live-pulse 1.6s ease-in-out infinite;
-  flex-shrink: 0;
-}
-.capture-live-card__label {
-  letter-spacing: 0.08em;
-}
-.capture-live-card__timer {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font: 500 12px/1 var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-  text-transform: none;
-  color: var(--fg);
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: var(--surface-raised, rgba(0, 0, 0, 0.04));
-}
-[data-theme='dark'] .capture-live-card__timer {
-  background: rgba(255, 255, 255, 0.06);
-}
-.capture-live-card__title {
-  font: 600 18px/1.3 var(--font-sans);
-  color: var(--fg);
-  letter-spacing: -0.005em;
-}
-.capture-live-card__started {
-  font: 400 12.5px/1.5 var(--font-sans);
-  color: var(--fg-muted);
-}
-.capture-live-card__path-hint {
-  color: var(--fg-subtle);
-}
-.capture-live-card__transcript-placeholder {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2, 8px);
-  padding: var(--space-3, 12px);
-  border: 1px dashed var(--divider, rgba(0, 0, 0, 0.08));
-  border-radius: var(--radius-md, 8px);
-  background: var(--surface-base);
-  font: 400 12.5px/1.5 var(--font-sans);
-  color: var(--fg-muted);
-}
-
 /*
  * Permission banner: action row + result note (v0.14+).
  *
@@ -611,18 +452,6 @@
 }
 [data-theme='dark'] .permission-banner__result {
   background: rgba(255, 255, 255, 0.06);
-}
-
-.status-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4, 16px);
-  padding: var(--space-6, 24px);
-  border: 1px solid var(--divider);
-  border-radius: var(--radius-xl, 12px);
-  /* Solid surface — no transparency. */
-  background: var(--surface-base, var(--bg-elev));
-  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
 }
 
 .status-indicator {
@@ -2931,13 +2760,12 @@
 }
 
 /*
- * TICKET-001 — live placeholder card treatment.
+ * Recent-meetings live placeholder treatment.
  *
- * Reuses the same accent-green border and `meet-live-pulse` keyframes as
- * `.meet-live-card` / `.capture-live-card` so the user reads "this is the
- * same live signal" across all three surfaces. The pulsing red dot lives
- * inside a small inline pill next to the title — distinct from the bigger
- * dot on the capture cards because Recent Meetings rows are dense.
+ * Reuses the shared `meet-live-pulse` keyframes so the pulsing red dot
+ * reads as the same live signal used elsewhere. The dot lives inside a
+ * small inline pill next to the title, sized down because Recent Meetings
+ * rows are dense.
  */
 .recent-card--live {
   border-color: var(--accent);
