@@ -23,7 +23,8 @@ struct OfflineDiarizerTuning: Equatable {
     /// per-chunk 256-d vectors). Off for FAST (nothing consumes them there);
     /// the MAX utterance re-scoring pass turns it on so it can anchor each
     /// utterance to a real embedding without a second extraction pass.
-    var exposeChunkEmbeddings: Bool
+    /// Defaults off; only the MAX re-scoring pass turns it on.
+    var exposeChunkEmbeddings: Bool = false
 
     /// Defaults matching FluidAudio's `Clustering.community` and `Embedding.community`.
     static let defaults = Self(
