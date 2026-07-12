@@ -342,7 +342,11 @@ export function registerIpcHandlers(): void {
         ? await dialog.showSaveDialog(win, dialogOpts)
         : await dialog.showSaveDialog(dialogOpts)
       if (result.canceled || !result.filePath) return { canceled: true }
-      if (typeof payload.body === 'string') {
+      if (payload.sourcePath) {
+        // Binary media (audio/video): copy the file straight to the chosen
+        // destination — never buffer a multi-GB recording through main.
+        await fs.copyFile(payload.sourcePath, result.filePath)
+      } else if (typeof payload.body === 'string') {
         await fs.writeFile(result.filePath, payload.body, 'utf-8')
       } else {
         await fs.writeFile(result.filePath, payload.body)

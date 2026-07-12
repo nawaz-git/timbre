@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   deriveEngineStatus,
+  exportMeeting,
   isEngineSidecarOf,
   listEngineFailedMeetings,
   retryFailedMeeting
@@ -212,5 +213,49 @@ describe('isEngineSidecarOf', () => {
     expect(isEngineSidecarOf(prefix, `${prefix}_ab12cd3_mix.wav`)).toBe(false) // 7 hex
     expect(isEngineSidecarOf(prefix, `${prefix}_ab12cd345_mix.wav`)).toBe(false) // 9 hex
     expect(isEngineSidecarOf(prefix, `${prefix}_ab12cd3g_mix.wav`)).toBe(false) // non-hex g
+  })
+})
+
+describe('exportMeeting payloads', () => {
+  let root: string
+  const folderId = 'meeting-1'
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(join(tmpdir(), 'timbre-export-'))
+    const folder = join(root, folderId)
+    await fs.mkdir(folder, { recursive: true })
+    await fs.writeFile(join(folder, 'audio.wav'), 'RIFFfakewavbytes')
+    await fs.writeFile(join(folder, 'transcript.txt'), '[00:00:00] Me: hello world')
+    await fs.writeFile(
+      join(folder, 'transcript.json'),
+      JSON.stringify({ segments: [{ speaker: 'Me', start: 0, end: 1, text: 'hello world' }] })
+    )
+  })
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true })
+  })
+
+  it('returns a sourcePath and empty body for audio so the handler copies from disk', async () => {
+    const payload = await exportMeeting(root, `imported:${folderId}`, 'audio', 'My Meeting')
+    // The whole WAV must NOT be buffered — sourcePath points at the on-disk file.
+    expect(payload.sourcePath).toBe(join(root, folderId, 'audio.wav'))
+    expect(payload.body).toBe('')
+    expect(payload.contentType).toBe('audio/wav')
+  })
+
+  it('still carries an inline string body (and no sourcePath) for text formats', async () => {
+    const txt = await exportMeeting(root, `imported:${folderId}`, 'txt', 'My Meeting')
+    expect(txt.sourcePath).toBeUndefined()
+    expect(typeof txt.body).toBe('string')
+    expect(txt.body).toContain('hello world')
+
+    const json = await exportMeeting(root, `imported:${folderId}`, 'json', 'My Meeting')
+    expect(json.sourcePath).toBeUndefined()
+    expect(typeof json.body).toBe('string')
+
+    const srt = await exportMeeting(root, `imported:${folderId}`, 'srt', 'My Meeting')
+    expect(srt.sourcePath).toBeUndefined()
+    expect(typeof srt.body).toBe('string')
   })
 })

@@ -2186,10 +2186,21 @@ function buildSRT(
 interface ExportPayload {
   /** Suggested filename (with extension). */
   filename: string
-  /** Body bytes (UTF-8 string for text formats, raw bytes for audio). */
+  /**
+   * Body bytes for formats we synthesise in memory (txt/md/json/srt). EMPTY
+   * for binary media (audio/video) — those are copied straight from disk via
+   * `sourcePath` instead of being buffered through the main process.
+   */
   body: string | Buffer
   /** MIME type — purely advisory; the renderer uses this to set the dialog filter. */
   contentType: string
+  /**
+   * Absolute path to an existing on-disk file to copy verbatim to the user's
+   * chosen destination. Set for binary media so a multi-GB recording is never
+   * read into a main-process Buffer; when present, the export handler uses
+   * `copyFile` and ignores `body`.
+   */
+  sourcePath?: string
 }
 
 /**
@@ -2212,14 +2223,26 @@ export async function exportMeeting(
     if (format === 'video') {
       const videoPath = await findEngineVideoForPrefix(prefix)
       if (!videoPath) throw new Error('This recording has no screen video.')
-      const body = await fs.readFile(videoPath)
-      return { filename: `${safeTitle}.mp4`, body, contentType: 'video/mp4' }
+      // Copy from disk in the handler rather than buffering — a screen
+      // recording can be multiple GB.
+      return {
+        filename: `${safeTitle}.mp4`,
+        body: '',
+        sourcePath: videoPath,
+        contentType: 'video/mp4'
+      }
     }
     if (format === 'audio') {
       const audioPath = await findEngineAudioForPrefix(prefix)
       if (!audioPath) throw new Error('This meeting has no audio file.')
-      const body = await fs.readFile(audioPath)
-      return { filename: `${safeTitle}.wav`, body, contentType: 'audio/wav' }
+      // Copy from disk in the handler rather than buffering the whole WAV — an
+      // engine recording's audio can be large. Mirrors the imported-audio path.
+      return {
+        filename: `${safeTitle}.wav`,
+        body: '',
+        sourcePath: audioPath,
+        contentType: 'audio/wav'
+      }
     }
     if (format === 'json' || format === 'srt') {
       // Reuse the canonical segment loader so engine json/srt match the shape
@@ -2268,8 +2291,14 @@ export async function exportMeeting(
   const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || folderId
 
   if (format === 'audio') {
-    const body = await fs.readFile(join(folder, 'audio.wav'))
-    return { filename: `${safeTitle}.wav`, body, contentType: 'audio/wav' }
+    // Copy from disk in the handler rather than buffering the whole WAV.
+    const audioPath = join(folder, 'audio.wav')
+    return {
+      filename: `${safeTitle}.wav`,
+      body: '',
+      sourcePath: audioPath,
+      contentType: 'audio/wav'
+    }
   }
   if (format === 'txt') {
     const body = await fs.readFile(join(folder, 'transcript.txt'), 'utf-8')
