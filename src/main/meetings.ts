@@ -1619,6 +1619,12 @@ export async function renameMeetingTitle(
  * protocol-only meeting with no audio, or a double-delete, never throws.
  * Recoverability is the point — deletion goes through the Trash, not an
  * irreversible unlink.
+ *
+ * Fallback: some volumes have no Trash (network mounts, FAT/exFAT), so
+ * `shell.trashItem` rejects on them. Rather than hard-fail — which would strip
+ * the user's ability to delete at all — fall back to a permanent recursive
+ * remove. That path IS irreversible (there's no Trash to recover from), but a
+ * delete the user explicitly asked for still succeeds.
  */
 async function trashIfExists(absPath: string): Promise<void> {
   try {
@@ -1626,7 +1632,12 @@ async function trashIfExists(absPath: string): Promise<void> {
   } catch {
     return
   }
-  await shell.trashItem(absPath)
+  try {
+    await shell.trashItem(absPath)
+  } catch (err) {
+    console.warn('[meetings] trashItem failed; removing permanently', absPath, err)
+    await fs.rm(absPath, { recursive: true, force: true })
+  }
 }
 
 export async function deleteMeeting(outputFolder: string, meetingId: string): Promise<void> {
