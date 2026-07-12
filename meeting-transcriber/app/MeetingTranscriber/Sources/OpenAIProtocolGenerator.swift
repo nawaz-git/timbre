@@ -30,12 +30,20 @@ struct OpenAIProtocolGenerator: ProtocolGenerating {
 
     func generate(transcript: String, title _: String, diarized: Bool) async throws -> String {
         let systemPrompt = ProtocolGenerator.buildSystemPrompt(diarized: diarized, language: language)
-
-        let messages: [[String: Any]] = [
+        return try await run(messages: [
             ["role": "system", "content": systemPrompt],
             ["role": "user", "content": transcript],
-        ]
+        ])
+    }
 
+    /// Raw single-prompt completion (MAX LLM speaker repair). Sends the prompt
+    /// as a lone user message — no protocol system prompt — over the same
+    /// streaming path as `generate`.
+    func complete(prompt: String) async throws -> String {
+        try await run(messages: [["role": "user", "content": prompt]])
+    }
+
+    private func run(messages: [[String: Any]]) async throws -> String {
         let body: [String: Any] = [
             "model": model,
             "messages": messages,

@@ -24,7 +24,16 @@
 
         func generate(transcript: String, title _: String, diarized: Bool) async throws -> String {
             let prompt = ProtocolGenerator.buildSystemPrompt(diarized: diarized, language: language) + transcript
+            return try await run(prompt: prompt)
+        }
 
+        /// Raw single-prompt completion (MAX LLM speaker repair). Same subprocess
+        /// plumbing as `generate`, minus the protocol system prompt.
+        func complete(prompt: String) async throws -> String {
+            try await run(prompt: prompt)
+        }
+
+        private func run(prompt: String) async throws -> String {
             let process = Process()
             let resolvedBin = Self.resolveClaudePath(claudeBin)
             process.executableURL = URL(fileURLWithPath: resolvedBin)

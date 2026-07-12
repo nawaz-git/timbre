@@ -6,6 +6,18 @@ private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "Protoco
 /// Abstraction for protocol generation, enabling mock injection in tests.
 protocol ProtocolGenerating {
     func generate(transcript: String, title: String, diarized: Bool) async throws -> String
+    /// Low-level single-prompt completion — the raw prompt is sent verbatim (no
+    /// protocol system prompt) and the model's text is returned. Used by the
+    /// MAX-tier LLM speaker-repair pass, which needs a plain completion rather
+    /// than a meeting protocol. Defaulted so existing conformers (mocks) don't
+    /// have to implement it; the two real providers override it.
+    func complete(prompt: String) async throws -> String
+}
+
+extension ProtocolGenerating {
+    func complete(prompt _: String) async throws -> String {
+        throw ProtocolError.emptyProtocol
+    }
 }
 
 /// Shared protocol utilities: prompts, file operations, and error types.
