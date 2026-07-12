@@ -47,7 +47,7 @@ class PipelineQueue {
     var onJobStateChange: ((PipelineJob, JobState, JobState) -> Void)?
 
     /// Called when a MAX-tier refine finishes and has rewritten the outputs —
-    /// carries the quality report for the completion notification (T12 surface).
+    /// carries the quality report for the completion notification.
     var onRefineComplete: ((PipelineJob, RefineQualityReport) -> Void)?
 
     // MARK: - MAX-tier refinement
