@@ -2,17 +2,24 @@
  * Capture heartbeat — the ONE truthful "audio is being written right now" signal.
  *
  * The engine has no direct IPC to Electron; the only live engine→Electron
- * channel is the filesystem. The engine appends to
- * `recordings/<prefix>_mix.wav` continuously while a meeting records, so a
- * growing WAV is direct proof that capture is happening — far more honest than
- * "a Meet tab exists" (which the old UI inferred recording from, and which lied
- * whenever the engine silently failed on a missing permission).
+ * channel is the filesystem. The engine writes the mic track
+ * (`recordings/<prefix>_mic.wav`) continuously while a meeting records, so a
+ * growing mic WAV is direct proof that capture is happening — far more honest
+ * than "a Meet tab exists" (which the old UI inferred recording from, and which
+ * lied whenever the engine silently failed on a missing permission). App audio
+ * streams to a temp file and `<prefix>_app.wav` / `<prefix>_mix.wav` appear only
+ * at finalization, so the mic WAV is the ONLY continuously-growing live signal —
+ * the tracker follows it alone (see `captureSignalLogic.ts`).
  *
- * This module polls the newest raw-recording WAV every 2 s and derives a
- * `CaptureSignal`: `active` is true only when the file's mtime advanced AND its
- * size grew since the previous tick. Elapsed comes from the file birthtime;
- * estimated duration from bytes ÷ the WAV header's byteRate (read from the file,
- * never hardcoded).
+ * This module polls the newest live mic WAV every 2 s and derives a
+ * `CaptureSignal`: `active` turns true when the file grows and stays true across
+ * brief write stalls — it only flips to false after ~3 consecutive non-growing
+ * ticks (the 6 s freshness window), so a one-tick zero-byte window (a mic
+ * device-change restart, disk pressure, thermal throttle) never fakes a "stopped
+ * → started" flap mid-meeting. Elapsed comes from the file birthtime; estimated
+ * duration from bytes ÷ the WAV header's byteRate (read from the file, never
+ * hardcoded). The growth / hysteresis / tracking rules live in the dep-free
+ * `captureSignalLogic.ts` so they can be unit-tested without the main process.
  *
  * The detector sits behind a `CaptureSignalSource` interface so the engine crew
  * can later drop in a real status-file reader (`ipc/engine_status.json`, "ENG-1")
@@ -32,6 +39,15 @@ import {
   scheduleCaptureEndedNotification
 } from './captureWatchdog'
 import { ENGINE_IPC_DIR } from './chromeProbe'
+import {
+  parseWavByteRate,
+  estDurationSecFromSize,
+  nextWavTrackState,
+  INITIAL_WAV_TRACK,
+  LIVE_WAV_RE,
+  type WavObservation,
+  type WavTrackState
+} from './captureSignalLogic'
 
 /**
  * The truthful capture signal every surface reads through `status.ts`.
@@ -70,45 +86,11 @@ const INACTIVE: CaptureSignal = {
   estDurationSec: null
 }
 
-/** Raw-recording WAV suffixes the engine writes the instant a meeting starts. */
-const RAW_WAV_RE = /_mix\.wav$|_app\.wav$|_mic\.wav$/
-/** How recently the WAV must have been touched to count as "still writing". */
-const FRESH_WINDOW_MS = 6000
 /** Poll cadence. */
 const POLL_INTERVAL_MS = 2000
-/** WAV canonical header size (PCM, no extra chunks) — used for duration math. */
-const WAV_HEADER_BYTES = 44
 /** Max age of an ENG-1 status file before we ignore it and fall back to WAV growth. */
 const ENGINE_STATUS_MAX_AGE_MS = 5000
 const ENGINE_STATUS_FILE = join(ENGINE_IPC_DIR, 'engine_status.json')
-
-/**
- * Read the little-endian uint32 byteRate from a WAV header (offset 28). Returns
- * null when the buffer is too short or doesn't look like a RIFF/WAVE header, so
- * the caller reports `estDurationSec: null` ("we don't know") rather than
- * guessing a sample rate.
- */
-export function parseWavByteRate(header: Buffer): number | null {
-  if (header.length < 32) return null
-  if (header.toString('ascii', 0, 4) !== 'RIFF') return null
-  if (header.toString('ascii', 8, 12) !== 'WAVE') return null
-  const byteRate = header.readUInt32LE(28)
-  return byteRate > 0 ? byteRate : null
-}
-
-/**
- * Pure decision: is a tracked WAV actively growing? Encapsulated so the growth
- * rule (fresh mtime AND size increased since the last tick) is unit-testable
- * without touching the filesystem.
- */
-export function isWavActivelyGrowing(
-  prevSize: number,
-  currSize: number,
-  mtimeMs: number,
-  now: number
-): boolean {
-  return now - mtimeMs < FRESH_WINDOW_MS && currSize > prevSize
-}
 
 /**
  * ENG-1 upgrade path: prefer an engine-written status file when it's fresh.
@@ -150,11 +132,19 @@ class EngineStatusFileSource implements CaptureSignalSource {
   }
 }
 
-/** Default source: poll the newest raw-recording WAV under `recordings/`. */
+/**
+ * Default source: track the newest LIVE mic WAV under `recordings/`. App audio
+ * streams to a temp file and `_app.wav`/`_mix.wav` land only at finalization, so
+ * the mic WAV is the sole continuously-growing file — matching just it keeps
+ * those fresh-mtime finalization artifacts from yanking the tracker mid-meeting.
+ * The growth + hysteresis decision (stalls don't flip `active`; a path switch
+ * seeds from the file's current size, never read as growth) is pure and lives in
+ * `captureSignalLogic.nextWavTrackState`.
+ */
 class WavGrowthSource implements CaptureSignalSource {
-  private trackedPath: string | null = null
-  private prevSize = 0
+  private track: WavTrackState = { ...INITIAL_WAV_TRACK }
   private byteRate: number | null = null
+  private startedAtMs: number | null = null
 
   async poll(now: number): Promise<CaptureSignal | null> {
     const recordingsDir = join(liveRecordingsRoot, 'recordings')
@@ -162,24 +152,24 @@ class WavGrowthSource implements CaptureSignalSource {
     try {
       entries = await fsp.readdir(recordingsDir)
     } catch {
-      // Folder not there yet (no recording ever made) — inactive, reset.
-      this.reset()
-      return INACTIVE
+      // Folder absent (no recording yet) or a transient read error. Do NOT
+      // hard-reset — that would blip a spurious saved/started around a glitch.
+      // Hold the current signal; hysteresis resumes on the next good poll.
+      return this.buildSignal()
     }
 
-    // Newest raw WAV wins (handles multiple prefixes on the same day).
-    let newestPath: string | null = null
-    let newestMtime = -1
-    let newestSize = 0
+    // Newest live mic WAV wins (deterministic tiebreak on equal mtime so
+    // readdir order can never flap the selection between ties).
+    let obs: WavObservation = { path: null, size: 0, mtimeMs: -1 }
+    let birthtimeMs: number | null = null
     for (const e of entries) {
-      if (!RAW_WAV_RE.test(e)) continue
+      if (!LIVE_WAV_RE.test(e)) continue
       const full = join(recordingsDir, e)
       try {
         const st = await fsp.stat(full)
-        if (st.mtimeMs > newestMtime) {
-          newestMtime = st.mtimeMs
-          newestPath = full
-          newestSize = st.size
+        if (st.mtimeMs > obs.mtimeMs || (st.mtimeMs === obs.mtimeMs && full > (obs.path ?? ''))) {
+          obs = { path: full, size: st.size, mtimeMs: st.mtimeMs }
+          birthtimeMs = st.birthtimeMs || st.mtimeMs
         }
       } catch {
         // File vanished mid-poll — skip it.
@@ -187,49 +177,28 @@ class WavGrowthSource implements CaptureSignalSource {
       }
     }
 
-    if (!newestPath) {
-      this.reset()
-      return INACTIVE
+    // On a path change, (re)read the header byteRate and latch the start time.
+    // Both stay stable for the whole meeting since we no longer switch to the
+    // finalization files.
+    if (obs.path !== this.track.path) {
+      this.byteRate = obs.path ? await this.readByteRate(obs.path) : null
+      this.startedAtMs = obs.path ? birthtimeMs : null
     }
 
-    // New file since last tick → reset growth baseline + reread the byteRate.
-    if (newestPath !== this.trackedPath) {
-      this.trackedPath = newestPath
-      this.prevSize = 0
-      this.byteRate = await this.readByteRate(newestPath)
-    }
-
-    let birthtimeMs: number | null = null
-    try {
-      const st = await fsp.stat(newestPath)
-      birthtimeMs = st.birthtimeMs || st.mtimeMs
-    } catch {
-      // Deleted between the scan and here — treat as inactive this tick.
-      this.reset()
-      return INACTIVE
-    }
-
-    const active = isWavActivelyGrowing(this.prevSize, newestSize, newestMtime, now)
-    this.prevSize = newestSize
-
-    const estDurationSec =
-      this.byteRate && newestSize > WAV_HEADER_BYTES
-        ? (newestSize - WAV_HEADER_BYTES) / this.byteRate
-        : null
-
-    return {
-      active,
-      startedAt: birthtimeMs,
-      wavPath: newestPath,
-      bytesWritten: newestSize,
-      estDurationSec
-    }
+    this.track = nextWavTrackState(this.track, obs, now)
+    return this.buildSignal()
   }
 
-  private reset(): void {
-    this.trackedPath = null
-    this.prevSize = 0
-    this.byteRate = null
+  /** Build the outward signal from the current (already-decided) track state. */
+  private buildSignal(): CaptureSignal {
+    if (!this.track.path) return INACTIVE
+    return {
+      active: this.track.active,
+      startedAt: this.startedAtMs,
+      wavPath: this.track.path,
+      bytesWritten: this.track.size,
+      estDurationSec: estDurationSecFromSize(this.track.size, this.byteRate)
+    }
   }
 
   private async readByteRate(path: string): Promise<number | null> {
