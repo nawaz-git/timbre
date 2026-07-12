@@ -34,6 +34,12 @@ import {
   type SuperviseReason
 } from './engineSupervisor'
 import { startAppStatus, stopAppStatus } from './status'
+import { installGlobalErrorHandlers } from './globalErrorHandlers'
+
+// Install process-level error guards before anything else runs so an early
+// throw / unhandled rejection during startup is logged (and survivable) rather
+// than a silent death. Module scope — disjoint from the app.whenReady chain.
+installGlobalErrorHandlers()
 
 // `mt-audio://` MUST be registered as privileged before app.whenReady().
 // Without this, the renderer's <audio src="mt-audio://..."> gets blocked by
