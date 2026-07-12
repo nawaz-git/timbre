@@ -647,7 +647,14 @@ class PipelineQueue {
     /// Re-arming simply resets the fuse.
     private func scheduleIdleUnloadIfDrained() {
         guard engine != nil else { return }
-        guard pendingJobs.isEmpty, !isProcessing else { return }
+        // Never arm the idle-unload fuse while a background MAX-tier refine is
+        // still in flight. During a refine the queue reports `!isProcessing`
+        // with no pending job, so without the `refineTasks` gate the fuse would
+        // arm mid-refine and, after `idleUnloadInterval`, unload the model out
+        // from under the running re-transcription. The fuse re-arms when the
+        // refine drains — its completion routes through `updateJobState(.done)`,
+        // which calls this again once `refineTasks` is empty.
+        guard pendingJobs.isEmpty, !isProcessing, refineTasks.isEmpty else { return }
         guard shouldUnloadIdleModel() else { return }
         unloadTask?.cancel()
         let interval = idleUnloadInterval
@@ -662,7 +669,10 @@ class PipelineQueue {
     /// Re-checks the drain state after the timer fires so a job that arrived
     /// during the fuse isn't unloaded out from under.
     private func unloadIdleModel() async {
-        guard pendingJobs.isEmpty, !isProcessing, let engine else { return }
+        // Re-check the drain state after the fuse fired — including a refine that
+        // may have started during the interval sleep — so a job (or refine) that
+        // arrived mid-sleep isn't unloaded out from under.
+        guard pendingJobs.isEmpty, !isProcessing, refineTasks.isEmpty, let engine else { return }
         let before = Self.residentMemoryBytes()
         await engine.unloadModel()
         unloadTask = nil
