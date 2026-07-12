@@ -208,6 +208,19 @@ const api = {
       return () => {
         ipcRenderer.removeListener('meetings:changed', listener)
       }
+    },
+    /**
+     * Push channel — a notification (e.g. "Transcript ready") asks the UI to
+     * open a specific meeting. Carries the meeting id; the renderer switches
+     * to the Meetings view and selects it. Returns an unsubscribe function.
+     */
+    onOpenMeeting: (handler: (id: string) => void): (() => void) => {
+      const listener = (_: Electron.IpcRendererEvent, payload: { id: string }): void =>
+        handler(payload.id)
+      ipcRenderer.on('meetings:openMeeting', listener)
+      return () => {
+        ipcRenderer.removeListener('meetings:openMeeting', listener)
+      }
     }
   },
   /**

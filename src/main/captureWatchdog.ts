@@ -235,19 +235,25 @@ function makeWatcher(path: string, kind: 'live' | 'imported'): FSWatcher {
     if (kind === 'live' && filename) maybeClearPlaceholderForFile(filename)
     queueMeetingsChange(kind, filename ?? null, eventType)
 
-    // v0.14+: emit macOS notifications on capture lifecycle events so
-    // the user gets out-of-app feedback. Heuristic:
-    //   - FIRST write in a long quiet window (or ever) = capture STARTED
-    //   - Settle-down (no writes for >3s) after activity = capture ENDED
-    // We don't have explicit start/end events from the engine (its
-    // JSONL stream is for mt-batch imports, not live), so we synthesize
-    // these from the file-change pattern.
-    if (kind === 'live') {
-      const recentlyQuiet = previousAge > 8000
-      if (wasIdle || recentlyQuiet) {
-        scheduleCaptureStartedNotification(filename ?? undefined)
+    // Capture-lifecycle notifications. Until the capture heartbeat (which
+    // will drive these from verified WAV growth) lands, we synthesise the
+    // events from file writes — but key STRICTLY off the recording WAVs the
+    // engine emits, never arbitrary churn, so we never announce "Recording
+    // started" for a transcript, metadata, or placeholder write. A landed
+    // transcript fires the single "ready" notification that matters.
+    if (kind === 'live' && filename) {
+      const isRecordingWav = /_(mix|app|mic)\.wav$/.test(filename)
+      if (isRecordingWav && (wasIdle || previousAge > 8000)) {
+        scheduleCaptureStartedNotification(filename)
       }
-      scheduleCaptureEndedNotification(filename ?? undefined)
+      if (isRecordingWav) {
+        scheduleCaptureEndedNotification()
+      }
+      // fs.watch is recursive, so a protocol transcript arrives as
+      // `protocols/<prefix>.txt` — the signal that the pipeline finished.
+      if (/^protocols\/.*\.txt$/.test(filename)) {
+        scheduleReadyNotification(filename)
+      }
     }
   })
   w.on('error', (err) => {
@@ -266,6 +272,13 @@ function makeWatcher(path: string, kind: 'live' | 'imported'): FSWatcher {
 
 let lastStartNotificationAt = 0
 let endedNotificationTimer: NodeJS.Timeout | null = null
+/**
+ * Prefixes we've already announced a "Transcript ready" for this session —
+ * one notification per meeting, never a repeat (the engine may rewrite the
+ * `.txt` more than once as it finalises).
+ */
+const readyNotifiedPrefixes = new Set<string>()
+const readyNotificationTimers = new Map<string, NodeJS.Timeout>()
 
 function scheduleCaptureStartedNotification(filename?: string): void {
   // Debounce — multiple file-change events when a new meeting folder
@@ -274,11 +287,10 @@ function scheduleCaptureStartedNotification(filename?: string): void {
   if (now - lastStartNotificationAt < 5000) return
   lastStartNotificationAt = now
   try {
+    const name = filename ? prettyMeetingName(filename) : 'your meeting'
     const n = new Notification({
-      title: 'Timbre — capture started',
-      body: filename
-        ? `Recording ${prettyMeetingName(filename)}`
-        : 'Recording your meeting…',
+      title: 'Recording started',
+      body: `Capturing "${name}" — audio and screen are being saved.`,
       silent: false
     })
     n.show()
@@ -287,7 +299,7 @@ function scheduleCaptureStartedNotification(filename?: string): void {
   }
 }
 
-function scheduleCaptureEndedNotification(filename?: string): void {
+function scheduleCaptureEndedNotification(): void {
   // Notification fires only after writes settle (no new event for 3.5s).
   // The "ended" notification therefore lands ~3s after the user clicks
   // Leave on the Meet.
@@ -296,10 +308,8 @@ function scheduleCaptureEndedNotification(filename?: string): void {
     endedNotificationTimer = null
     try {
       const n = new Notification({
-        title: 'Timbre — meeting captured',
-        body: filename
-          ? `Saved ${prettyMeetingName(filename)}. Open Timbre to view the transcript.`
-          : 'Meeting saved. Open Timbre to view the transcript.',
+        title: 'Recording saved',
+        body: "Processing the transcript now. You'll get a notification when it's ready.",
         silent: false
       })
       n.show()
@@ -316,6 +326,51 @@ function scheduleCaptureEndedNotification(filename?: string): void {
       console.warn('[watchdog] capture-ended notification failed', err)
     }
   }, 3500)
+}
+
+/**
+ * A protocol transcript (`protocols/<prefix>.txt`) landed — the pipeline has
+ * finished. Fire the one success notification that matters, deep-linking to
+ * the meeting on click. Debounced 2s per prefix (the engine can touch the
+ * file more than once) and de-duped for the whole session.
+ */
+function scheduleReadyNotification(filename: string): void {
+  const prefix = basename(filename).replace(/\.[^.]+$/, '')
+  if (!prefix || readyNotifiedPrefixes.has(prefix)) return
+  const existing = readyNotificationTimers.get(prefix)
+  if (existing) clearTimeout(existing)
+  readyNotificationTimers.set(
+    prefix,
+    setTimeout(() => {
+      readyNotificationTimers.delete(prefix)
+      if (readyNotifiedPrefixes.has(prefix)) return
+      readyNotifiedPrefixes.add(prefix)
+      try {
+        const title = prettyMeetingName(filename)
+        const n = new Notification({
+          title: 'Transcript ready',
+          body: `"${title}" is ready to read.`,
+          silent: false
+        })
+        n.show()
+        n.on('click', () => {
+          void (async () => {
+            // Lazy import to avoid a static tray ⇆ watchdog import cycle.
+            const { showMainWindow } = await import('./tray')
+            showMainWindow()
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) {
+                win.webContents.send('meetings:openMeeting', { id: `engine:${prefix}` })
+                break
+              }
+            }
+          })()
+        })
+      } catch (err) {
+        console.warn('[watchdog] transcript-ready notification failed', err)
+      }
+    }, 2000)
+  )
 }
 
 function prettyMeetingName(filename: string): string {
