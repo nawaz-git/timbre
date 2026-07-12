@@ -189,7 +189,11 @@ public class AudioCaptureSession {
         let actualRate = appCapture?.actualSampleRate ?? 0
         let actualChannels = appCapture?.actualChannels ?? 0
 
-        // Close file handle
+        // Close the session's own descriptor. `appCapture?.stop()` above already ran
+        // the writer's bounded `flushAndClose`; even if that timed out and left the
+        // drain thread stalled, the writer holds a private `dup()` of this fd and is
+        // its sole closer, so closing OURS here can never strand that thread on a
+        // reused descriptor. Safe regardless of the writer's teardown outcome.
         try? appFileHandle?.close()
         appFileHandle = nil
 

@@ -21,10 +21,21 @@ private let logger = Logger(subsystem: "com.meetingtranscriber.audiotap", catego
 /// lock is ever held during the blocking `write()`. `@unchecked Sendable`: the
 /// scratch buffer and `debugRMS` are touched only on the drain thread; everything
 /// shared is atomic.
+///
+/// fd ownership: the writer `dup()`s the caller's descriptor at init and writes
+/// ONLY through that private copy, and it is the SOLE closer of that copy (in the
+/// drain thread, after the last possible write). This severs the writer from the
+/// caller's fd lifecycle: when `flushAndClose` times out on a stalled disk, the
+/// caller is free to close ITS fd (the session's `FileHandle`) without the kernel
+/// reusing that number under a still-blocked drain thread — a resumed write can
+/// then only ever land in this capture's own file (its private dup), never in an
+/// unrelated file that happened to inherit a reused descriptor.
 final class CaptureFileWriter: @unchecked Sendable {
-    /// Owned by the caller (the session's `FileHandle`), NOT by this writer — the
-    /// writer only writes; it never closes the fd. See `flushAndClose`.
-    private let fd: Int32
+    /// Private `dup()` of the caller's descriptor. The writer writes only through
+    /// this copy and is its sole closer (drain thread, after its final flush), so
+    /// the caller closing its own fd can never strand a stalled write on a reused
+    /// descriptor. `-1` if the `dup()` failed (writes then no-op via EBADF).
+    private let ownedFD: Int32
     private let ring: AudioRingBuffer
     private let levelPublisher: LevelPublisher
     private let debugLogging: Bool
@@ -34,7 +45,13 @@ final class CaptureFileWriter: @unchecked Sendable {
 
     private var thread: Thread?
     private let running = ManagedAtomic<Bool>(true)
-    /// Signalled once when the drain thread has fully exited (after its final flush).
+    /// Set when `flushAndClose` gives up on a stalled write: the drain thread then
+    /// issues NO further writes (checked in `drainAll` before every write), so a
+    /// timed-out writer that later unblocks writes at most its in-flight chunk and
+    /// then exits. Read/written cross-thread → atomic.
+    private let aborted = ManagedAtomic<Bool>(false)
+    /// Signalled once when the drain thread has fully exited (after its final flush
+    /// and closing `ownedFD`).
     private let finished = DispatchSemaphore(value: 0)
 
     /// Drain-thread-only RMS accumulator (never read off-thread).
@@ -55,7 +72,13 @@ final class CaptureFileWriter: @unchecked Sendable {
         drainInterval: TimeInterval = CaptureTuning.writerDrainInterval,
         scratchBytes: Int = CaptureTuning.writerScratchBytes,
     ) {
-        self.fd = fd
+        // Own a private copy of the descriptor so the caller's close of ITS fd
+        // (and any subsequent kernel reuse of that number) can never redirect a
+        // stalled drain write into an unrelated file.
+        ownedFD = dup(fd)
+        if ownedFD < 0 {
+            logger.error("CaptureFileWriter dup(fd) failed (errno=\(errno)) — writes will no-op")
+        }
         self.ring = ring
         self.levelPublisher = levelPublisher
         self.debugLogging = debugLogging
@@ -63,7 +86,13 @@ final class CaptureFileWriter: @unchecked Sendable {
         scratch = UnsafeMutableRawBufferPointer.allocate(byteCount: scratchBytes, alignment: 64)
     }
 
-    deinit { scratch.deallocate() }
+    deinit {
+        scratch.deallocate()
+        // The drain thread is the sole closer of `ownedFD` once started. Close it
+        // here only if the thread was never spawned (created-but-never-started),
+        // so a private dup can't leak on that path.
+        if thread == nil, ownedFD >= 0 { close(ownedFD) }
+    }
 
     func start() {
         let drainThread = Thread { [weak self] in self?.runLoop() }
@@ -79,14 +108,23 @@ final class CaptureFileWriter: @unchecked Sendable {
     /// unbounded `writeQueue.sync {}` barrier). The drain thread exits on its own
     /// once the write unblocks; it keeps the ring + scratch alive until then (it
     /// holds a strong self-reference while running), so proceeding is memory-safe.
-    /// The fd is owned by the caller — this method never closes it ("Close" here
-    /// means closing the *writer*, not the descriptor).
+    ///
+    /// On timeout we ALSO latch `aborted`, so a drain thread that later unblocks
+    /// writes at most its in-flight chunk (into this capture's own private dup) and
+    /// then exits without draining the rest — it never issues fresh writes after
+    /// the caller has moved on. The drain thread remains the sole closer of the
+    /// private `ownedFD`; this method never closes any descriptor.
     func flushAndClose(deadline: DispatchTime) {
         running.store(false, ordering: .relaxed)
         if finished.wait(timeout: deadline) == .timedOut {
-            logger.error("CaptureFileWriter flush exceeded deadline — proceeding; drain thread will exit when the write unblocks")
+            aborted.store(true, ordering: .relaxed)
+            logger.error("CaptureFileWriter flush exceeded deadline — aborting further writes; drain thread will exit (and close its private fd) when the write unblocks")
         }
     }
+
+    /// Whether `flushAndClose` gave up on a stalled write and latched the abort.
+    /// Exposed for tests that assert the timed-out-writer contract.
+    var isAborted: Bool { aborted.load(ordering: .relaxed) }
 
     /// Peak |sample| observed since the previous call, then reset to zero. Read by
     /// the tap-health timer each tick.
@@ -104,18 +142,29 @@ final class CaptureFileWriter: @unchecked Sendable {
             drainAll()
             Thread.sleep(forTimeInterval: drainInterval)
         }
-        drainAll() // final flush after the stop signal
+        drainAll() // final flush after the stop signal (skipped if aborted)
+        // Sole closer of the private dup, after the last possible write — so a
+        // stalled-then-resumed thread frees ITS descriptor, never one the caller
+        // (or the kernel) has since reassigned.
+        if ownedFD >= 0 { close(ownedFD) }
         finished.signal()
     }
 
     private func drainAll() {
         var didDrain = false
         while true {
+            // A timed-out `flushAndClose` latched the abort — issue no further
+            // writes so a resumed drain doesn't keep spilling the ring after the
+            // caller has moved past teardown.
+            if aborted.load(ordering: .relaxed) { break }
             let n = ring.read(into: scratch)
             if n == 0 { break }
             didDrain = true
             if let base = scratch.baseAddress {
-                writeAllToFileHandle(fd, base, count: n)
+                // Re-check right before the blocking write: the abort may have
+                // latched while `ring.read` ran.
+                if aborted.load(ordering: .relaxed) { break }
+                writeAllToFileHandle(ownedFD, base, count: n)
                 let stats = Self.analyze(base, byteCount: n)
                 debugRMS.add(sumSq: stats.sumSq, samples: stats.samples)
                 recordPeak(stats.peakAbs)
