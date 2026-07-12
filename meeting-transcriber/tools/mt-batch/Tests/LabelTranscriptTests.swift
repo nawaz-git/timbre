@@ -35,6 +35,26 @@ final class LabelTranscriptTests: XCTestCase {
         XCTAssertEqual(result.first?.text, "hello")
     }
 
+    func testPartialWordCoverageKeepsWordlessSegmentText() {
+        // The engine emitted words for the first segment but not the second
+        // (partial DTW coverage). The word-only rebuild would drop the second
+        // segment's text entirely; the hybrid must keep it.
+        let segs = [
+            TimedSegment(start: 0, end: 1, text: "hello there"),
+            TimedSegment(start: 2, end: 3, text: "silent segment"),
+        ]
+        let words = [
+            WordTimeline.Word(start: 0, end: 0.5, text: "hello", source: .app),
+            WordTimeline.Word(start: 0.5, end: 1, text: "there", source: .app),
+        ]
+        let result = Transcribe.labelTranscript(
+            transcript: segs, words: words, diarization: diar([(0, 3, "Speaker 1")]), nameOverrides: [:],
+        )
+        let joined = result.map(\.text).joined(separator: " ")
+        XCTAssertTrue(joined.contains("hello there"), "word-covered segment attributed")
+        XCTAssertTrue(joined.contains("silent segment"), "word-less segment text preserved, not dropped")
+    }
+
     func testNameOverridesAppliedInWordPath() {
         let words = [WordTimeline.Word(start: 0, end: 1, text: "hi", source: .app)]
         let result = Transcribe.labelTranscript(
