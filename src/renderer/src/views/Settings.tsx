@@ -229,6 +229,24 @@ export function SettingsView(): JSX.Element {
       {/* ── Background behaviour ───────────────────────────────────── */}
       <Section icon={<Play size={16} />} title="Background behaviour">
         <SettingsRow
+          label="Start Timbre at login"
+          description="Timbre can only capture meetings while it's running. Recommended for automatic recording."
+        >
+          <label className="toggle-switch" title="Start Timbre at login">
+            <input
+              type="checkbox"
+              checked={settings.launchAtLogin}
+              onChange={(e) => {
+                void setSettings({ launchAtLogin: e.target.checked })
+              }}
+            />
+            <span className="toggle-switch__track" aria-hidden="true">
+              <span className="toggle-switch__thumb" />
+            </span>
+            <span className="toggle-switch__label">{settings.launchAtLogin ? 'On' : 'Off'}</span>
+          </label>
+        </SettingsRow>
+        <SettingsRow
           label="Auto-start watching on launch"
           description="Timbre lives in the menubar like Tailscale or 1Password. When this is on, Timbre begins watching for meetings the moment it starts — so a Meet you join won't slip past unrecorded. Turn it off to require an explicit Start each session."
         >

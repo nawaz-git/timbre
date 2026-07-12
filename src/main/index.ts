@@ -284,6 +284,18 @@ app.whenReady().then(async () => {
   // anything reads the store. One-time, marker-guarded.
   migrateLegacyUserData()
 
+  // Reconcile the OS login-item registration with the persisted preference
+  // once at startup. Only meaningful for a packaged build — in dev the login
+  // item would point at the Electron binary, so we skip the syscall.
+  if (app.isPackaged) {
+    try {
+      const { launchAtLogin } = await readSettings()
+      app.setLoginItemSettings({ openAtLogin: launchAtLogin })
+    } catch (err) {
+      console.warn('[main] login-item reconcile failed (non-fatal)', err)
+    }
+  }
+
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })

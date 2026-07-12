@@ -61,6 +61,16 @@ export function registerIpcHandlers(): void {
     // Re-emit the engine bridge so a scope/mic change takes effect on the next
     // meeting. Best-effort — a failed bridge write must never fail the save.
     await writeEngineConfig().catch(() => {})
+    // Reflect the login-item preference into the OS. Only meaningful for a
+    // packaged build — in dev the executable is Electron itself, so skip the
+    // syscall to avoid registering the dev binary as a login item.
+    if (patch.launchAtLogin !== undefined && app.isPackaged) {
+      try {
+        app.setLoginItemSettings({ openAtLogin: result.launchAtLogin })
+      } catch (err) {
+        console.warn('[ipc] setLoginItemSettings failed', err)
+      }
+    }
     return result
   })
 
