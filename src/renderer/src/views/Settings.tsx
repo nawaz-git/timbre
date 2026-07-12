@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react'
 import {
   Folder,
   Info,
+  Languages,
   Monitor,
   Palette,
   Play,
@@ -17,7 +18,8 @@ import { PermissionChecklist } from '../components/PermissionChecklist'
 import { useSettings } from '../state/settings'
 import { useOnboardingComplete } from '../state/onboarding'
 import { useTags } from '../state/tags'
-import type { ScreenCaptureScope, TagDef, ThemeMode } from '../../../shared/types'
+import { ASR_LANGUAGES } from '../../../shared/types'
+import type { ProcessingMode, ScreenCaptureScope, TagDef, ThemeMode } from '../../../shared/types'
 
 const THEME_OPTIONS: ThemeMode[] = ['auto', 'light', 'dark']
 const THEME_LABEL: Record<ThemeMode, string> = {
@@ -29,6 +31,11 @@ const THEME_LABEL: Record<ThemeMode, string> = {
 const SCREEN_SCOPE_OPTIONS: ReadonlyArray<{ value: ScreenCaptureScope; label: string }> = [
   { value: 'chromeWindow', label: 'Chrome tab' },
   { value: 'entireScreen', label: 'Entire screen' }
+]
+
+const PROCESSING_MODE_OPTIONS: ReadonlyArray<{ value: ProcessingMode; label: string }> = [
+  { value: 'fast', label: 'Fast' },
+  { value: 'max', label: 'Max accuracy' }
 ]
 
 const APP_VERSION = APP_VERSION_PLACEHOLDER
@@ -286,6 +293,51 @@ export function SettingsView(): JSX.Element {
               {settings.disableAppAudioTap ? 'On' : 'Off'}
             </span>
           </label>
+        </SettingsRow>
+      </Section>
+
+      {/* ── Transcription ──────────────────────────────────────────── */}
+      <Section icon={<Languages size={16} />} title="Transcription">
+        <SettingsRow
+          label="Processing quality"
+          description="Fast matches today's speed. Max accuracy runs a slower (20–30 min) refinement pass for the best speaker attribution — the meeting is ready fast either way, then upgraded in the background."
+        >
+          <div className="theme-toggle" role="group" aria-label="Processing quality">
+            {PROCESSING_MODE_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                className={
+                  'theme-toggle__option' +
+                  (settings.processingMode === opt.value ? ' theme-toggle__option--active' : '')
+                }
+                onClick={() => {
+                  void setSettings({ processingMode: opt.value })
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Transcription language"
+          description="Auto-detect works for most meetings. Pick a language to lock it in if detection drifts."
+        >
+          <select
+            className="select"
+            value={settings.asrLanguage}
+            onChange={(e) => {
+              void setSettings({ asrLanguage: e.target.value })
+            }}
+            aria-label="Transcription language"
+          >
+            {ASR_LANGUAGES.map((lang) => (
+              <option key={lang.code || 'auto'} value={lang.code}>
+                {lang.label}
+              </option>
+            ))}
+          </select>
         </SettingsRow>
       </Section>
 

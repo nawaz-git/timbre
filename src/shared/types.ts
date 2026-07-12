@@ -10,6 +10,44 @@ export type ThemeMode = 'auto' | 'light' | 'dark'
  */
 export type ScreenCaptureScope = 'chromeWindow' | 'entireScreen'
 
+/**
+ * Post-processing effort the engine applies after a meeting. `fast` is the
+ * default same-latency pipeline; `max` requests the slower, high-accuracy
+ * speaker-attribution refinement. Rides the `engine_config.json` bridge as
+ * `processingMode` and mirrors the engine-side `ProcessingMode`.
+ *
+ * This is the canonical name for the concept — a parallel UX quality-tier
+ * effort renames onto this field.
+ */
+export type ProcessingMode = 'fast' | 'max'
+
+/**
+ * Transcription-language options surfaced in Settings. The empty string is
+ * "Auto-detect" (the default) — it maps to the engine's auto path. The rest
+ * are ISO 639-1 codes forwarded verbatim to the engine + mt-batch. Hardcoded
+ * here (rather than imported from the Swift engine) so the renderer has no
+ * engine dependency; kept short and high-traffic on purpose.
+ */
+export const ASR_LANGUAGES: ReadonlyArray<{ code: string; label: string }> = [
+  { code: '', label: 'Auto-detect' },
+  { code: 'en', label: 'English' },
+  { code: 'de', label: 'German' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'fr', label: 'French' },
+  { code: 'it', label: 'Italian' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'nl', label: 'Dutch' },
+  { code: 'pl', label: 'Polish' },
+  { code: 'ru', label: 'Russian' },
+  { code: 'uk', label: 'Ukrainian' },
+  { code: 'tr', label: 'Turkish' },
+  { code: 'zh', label: 'Chinese' },
+  { code: 'ja', label: 'Japanese' },
+  { code: 'ko', label: 'Korean' },
+  { code: 'hi', label: 'Hindi' },
+  { code: 'ar', label: 'Arabic' }
+]
+
 export interface Settings {
   outputFolder: string
   theme: ThemeMode
@@ -40,6 +78,19 @@ export interface Settings {
    * Surfaced in Settings → Output and via the tray menu.
    */
   autoStartWatching: boolean
+  /**
+   * Post-processing quality tier. `fast` (default) matches today's latency;
+   * `max` runs the slower high-accuracy speaker-attribution refinement. Rides
+   * the engine_config.json bridge to the engine + forwarded to mt-batch as
+   * `--mode`.
+   */
+  processingMode: ProcessingMode
+  /**
+   * ASR language, empty string = auto-detect (default). ISO 639-1 otherwise.
+   * Written into the engine bridge as `asrLanguage` (fixing the previously
+   * forced-German live path) and passed to mt-batch as `--language`.
+   */
+  asrLanguage: string
   /**
    * Wall-clock ms epoch when the user finished (or skipped) the onboarding
    * wizard. `undefined` => the wizard has not been completed and App.tsx
