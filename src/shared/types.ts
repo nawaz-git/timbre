@@ -475,6 +475,12 @@ export const IPC = {
   /** Returns the most recent Chrome meet.google.com tab snapshot. */
   systemChromeMeet: 'system:chromeMeet',
   /**
+   * Run one on-demand Chrome-automation probe (onboarding "Test Chrome
+   * detection"). Triggers the macOS Automation consent prompt on first use
+   * and reports the result → ChromeProbeTestResult.
+   */
+  systemTestChromeProbe: 'system:testChromeProbe',
+  /**
    * Pull the current `AppStatus` (the single source of truth for recording /
    * processing / attention state). The matching push channel is
    * `app-status:update` (broadcast, deliberately NOT in this invoke const).
@@ -557,6 +563,16 @@ export interface ChromeMeetSnapshot {
   /** Most recent error string from osascript, if any (e.g. permission denied). */
   error?: string
   tab: ChromeMeetTab | null
+}
+
+/**
+ * Result of the onboarding "Test Chrome detection" step (`system:testChromeProbe`).
+ * `automationState` is the TCC verdict observed by the one-shot probe;
+ * `tabFound` is whether a live Google Meet tab was open during the test.
+ */
+export interface ChromeProbeTestResult {
+  automationState: PermissionState
+  tabFound: boolean
 }
 
 export interface ChromeMeetTab {

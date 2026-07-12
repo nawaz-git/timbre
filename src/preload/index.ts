@@ -7,6 +7,7 @@ import type {
   BackendJob,
   CaptureWatchdogSignal,
   ChromeMeetSnapshot,
+  ChromeProbeTestResult,
   EnrolledSpeaker,
   ExportFormat,
   HelperPermissionSnapshot,
@@ -167,6 +168,12 @@ const api = {
     openSettings: (pane: PrivacyPane): Promise<void> =>
       ipcRenderer.invoke(IPC.systemOpenSettings, pane),
     chromeMeet: (): Promise<ChromeMeetSnapshot> => ipcRenderer.invoke(IPC.systemChromeMeet),
+    /**
+     * Run one on-demand Chrome-automation probe (onboarding "Test Chrome
+     * detection"). First call triggers the macOS Automation consent prompt.
+     */
+    testChromeProbe: (): Promise<ChromeProbeTestResult> =>
+      ipcRenderer.invoke(IPC.systemTestChromeProbe),
     onChromeMeetUpdate: (handler: (snap: ChromeMeetSnapshot) => void): (() => void) => {
       const listener = (
         _: Electron.IpcRendererEvent,

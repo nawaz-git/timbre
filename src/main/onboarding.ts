@@ -37,7 +37,7 @@ import { shell } from 'electron'
 import { openPrivacyPane } from './permissions'
 import { forceKillEngine, resolveLiveRecorderApp, startLiveRecorder } from './backend'
 import { resetCaptureWatchdog } from './captureWatchdog'
-import { confirmIfRecording } from './status'
+import { confirmIfRecording, isEngineProcessAlive } from './status'
 import { writeSettings } from './settings'
 import type {
   GrantStatus,
@@ -340,10 +340,29 @@ function runTccLogShow(): Promise<string> {
 // ─── watchLoopRunning ───────────────────────────────────────────────────
 
 /**
+ * How long a confirmed watch-loop "seen" stays trusted while the engine
+ * process is still alive. The engine logs "Watch mode started" exactly ONCE
+ * per launch, so the 60s log window ages it out long before the loop stops —
+ * which made the wizard flap back to "restart the engine" even though nothing
+ * changed. We remember the last positive and keep trusting it as long as the
+ * engine is actually running.
+ */
+const WATCHLOOP_TRUST_MS = 30 * 60_000
+
+/** Wall-clock ms of the last confirmed "Watch mode started", or null. */
+let watchLoopSeenAt: number | null = null
+
+/**
  * Grep the engine subsystem log (last 60s) for `WatchLoop] Watch mode
  * started` — the line the engine emits when its watch loop actually
  * starts (qa-eng-001-watchloop-gating.md). We match on `process ==
  * "MintrEngine"` (same attribution captureWatchdog uses for pass A).
+ *
+ * The raw log line ages out of the 60s window while the loop keeps running,
+ * so a fresh positive is cached: once seen, we report running for up to
+ * WATCHLOOP_TRUST_MS as long as the engine process is still alive (`pgrep`).
+ * This removes the regression where a healthy, unchanged setup kept nagging
+ * the user to restart the engine every minute.
  */
 async function probeWatchLoopRunning(): Promise<boolean> {
   const out = await runLogShow([
@@ -354,7 +373,19 @@ async function probeWatchLoopRunning(): Promise<boolean> {
     'process == "MintrEngine"',
     '--info'
   ])
-  return out.includes('WatchLoop] Watch mode started')
+  if (out.includes('WatchLoop] Watch mode started')) {
+    watchLoopSeenAt = Date.now()
+    return true
+  }
+  // Sticky fallback: trust a recent positive while the engine is still up.
+  if (
+    watchLoopSeenAt !== null &&
+    Date.now() - watchLoopSeenAt < WATCHLOOP_TRUST_MS &&
+    isEngineProcessAlive()
+  ) {
+    return true
+  }
+  return false
 }
 
 // ─── shared `log show` runner (mirrors captureWatchdog.runLogShow) ──────

@@ -6,6 +6,7 @@ import type {
   AppStatus,
   BackendJob,
   ChromeMeetSnapshot,
+  ChromeProbeTestResult,
   EnrolledSpeaker,
   ExportFormat,
   HelperPermissionSnapshot,
@@ -24,7 +25,7 @@ import type {
   TranscriptSearchHit
 } from '../../shared/types'
 import { getPermissionStatus, openPrivacyPane } from '../permissions'
-import { getChromeMeetSnapshot } from '../chromeProbe'
+import { getChromeMeetSnapshot, probeOnce } from '../chromeProbe'
 import { confirmIfRecording, getAppStatus } from '../status'
 import { writeEngineConfig } from '../engineConfig'
 import { showMainWindow } from '../tray'
@@ -417,6 +418,13 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.systemChromeMeet, async (): Promise<ChromeMeetSnapshot> => {
     return getChromeMeetSnapshot()
+  })
+
+  ipcMain.handle(IPC.systemTestChromeProbe, async (): Promise<ChromeProbeTestResult> => {
+    // One-shot Chrome-automation probe for the onboarding wizard. This is the
+    // call that first triggers the macOS "allow Timbre to control Chrome"
+    // prompt, and reports back granted/denied + whether a Meet tab was open.
+    return probeOnce()
   })
 
   ipcMain.handle(IPC.appStatusGet, async (): Promise<AppStatus> => {
