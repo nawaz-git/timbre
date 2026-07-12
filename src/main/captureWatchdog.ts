@@ -40,6 +40,7 @@ import { execFile } from 'child_process'
 import { watch, type FSWatcher } from 'fs'
 import { promises as fsp } from 'fs'
 import { basename } from 'path'
+import { homedir } from 'os'
 import { getChromeMeetSnapshot } from './chromeProbe'
 import { liveRecordingsRoot } from './meetings'
 import { readSettings } from './settings'
@@ -96,7 +97,13 @@ const state: {
   /** Synthesised placeholder for a Meet that's been detected but not yet
    *  written by the engine. Read by `meetings.ts` via getLivePlaceholder. */
   livePlaceholder: LivePlaceholder | null
-  watchers: FSWatcher[]
+  /**
+   * The two long-lived folder watchers, tracked by name so the imported one
+   * can be torn down and rebuilt independently when the user changes their
+   * Output Folder (see `restartImportedWatcher`). The live watcher points at
+   * the engine's fixed recordings root and never moves.
+   */
+  watchers: { live: FSWatcher | null; imported: FSWatcher | null }
   debounceTimer: NodeJS.Timeout | null
   watchdogTimer: NodeJS.Timeout | null
 } = {
@@ -105,7 +112,7 @@ const state: {
   lastEngineWriteAt: 0,
   signal: { helperPermissionLikely: false },
   livePlaceholder: null,
-  watchers: [],
+  watchers: { live: null, imported: null },
   debounceTimer: null,
   watchdogTimer: null
 }
@@ -209,29 +216,78 @@ export function isRecordingActive(): boolean {
  * Safe to call repeatedly — second+ calls are no-ops.
  */
 export async function startCaptureWatchdog(): Promise<void> {
-  if (state.watchers.length > 0) return
+  if (state.watchers.live || state.watchers.imported) return
 
   await ensureFolder(liveRecordingsRoot)
   const settings = await readSettings()
   await ensureFolder(settings.outputFolder)
 
-  state.watchers.push(makeWatcher(liveRecordingsRoot, 'live'))
-  state.watchers.push(makeWatcher(settings.outputFolder, 'imported'))
+  // The live root is always under Application Support — safe to watch
+  // recursively. The imported folder is user-picked and could be a huge
+  // tree (home / Documents / …), so gate its recursion via watchRecursionSafe.
+  state.watchers.live = makeWatcher(liveRecordingsRoot, 'live')
+  state.watchers.imported = makeWatcher(
+    settings.outputFolder,
+    'imported',
+    watchRecursionSafe(settings.outputFolder, homedir())
+  )
 
   // Tick every 2 seconds — checks Chrome-probe state vs. last-write time
   // and flips the signal when it crosses the threshold.
   state.watchdogTimer = setInterval(checkWatchdog, 2000)
 }
 
+/**
+ * Tear down and rebuild the imported-folder watcher against `folder`. The
+ * watchers are created once at startup from the then-current Output Folder;
+ * without this, changing the Output Folder in Settings left the watcher
+ * pointed at the OLD folder, so files dropped into the new one never fired a
+ * `meetings:changed` push until the next app launch. Called from settings:set
+ * when `outputFolder` changes.
+ */
+export async function restartImportedWatcher(folder: string): Promise<void> {
+  if (state.watchers.imported) {
+    try {
+      state.watchers.imported.close()
+    } catch {
+      // ignore — a half-closed watcher is replaced below regardless
+    }
+    state.watchers.imported = null
+  }
+  await ensureFolder(folder)
+  state.watchers.imported = makeWatcher(folder, 'imported', watchRecursionSafe(folder, homedir()))
+}
+
+/**
+ * Whether `fs.watch(folder, { recursive: true })` is safe. Recursive watches
+ * on a very large tree make macOS walk an enormous subtree (FSEvents) and can
+ * pin a core indefinitely. Returns false when the folder is the home
+ * directory itself or one of the big top-level roots (Documents / Desktop /
+ * Downloads exactly) — the caller then watches non-recursively, which still
+ * catches top-level file imports (nested writes, which imports never produce,
+ * are the only thing missed). Pure so it's unit-testable.
+ */
+export function watchRecursionSafe(folder: string, home: string): boolean {
+  const norm = (p: string): string => p.replace(/\/+$/, '')
+  const f = norm(folder)
+  const h = norm(home)
+  if (f === h) return false
+  for (const root of ['Documents', 'Desktop', 'Downloads']) {
+    if (f === `${h}/${root}`) return false
+  }
+  return true
+}
+
 export function stopCaptureWatchdog(): void {
-  for (const w of state.watchers) {
+  for (const w of [state.watchers.live, state.watchers.imported]) {
+    if (!w) continue
     try {
       w.close()
     } catch {
       // ignore
     }
   }
-  state.watchers = []
+  state.watchers = { live: null, imported: null }
   if (state.watchdogTimer) {
     clearInterval(state.watchdogTimer)
     state.watchdogTimer = null
@@ -250,8 +306,8 @@ async function ensureFolder(path: string): Promise<void> {
   }
 }
 
-function makeWatcher(path: string, kind: 'live' | 'imported'): FSWatcher {
-  // Critical: recursive: true. The engine writes its outputs inside
+function makeWatcher(path: string, kind: 'live' | 'imported', recursive = true): FSWatcher {
+  // The live root wants recursive: true. The engine writes its outputs inside
   //   <root>/protocols/<file>.txt    — transcripts
   //   <root>/recordings/<file>.wav   — audio
   // With recursive: false, fs.watch only fires on changes to the immediate
@@ -259,7 +315,16 @@ function makeWatcher(path: string, kind: 'live' | 'imported'): FSWatcher {
   // invisible. v0.15 logged a real captured meeting at 19:38 that never
   // surfaced in the UI because of exactly this. macOS's fs.watch
   // supports `recursive: true` natively (via FSEvents under the hood).
-  const w = watch(path, { persistent: false, recursive: true }, (eventType, filename) => {
+  //
+  // The imported watcher passes recursive=false when the picked Output Folder
+  // is a huge tree (see watchRecursionSafe) — top-level imports still fire.
+  if (!recursive) {
+    console.warn(
+      `[watchdog] watching ${path} non-recursively — it is a large root; ` +
+        'only top-level file changes will surface'
+    )
+  }
+  const w = watch(path, { persistent: false, recursive }, (eventType, filename) => {
     // Any change at all bumps the engine-write timestamp — this is the
     // signal that the helper IS doing work (which clears the watchdog).
     state.lastEngineWriteAt = Date.now()

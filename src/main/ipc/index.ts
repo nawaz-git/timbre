@@ -28,6 +28,7 @@ import type {
 import { getPermissionStatus, openPrivacyPane } from '../permissions'
 import { getChromeMeetSnapshot, probeOnce } from '../chromeProbe'
 import { confirmIfRecording, getAppStatus } from '../status'
+import { restartImportedWatcher } from '../captureWatchdog'
 import { writeEngineConfig } from '../engineConfig'
 import { showMainWindow } from '../tray'
 import { deleteSpeakerFromGlobalDB, listEnrolledSpeakers, numSpeakersToArg } from '../backend'
@@ -81,6 +82,15 @@ export function registerIpcHandlers(): void {
       } catch (err) {
         console.warn('[ipc] setLoginItemSettings failed', err)
       }
+    }
+    // If the Output Folder changed, rewire the imported-folder watcher so a
+    // file dropped into the new folder fires meetings:changed immediately.
+    // The watcher is otherwise bound to the startup folder for the whole
+    // session and never notices a folder switch until relaunch.
+    if (patch.outputFolder !== undefined) {
+      await restartImportedWatcher(result.outputFolder).catch((err) =>
+        console.warn('[settings] restartImportedWatcher failed', err)
+      )
     }
     return result
   })
