@@ -263,9 +263,13 @@ export async function restartImportedWatcher(folder: string): Promise<void> {
  * on a very large tree make macOS walk an enormous subtree (FSEvents) and can
  * pin a core indefinitely. Returns false when the folder is the home
  * directory itself or one of the big top-level roots (Documents / Desktop /
- * Downloads exactly) — the caller then watches non-recursively, which still
- * catches top-level file imports (nested writes, which imports never produce,
- * are the only thing missed). Pure so it's unit-testable.
+ * Downloads exactly) — the caller then watches non-recursively. Imports DO
+ * write nested (each import lands in a per-meeting subfolder holding
+ * transcript.txt/.json + meta.json), so the non-recursive watcher misses those
+ * nested writes — but an import's completion still surfaces independently via
+ * the backend `done` event → renderer refresh (see Meetings.tsx), so only the
+ * redundant fs.watch signal is dropped for those big roots. Pure so it's
+ * unit-testable.
  */
 export function watchRecursionSafe(folder: string, home: string): boolean {
   const norm = (p: string): string => p.replace(/\/+$/, '')
