@@ -94,6 +94,13 @@ final class WhisperKitEngine: TranscribingEngine, StreamingTranscribingEngine, W
         downloadProgress = 0
     }
 
+    /// Release the WhisperKit pipeline so its ~1–2 GB of weights leave
+    /// resident memory. `transcribeSegments` reloads lazily via `ensureModel`.
+    /// Protocol entry point for the idle-unload fuse; delegates to `unload()`.
+    func unloadModel() async {
+        unload()
+    }
+
     /// Ensure model is loaded, loading it if necessary.
     private func ensureModel() async throws {
         if pipe != nil { return }

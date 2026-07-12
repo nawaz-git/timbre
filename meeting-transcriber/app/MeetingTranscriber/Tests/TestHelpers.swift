@@ -378,10 +378,16 @@ class MockEngine: TranscribingEngine {
     var transcriptionProgress: Double = 1.0
     var segmentsToReturn: [TimestampedSegment] = []
     var transcribeCallCount = 0
+    var unloadCallCount = 0
     var shouldThrow = false
 
     func loadModel() {
         modelState = .loaded
+    }
+
+    func unloadModel() {
+        unloadCallCount += 1
+        modelState = .unloaded
     }
 
     func transcribeSegments(audioPath _: URL) throws -> [TimestampedSegment] {

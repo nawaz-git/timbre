@@ -87,6 +87,15 @@ final class ParakeetEngine: TranscribingEngine, StreamingTranscribingEngine, Wor
         await task.value
     }
 
+    /// Release the Parakeet ASR manager so its weights leave resident memory.
+    /// `transcribeSegments` reloads lazily via `ensureModel`.
+    func unloadModel() async {
+        loadingTask?.cancel()
+        loadingTask = nil
+        asrManager = nil
+        modelState = .unloaded
+    }
+
     private func ensureModel() async throws {
         if asrManager != nil { return }
         logger.info("Parakeet: model not loaded, loading…")

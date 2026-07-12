@@ -130,14 +130,22 @@ struct MeetingTranscriberApp: App {
                 closeWindow(id: "settings")
             }
             .task {
+                // Bundled (headless) engines are spawned with --auto-watch and
+                // defer the ~1–2 GB ASR model load until the first transcription
+                // (each engine's transcribe path lazy-loads via ensureModel), so
+                // an always-on idle engine doesn't pin that memory 24/7.
+                // Standalone dev launches (no --auto-watch) keep today's warm
+                // start. The variant/language assignments below only configure
+                // the engine (cheap) and therefore run in both modes.
+                let eagerLoad = !CommandLine.arguments.contains("--auto-watch")
                 switch appState.settings.transcriptionEngine {
                 case .whisperKit:
                     appState.whisperKit.modelVariant = appState.settings.whisperKitModel
                     appState.whisperKit.language = appState.settings.whisperLanguageOrNil
-                    await appState.whisperKit.loadModel()
+                    if eagerLoad { await appState.whisperKit.loadModel() }
 
                 case .parakeet:
-                    await appState.parakeetEngine.loadModel()
+                    if eagerLoad { await appState.parakeetEngine.loadModel() }
                 }
             }
             .task {

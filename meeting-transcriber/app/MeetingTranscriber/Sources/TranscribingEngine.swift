@@ -10,6 +10,10 @@ protocol TranscribingEngine: AnyObject {
     var transcriptionProgress: Double { get } // swiftlint:disable:this unused_declaration
 
     func loadModel() async
+    /// Release the loaded model and its memory. Safe to call when nothing is
+    /// loaded; the next `transcribeSegments` reloads lazily. Default no-op so
+    /// engines/mocks that don't hold heavyweight models need not implement it.
+    func unloadModel() async
     func transcribeSegments(audioPath: URL) async throws -> [TimestampedSegment]
 }
 
@@ -44,6 +48,10 @@ protocol WordTimestampingEngine: TranscribingEngine {
 }
 
 extension TranscribingEngine {
+    /// Default no-op: engines without a heavyweight resident model (or test
+    /// mocks) inherit this and do nothing on unload.
+    func unloadModel() async {}
+
     /// Label and merge pre-transcribed app/mic segments by timestamp.
     func mergeDualSourceSegments(
         appSegments: [TimestampedSegment],
