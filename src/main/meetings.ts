@@ -28,6 +28,7 @@ import {
   parseEngineTxtSegments
 } from './engineTranscript'
 import { isRefineMarkerActive } from './engineRefineStatus'
+import { writeFileAtomic } from './atomicFile'
 
 /**
  * The Swift live-recording engine (`MeetingTranscriber.app`, bundled inside
@@ -431,7 +432,7 @@ async function patchEngineTxtRename(
       'g'
     )
     const next = raw.replace(re, `$1${newName}$2`)
-    if (next !== raw) await fs.writeFile(txtPath, next, 'utf-8')
+    if (next !== raw) await writeFileAtomic(txtPath, next)
   } catch {
     // .txt may be absent on partial output — non-fatal.
   }
@@ -462,7 +463,7 @@ async function patchEngineTxtByIndex(
         }
       }
     }
-    if (matched >= segmentIndex) await fs.writeFile(txtPath, lines.join('\n'), 'utf-8')
+    if (matched >= segmentIndex) await writeFileAtomic(txtPath, lines.join('\n'))
   } catch {
     // non-fatal
   }
@@ -491,7 +492,7 @@ async function renameEngineSpeaker(
           changed = true
         }
       }
-      if (changed) await fs.writeFile(segmentsPath, JSON.stringify(segs, null, 2), 'utf-8')
+      if (changed) await writeFileAtomic(segmentsPath, JSON.stringify(segs, null, 2))
     }
   }
   await patchEngineTxtRename(prefix, oldName, newName)
@@ -548,7 +549,7 @@ async function reassignEngineSegment(
     throw new Error(`Segment index ${segmentIndex} out of range`)
   }
   segs[segmentIndex].speaker = newSpeaker
-  await fs.writeFile(segmentsPath, JSON.stringify(segs, null, 2), 'utf-8')
+  await writeFileAtomic(segmentsPath, JSON.stringify(segs, null, 2))
   await patchEngineTxtByIndex(prefix, segmentIndex, newSpeaker)
   return new Set(segs.map((s) => s.speaker).filter((v) => v && v.length > 0)).size
 }
@@ -1418,7 +1419,7 @@ export async function renameSpeakerInMeeting(
       if (filtered.length === existing.additionalSpeakers.length) return
       existing.additionalSpeakers = filtered
       await fs.mkdir(dirname(metaPath), { recursive: true })
-      await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+      await writeFileAtomic(metaPath, JSON.stringify(existing, null, 2))
     } catch {
       // Pruning is best-effort; never fail the rename over it.
     }
@@ -1467,7 +1468,7 @@ export async function renameSpeakerInMeeting(
     const raw = await fs.readFile(txtPath, 'utf-8')
     const re = new RegExp('(\\[\\d\\d:\\d\\d:\\d\\d\\] )' + escapeRegex(oldName) + '(:)', 'g')
     const next = raw.replace(re, '$1' + newName + '$2')
-    if (next !== raw) await fs.writeFile(txtPath, next, 'utf-8')
+    if (next !== raw) await writeFileAtomic(txtPath, next)
   } catch {
     // transcript.txt may not exist on partial outputs — non-fatal.
   }
@@ -1485,7 +1486,7 @@ export async function renameSpeakerInMeeting(
       for (const seg of parsed.segments) {
         if (seg.speaker === oldName) seg.speaker = newName
       }
-      await fs.writeFile(jsonPath, JSON.stringify(parsed, null, 2), 'utf-8')
+      await writeFileAtomic(jsonPath, JSON.stringify(parsed, null, 2))
     }
   } catch {
     // transcript.json may not exist; non-fatal.
@@ -1702,7 +1703,7 @@ export async function setMeetingTags(
   const existing = (await safeReadJson<MetadataFile>(metaPath)) ?? {}
   existing.tags = clean
   await fs.mkdir(dirname(metaPath), { recursive: true })
-  await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+  await writeFileAtomic(metaPath, JSON.stringify(existing, null, 2))
   return { tagIds: clean }
 }
 
@@ -1725,7 +1726,7 @@ export async function renameMeetingTitle(
     delete existing.title
   }
   await fs.mkdir(dirname(metaPath), { recursive: true })
-  await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+  await writeFileAtomic(metaPath, JSON.stringify(existing, null, 2))
   return {
     title: existing.title?.trim() ? existing.title : fallbackTitleForId(meetingId)
   }
@@ -1920,7 +1921,7 @@ export async function reassignSegmentSpeaker(
     if (typeof seg.speaker === 'string' && seg.speaker.length > 0) distinct.add(seg.speaker)
   }
   parsed.speakerCount = distinct.size
-  await fs.writeFile(jsonPath, JSON.stringify(parsed, null, 2), 'utf-8')
+  await writeFileAtomic(jsonPath, JSON.stringify(parsed, null, 2))
 
   // 2. Patch transcript.txt by line index — find the Nth `[HH:MM:SS] X:`
   //    line and replace ONLY its speaker name. Lines without that prefix
@@ -1942,7 +1943,7 @@ export async function reassignSegmentSpeaker(
       }
     }
     if (matched >= segmentIndex) {
-      await fs.writeFile(txtPath, lines.join('\n'), 'utf-8')
+      await writeFileAtomic(txtPath, lines.join('\n'))
     }
     // If matched < segmentIndex the .txt is out of sync with the .json
     // (e.g. legacy partial output) — the .json patch above is the source
@@ -1983,7 +1984,7 @@ export async function addSpeakerToMeeting(
   }
   existing.additionalSpeakers = merged
   await fs.mkdir(dirname(metaPath), { recursive: true })
-  await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+  await writeFileAtomic(metaPath, JSON.stringify(existing, null, 2))
   return { additionalSpeakers: merged }
 }
 
@@ -2026,7 +2027,7 @@ export async function removeSpeakerLabelInMeeting(
     if (filtered.length === existing.additionalSpeakers.length) return
     existing.additionalSpeakers = filtered
     await fs.mkdir(dirname(metaPath), { recursive: true })
-    await fs.writeFile(metaPath, JSON.stringify(existing, null, 2), 'utf-8')
+    await writeFileAtomic(metaPath, JSON.stringify(existing, null, 2))
   }
 
   if (meetingId.startsWith('engine:')) {
@@ -2078,7 +2079,7 @@ export async function removeSpeakerLabelInMeeting(
       }
       distinctSize = distinct.size
       parsed.speakerCount = distinctSize
-      await fs.writeFile(jsonPath, JSON.stringify(parsed, null, 2), 'utf-8')
+      await writeFileAtomic(jsonPath, JSON.stringify(parsed, null, 2))
     }
   } catch {
     // transcript.json may be absent on partial outputs — non-fatal.
@@ -2090,7 +2091,7 @@ export async function removeSpeakerLabelInMeeting(
     const raw = await fs.readFile(txtPath, 'utf-8')
     const re = new RegExp('(\\[\\d\\d:\\d\\d:\\d\\d\\] )' + escapeRegex(target) + '(:)', 'g')
     const next = raw.replace(re, '$1' + PLACEHOLDER + '$2')
-    if (next !== raw) await fs.writeFile(txtPath, next, 'utf-8')
+    if (next !== raw) await writeFileAtomic(txtPath, next)
   } catch {
     // transcript.txt may not exist on partial outputs — non-fatal.
   }
