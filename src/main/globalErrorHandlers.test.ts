@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatErrorLogLine } from './globalErrorHandlers'
+import { formatErrorLogLine, shouldRenotify } from './globalErrorHandlers'
 
 // globalErrorHandlers.ts imports electron (app, Notification) at module scope;
 // the vitest `electron` alias resolves it. Only the pure formatter is exercised
@@ -33,5 +33,27 @@ describe('formatErrorLogLine', () => {
     const err = new Error('x')
     err.stack = 'Error: x'
     expect(formatErrorLogLine(when, 'unhandledRejection', err)).toContain(' unhandledRejection ')
+  })
+})
+
+describe('shouldRenotify', () => {
+  const COOLDOWN = 5 * 60_000
+
+  it('always notifies the first time (lastNotifiedAt 0)', () => {
+    // Real Date.now() epochs dwarf the cooldown, so a never-notified handler
+    // (lastNotifiedAt 0) always surfaces the first incident.
+    expect(shouldRenotify(1_700_000_000_000, 0, COOLDOWN)).toBe(true)
+  })
+
+  it('suppresses a second notification within the cooldown window', () => {
+    const last = 1_000_000
+    expect(shouldRenotify(last + 1, last, COOLDOWN)).toBe(false)
+    expect(shouldRenotify(last + COOLDOWN - 1, last, COOLDOWN)).toBe(false)
+  })
+
+  it('re-notifies once the cooldown elapses so a fault storm resurfaces', () => {
+    const last = 1_000_000
+    expect(shouldRenotify(last + COOLDOWN, last, COOLDOWN)).toBe(true)
+    expect(shouldRenotify(last + 2 * COOLDOWN, last, COOLDOWN)).toBe(true)
   })
 })

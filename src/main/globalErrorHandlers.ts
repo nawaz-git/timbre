@@ -12,16 +12,39 @@ export function formatErrorLogLine(now: Date, kind: string, err: unknown): strin
   return `${now.toISOString()} ${kind} ${detail}`
 }
 
+/**
+ * Re-notify at most once per this window. A single notification per process
+ * lifetime went silent after the first incident, so a recurring fault storm
+ * left the app wedged-but-alive with no further signal; a cooldown resurfaces
+ * the problem periodically without spamming a notification per throw.
+ */
+const NOTIFY_COOLDOWN_MS = 5 * 60_000
+
+/**
+ * Whether enough time has elapsed since the last crash notification to show
+ * another. Pure so the throttle is unit-tested directly. `lastNotifiedAtMs` of
+ * 0 (never notified) always passes.
+ */
+export function shouldRenotify(
+  nowMs: number,
+  lastNotifiedAtMs: number,
+  cooldownMs = NOTIFY_COOLDOWN_MS
+): boolean {
+  return nowMs - lastNotifiedAtMs >= cooldownMs
+}
+
 let handlersInstalled = false
-let notifiedOnce = false
+let lastNotifiedAtMs = 0
 
 /**
  * Install process-level guards so a stray throw or a rejected promise in the
  * main process doesn't take the app down (or wedge it) silently. Every incident
- * is appended to `<userData>/main-errors.log` and logged to the console, and AT
- * MOST ONE notification is shown per process lifetime — a menu-bar app that
- * quietly dies leaves the user with no trace, so we keep running and leave a
- * breadcrumb instead. Never calls `process.exit`. Idempotent.
+ * is appended to `<userData>/main-errors.log` and logged to the console, and a
+ * notification is shown at most once per `NOTIFY_COOLDOWN_MS` — a menu-bar app
+ * that quietly dies leaves the user with no trace, so we keep running and leave
+ * a breadcrumb, but a recurring fault re-surfaces on the cooldown instead of
+ * going silent forever after the first one. Never calls `process.exit`.
+ * Idempotent.
  */
 export function installGlobalErrorHandlers(): void {
   if (handlersInstalled) return
@@ -38,8 +61,9 @@ export function installGlobalErrorHandlers(): void {
       // A log we cannot write must never itself crash the handler.
     }
     console.error(line)
-    if (!notifiedOnce) {
-      notifiedOnce = true
+    const now = Date.now()
+    if (shouldRenotify(now, lastNotifiedAtMs)) {
+      lastNotifiedAtMs = now
       try {
         new Notification({
           title: 'Timbre hit an internal error',
