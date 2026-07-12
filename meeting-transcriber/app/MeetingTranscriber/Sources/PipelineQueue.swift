@@ -529,6 +529,14 @@ class PipelineQueue {
         /// Segments cached for diarization reuse (avoids double transcription).
         let cachedSegments: [TimestampedSegment]? // swiftlint:disable:this discouraged_optional_collection
         let isDualSource: Bool
+        /// Per-track word timelines for word-level speaker attribution. Nil
+        /// when the active engine doesn't emit word timestamps → `diarize()`
+        /// falls back to per-segment assignment. `appWords`/`micWords` are the
+        /// dual-source tracks (mic in its native timeline, pre-`micDelay`);
+        /// `mixWords` is the single-source timeline.
+        var appWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
+        var micWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
+        var mixWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
     }
 
     /// Output of the diarization stage: the labeled transcript plus the
@@ -647,6 +655,11 @@ class PipelineQueue {
         let transcript: String
         // Segments cached for potential diarization reuse (avoids double transcription)
         var cachedSegments: [TimestampedSegment]? // swiftlint:disable:this discouraged_optional_collection
+        // Per-track word timelines, captured when the engine emits word
+        // timestamps. Consumed by diarize() for word-level attribution.
+        var appWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
+        var micWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
+        var mixWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
         let isDualSource = ctx.appPath != nil && ctx.micPath != nil
         if let appAudioPath = ctx.appPath, let micAudioPath = ctx.micPath {
             // Dual-source: resample both tracks to 16kHz concurrently
@@ -657,11 +670,25 @@ class PipelineQueue {
             try await appResample
             try await micResample
 
-            // Transcribe each track separately
-            let appSegments = try await engine.transcribeSegments(audioPath: app16k)
-            let micSegments = try await engine.transcribeSegments(audioPath: mic16k)
+            // Transcribe each track separately. When the engine emits word
+            // timestamps, capture the per-track word timelines too so diarize()
+            // can attribute speakers per word (fixes turns absorbed inside a
+            // single ASR segment). Falls back to plain segments otherwise.
+            let appSegments: [TimestampedSegment]
+            let micSegments: [TimestampedSegment]
+            if let wordEngine = engine as? any WordTimestampingEngine {
+                let appResult = try await wordEngine.transcribeWords(audioPath: app16k, source: .app)
+                let micResult = try await wordEngine.transcribeWords(audioPath: mic16k, source: .mic)
+                appSegments = appResult.segments
+                micSegments = micResult.segments
+                appWords = appResult.words
+                micWords = micResult.words
+            } else {
+                appSegments = try await engine.transcribeSegments(audioPath: app16k)
+                micSegments = try await engine.transcribeSegments(audioPath: mic16k)
+            }
 
-            // Merge dual-source segments
+            // Merge dual-source segments (display transcript + diarization fallback)
             let segments = engine.mergeDualSourceSegments(
                 appSegments: appSegments,
                 micSegments: micSegments,
@@ -688,12 +715,27 @@ class PipelineQueue {
                 transcriptionPath = mix16k
             }
 
-            // Use transcribeSegments to cache results for diarization
-            var segments = try await engine.transcribeSegments(audioPath: transcriptionPath)
+            // Transcribe, caching results for diarization. Capture the word
+            // timeline too when the engine emits word timestamps.
+            var segments: [TimestampedSegment]
+            if let wordEngine = engine as? any WordTimestampingEngine {
+                let result = try await wordEngine.transcribeWords(audioPath: transcriptionPath, source: .app)
+                segments = result.segments
+                mixWords = result.words
+            } else {
+                segments = try await engine.transcribeSegments(audioPath: transcriptionPath)
+            }
 
             // Remap timestamps back to original timeline if VAD was used
             if let map = vadMap {
                 segments = map.remapTimestamps(segments)
+                mixWords = mixWords?.map { word in
+                    WordTimeline.Word(
+                        start: map.toOriginalTime(word.start),
+                        end: map.toOriginalTime(word.end),
+                        text: word.text, probability: word.probability, source: word.source,
+                    )
+                }
             }
 
             cachedSegments = segments
@@ -708,7 +750,10 @@ class PipelineQueue {
             "[\(ctx.shortID, privacy: .public)] transcription_complete segments=\(segCount, privacy: .public) duration=\(totalSecs, privacy: .public)s",
         )
 
-        return TranscriptionOutput(transcript: transcript, cachedSegments: cachedSegments, isDualSource: isDualSource)
+        return TranscriptionOutput(
+            transcript: transcript, cachedSegments: cachedSegments, isDualSource: isDualSource,
+            appWords: appWords, micWords: micWords, mixWords: mixWords,
+        )
     }
 
     /// Stage 2 — optional speaker diarization. Returns the transcript with
@@ -727,6 +772,11 @@ class PipelineQueue {
         var labeledSegments: [TimestampedSegment]? // swiftlint:disable:this discouraged_optional_collection
         let cachedSegments = transcription.cachedSegments
         let isDualSource = transcription.isDualSource
+        // Per-track word timelines (nil unless the engine emits word
+        // timestamps) — drive word-level attribution below.
+        let appWords = transcription.appWords
+        let micWords = transcription.micWords
+        let mixWords = transcription.mixWords
 
         guard diarizeEnabled, let diarizationFactory else {
             return DiarizedTranscript(transcript: finalTranscript, labeledSegments: nil)
@@ -940,75 +990,96 @@ class PipelineQueue {
                 break diarizationLoop
             }
 
-            // Apply speaker names to segments
+            // Apply speaker names to segments. When per-word timelines are
+            // available (engine emits word timestamps) attribute speakers per
+            // word via `WordTimeline`; otherwise fall back to the per-segment
+            // maximum-overlap assignment.
             if useDualTrack, let appDiar = appDiarization, let micDiar = micDiarization,
                let cached = cachedSegments {
-                // Dual-track: assign from respective diarizations
-                let namedAppDiar = DiarizationResult(
-                    segments: appDiar.segments,
-                    speakingTimes: appDiar.speakingTimes,
-                    autoNames: DiarizationProcess.unprefixNames(autoNames, prefix: "R_"),
-                    embeddings: appDiar.embeddings,
-                )
-                let namedMicDiar = DiarizationResult(
-                    segments: micDiar.segments,
-                    speakingTimes: micDiar.speakingTimes,
-                    autoNames: DiarizationProcess.unprefixNames(autoNames, prefix: "M_"),
-                    embeddings: micDiar.embeddings,
-                )
-
-                let appSegs = cached.filter { $0.speaker == "Remote" }
-                let micSegs = cached.filter { $0.speaker == micLabel }
-                let labeled = DiarizationProcess.assignSpeakersDualTrack(
-                    appSegments: appSegs,
-                    micSegments: micSegs,
-                    appDiarization: namedAppDiar,
-                    micDiarization: namedMicDiar,
-                )
-                let merged = DiarizationProcess.mergeConsecutiveSpeakers(labeled)
+                let merged: [TimestampedSegment]
+                if let appW = appWords {
+                    merged = labelDualTrackWords(
+                        appWords: appW, micWords: micWords,
+                        appDiar: appDiar, micDiar: micDiar,
+                        autoNames: autoNames, micDelay: ctx.micDelay,
+                    )
+                } else {
+                    // Per-segment fallback (engine without word timestamps).
+                    let namedAppDiar = DiarizationResult(
+                        segments: appDiar.segments, speakingTimes: appDiar.speakingTimes,
+                        autoNames: DiarizationProcess.unprefixNames(autoNames, prefix: "R_"),
+                        embeddings: appDiar.embeddings,
+                    )
+                    let namedMicDiar = DiarizationResult(
+                        segments: micDiar.segments, speakingTimes: micDiar.speakingTimes,
+                        autoNames: DiarizationProcess.unprefixNames(autoNames, prefix: "M_"),
+                        embeddings: micDiar.embeddings,
+                    )
+                    let appSegs = cached.filter { $0.speaker == "Remote" }
+                    let micSegs = cached.filter { $0.speaker == micLabel }
+                    let labeled = DiarizationProcess.assignSpeakersDualTrack(
+                        appSegments: appSegs, micSegments: micSegs,
+                        appDiarization: namedAppDiar, micDiarization: namedMicDiar,
+                    )
+                    merged = DiarizationProcess.mergeConsecutiveSpeakers(labeled)
+                }
                 finalTranscript = merged.map(\.formattedLine).joined(separator: "\n")
                 labeledSegments = merged
             } else if useDualTrack, let appDiar = appDiarization, let cached = cachedSegments {
-                // Mic diarization failed (silent track / no input
-                // device). Diarize the app track normally and keep
-                // the mic transcript with its raw `micLabel` —
-                // better than emitting "speakers not identified"
-                // on a recording that has perfectly good remote
-                // audio.
-                let namedAppDiar = DiarizationResult(
-                    segments: appDiar.segments,
-                    speakingTimes: appDiar.speakingTimes,
-                    autoNames: DiarizationProcess.unprefixNames(autoNames, prefix: "R_"),
-                    embeddings: appDiar.embeddings,
-                )
-                let appSegs = cached.filter { $0.speaker == "Remote" }
-                let micSegs = cached.filter { $0.speaker == micLabel }
-                let labeledApp = DiarizationProcess.assignSpeakers(
-                    transcript: appSegs, diarization: namedAppDiar,
-                )
-                // micSegs keep their original micLabel speaker tag.
-                let combined = (labeledApp + micSegs).sorted { $0.start < $1.start }
-                let merged = DiarizationProcess.mergeConsecutiveSpeakers(combined)
+                // Mic diarization failed (silent track / no input device).
+                // Diarize the app track normally and keep the mic transcript
+                // with its raw `micLabel` — better than "speakers not
+                // identified" on a recording with good remote audio.
+                let merged: [TimestampedSegment]
+                if let appW = appWords {
+                    merged = labelDualTrackWords(
+                        appWords: appW, micWords: micWords,
+                        appDiar: appDiar, micDiar: nil,
+                        autoNames: autoNames, micDelay: ctx.micDelay,
+                    )
+                } else {
+                    let namedAppDiar = DiarizationResult(
+                        segments: appDiar.segments, speakingTimes: appDiar.speakingTimes,
+                        autoNames: DiarizationProcess.unprefixNames(autoNames, prefix: "R_"),
+                        embeddings: appDiar.embeddings,
+                    )
+                    let appSegs = cached.filter { $0.speaker == "Remote" }
+                    let micSegs = cached.filter { $0.speaker == micLabel }
+                    let labeledApp = DiarizationProcess.assignSpeakers(
+                        transcript: appSegs, diarization: namedAppDiar,
+                    )
+                    // micSegs keep their original micLabel speaker tag.
+                    let combined = (labeledApp + micSegs).sorted { $0.start < $1.start }
+                    merged = DiarizationProcess.mergeConsecutiveSpeakers(combined)
+                }
                 finalTranscript = merged.map(\.formattedLine).joined(separator: "\n")
                 labeledSegments = merged
             } else if let currentDiarization = diarization {
                 // Single-source: standard assignment
-                let namedDiarization = DiarizationResult(
-                    segments: currentDiarization.segments,
-                    speakingTimes: currentDiarization.speakingTimes,
-                    autoNames: autoNames,
-                    embeddings: currentDiarization.embeddings,
-                )
-                let segments: [TimestampedSegment] = if let cached = cachedSegments {
-                    cached
+                let merged: [TimestampedSegment]
+                if let mixW = mixWords {
+                    merged = DiarizationProcess.mergeConsecutiveSpeakers(
+                        WordTimeline.attribute(
+                            words: mixW, diarization: currentDiarization.segments,
+                            turnSpeakerMap: autoNames,
+                        ),
+                    )
                 } else {
-                    try await engine.transcribeSegments(audioPath: mix16k)
+                    let namedDiarization = DiarizationResult(
+                        segments: currentDiarization.segments,
+                        speakingTimes: currentDiarization.speakingTimes,
+                        autoNames: autoNames, embeddings: currentDiarization.embeddings,
+                    )
+                    let segments: [TimestampedSegment] = if let cached = cachedSegments {
+                        cached
+                    } else {
+                        try await engine.transcribeSegments(audioPath: mix16k)
+                    }
+                    let labeled = DiarizationProcess.assignSpeakers(
+                        transcript: segments, diarization: namedDiarization,
+                    )
+                    merged = DiarizationProcess.mergeConsecutiveSpeakers(labeled)
                 }
-                let labeled = DiarizationProcess.assignSpeakers(
-                    transcript: segments,
-                    diarization: namedDiarization,
-                )
-                let merged = DiarizationProcess.mergeConsecutiveSpeakers(labeled)
                 finalTranscript = merged.map(\.formattedLine).joined(separator: "\n")
                 labeledSegments = merged
             }
@@ -1022,6 +1093,49 @@ class PipelineQueue {
         }
 
         return DiarizedTranscript(transcript: finalTranscript, labeledSegments: labeledSegments)
+    }
+
+    /// Word-level speaker labelling for the dual-track case. App words are
+    /// attributed against the app diarization on the shared timeline; mic words
+    /// **and** mic turns are both shifted by `micDelay` so their alignment is
+    /// preserved while the result lands on the global timeline (fixes the
+    /// mic/app timeline mismatch). When mic diarization is unavailable the mic
+    /// words keep the known local `micLabel`. Returns paragraph-merged segments.
+    private func labelDualTrackWords(
+        appWords: [WordTimeline.Word],
+        micWords: [WordTimeline.Word]?,
+        appDiar: DiarizationResult,
+        micDiar: DiarizationResult?,
+        autoNames: [String: String],
+        micDelay: TimeInterval,
+    ) -> [TimestampedSegment] {
+        let appNames = DiarizationProcess.unprefixNames(autoNames, prefix: "R_")
+        let appUtterances = WordTimeline.attribute(
+            words: appWords, diarization: appDiar.segments, turnSpeakerMap: appNames,
+        )
+
+        var micUtterances: [TimestampedSegment] = []
+        if let micWords {
+            let shiftedWords = micDelay == 0 ? micWords : micWords.map { $0.shifted(by: micDelay) }
+            if let micDiar {
+                let micNames = DiarizationProcess.unprefixNames(autoNames, prefix: "M_")
+                let shiftedSegs = micDelay == 0 ? micDiar.segments : micDiar.segments.map {
+                    DiarizationResult.Segment(start: $0.start + micDelay, end: $0.end + micDelay, speaker: $0.speaker)
+                }
+                micUtterances = WordTimeline.attribute(
+                    words: shiftedWords, diarization: shiftedSegs, turnSpeakerMap: micNames,
+                )
+            } else {
+                // Mic diarization unavailable → attribute to the known local speaker.
+                micUtterances = WordTimeline.utterances(
+                    from: shiftedWords.map { WordTimeline.AttributedWord(word: $0, speaker: micLabel) },
+                )
+            }
+        }
+
+        return DiarizationProcess.mergeConsecutiveSpeakers(
+            (appUtterances + micUtterances).sorted { $0.start < $1.start },
+        )
     }
 
     /// Stage 3 — persist the transcript + audio, run protocol generation
