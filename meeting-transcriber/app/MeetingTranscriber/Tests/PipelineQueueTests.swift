@@ -2092,13 +2092,13 @@ final class PipelineQueueTests: XCTestCase {
         XCTAssertEqual(queue.jobs.first?.state, .speakerNamingPending)
     }
 
-    func testCleanupSidecarFilesDeletesPersistedFiles() throws {
+    func testCleanupSidecarFilesDeletesWorkingAudioButKeepsSegments() throws {
         let outputDir = tmpDir.appendingPathComponent("output")
         let recordingsDir = outputDir.appendingPathComponent("recordings")
         try FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
 
         let slug = "test_cleanup"
-        for suffix in ["_16k.wav", "_segments.json", "_naming.json"] {
+        for suffix in ["_16k.wav", "_app_16k.wav", "_mic_16k.wav", "_segments.json", "_naming.json"] {
             try Data([0]).write(to: recordingsDir.appendingPathComponent("\(slug)\(suffix)"))
         }
 
@@ -2113,13 +2113,22 @@ final class PipelineQueueTests: XCTestCase {
         localQueue.cleanupSidecarFiles(slug: slug)
         localQueue.deleteNamingData(slug: slug)
 
-        for suffix in ["_16k.wav", "_segments.json", "_naming.json"] {
+        // Transient 16 kHz working audio + the naming sidecar are reclaimed.
+        for suffix in ["_16k.wav", "_app_16k.wav", "_mic_16k.wav", "_naming.json"] {
             let path = recordingsDir.appendingPathComponent("\(slug)\(suffix)")
             XCTAssertFalse(
                 FileManager.default.fileExists(atPath: path.path),
                 "\(suffix) should be deleted",
             )
         }
+        // `_segments.json` is the renderer's structured transcript — it must
+        // survive naming resolution so finalized meetings keep their speakers.
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: recordingsDir.appendingPathComponent("\(slug)_segments.json").path,
+            ),
+            "_segments.json must be preserved for the UI",
+        )
     }
 
     // MARK: - knownSpeakerNames cache (issue #155)

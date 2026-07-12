@@ -531,6 +531,15 @@ class PipelineQueue {
         let isDualSource: Bool
     }
 
+    /// Output of the diarization stage: the labeled transcript plus the
+    /// labeled+merged segments that back it. `labeledSegments` is nil when
+    /// diarization is disabled, unavailable, or failed — callers then fall
+    /// back to the pre-diarization `TranscriptionOutput.cachedSegments`.
+    private struct DiarizedTranscript {
+        let transcript: String
+        let labeledSegments: [TimestampedSegment]? // swiftlint:disable:this discouraged_optional_collection
+    }
+
     /// Typed errors thrown by the pipeline stages.
     enum PipelineError: LocalizedError {
         case missingMixPath
@@ -594,13 +603,14 @@ class PipelineQueue {
                 return
             }
 
-            let finalTranscript = try await diarize(
+            let diarized = try await diarize(
                 transcription, ctx: ctx, engine: engine,
                 workDir: workDir, outputDir: outputDir,
             )
 
             try await generateAndSaveProtocol(
-                finalTranscript: finalTranscript, transcription: transcription,
+                finalTranscript: diarized.transcript, transcription: transcription,
+                labeledSegments: diarized.labeledSegments,
                 ctx: ctx, workDir: workDir, outputDir: outputDir,
             )
         } catch is CancellationError {
@@ -709,16 +719,22 @@ class PipelineQueue {
     private func diarize( // swiftlint:disable:this function_body_length cyclomatic_complexity
         _ transcription: TranscriptionOutput, ctx: JobContext,
         engine: any TranscribingEngine, workDir: URL, outputDir: URL,
-    ) async throws -> String {
+    ) async throws -> DiarizedTranscript {
         var finalTranscript = transcription.transcript
+        // Labeled+merged segments produced by the assignment branches below.
+        // Nil until diarization actually labels the transcript — callers then
+        // fall back to the pre-diarization cache when persisting segments.
+        var labeledSegments: [TimestampedSegment]? // swiftlint:disable:this discouraged_optional_collection
         let cachedSegments = transcription.cachedSegments
         let isDualSource = transcription.isDualSource
 
-        guard diarizeEnabled, let diarizationFactory else { return finalTranscript }
+        guard diarizeEnabled, let diarizationFactory else {
+            return DiarizedTranscript(transcript: finalTranscript, labeledSegments: nil)
+        }
         let diarizeProcess = diarizationFactory()
         guard diarizeProcess.isAvailable else {
             logger.info("[\(ctx.shortID, privacy: .public)] diarization_skipped")
-            return finalTranscript
+            return DiarizedTranscript(transcript: finalTranscript, labeledSegments: nil)
         }
 
         updateJobState(id: ctx.jobID, to: .diarizing)
@@ -951,6 +967,7 @@ class PipelineQueue {
                 )
                 let merged = DiarizationProcess.mergeConsecutiveSpeakers(labeled)
                 finalTranscript = merged.map(\.formattedLine).joined(separator: "\n")
+                labeledSegments = merged
             } else if useDualTrack, let appDiar = appDiarization, let cached = cachedSegments {
                 // Mic diarization failed (silent track / no input
                 // device). Diarize the app track normally and keep
@@ -973,6 +990,7 @@ class PipelineQueue {
                 let combined = (labeledApp + micSegs).sorted { $0.start < $1.start }
                 let merged = DiarizationProcess.mergeConsecutiveSpeakers(combined)
                 finalTranscript = merged.map(\.formattedLine).joined(separator: "\n")
+                labeledSegments = merged
             } else if let currentDiarization = diarization {
                 // Single-source: standard assignment
                 let namedDiarization = DiarizationResult(
@@ -992,16 +1010,18 @@ class PipelineQueue {
                 )
                 let merged = DiarizationProcess.mergeConsecutiveSpeakers(labeled)
                 finalTranscript = merged.map(\.formattedLine).joined(separator: "\n")
+                labeledSegments = merged
             }
             let segCount = diarization?.segments.count ?? 0
             logger.info("[\(ctx.shortID, privacy: .public)] diarization_complete segments=\(segCount, privacy: .public)")
         } catch {
             logger.warning("[\(ctx.shortID, privacy: .public)] diarization_failed error=\(error.localizedDescription, privacy: .public)")
             addWarning(id: ctx.jobID, "Diarization failed — speakers not identified")
-            // Continue with original transcript
+            // Continue with original transcript (labeledSegments stays nil →
+            // caller persists the pre-diarization cache).
         }
 
-        return finalTranscript
+        return DiarizedTranscript(transcript: finalTranscript, labeledSegments: labeledSegments)
     }
 
     /// Stage 3 — persist the transcript + audio, run protocol generation
@@ -1009,6 +1029,7 @@ class PipelineQueue {
     /// terminal state.
     private func generateAndSaveProtocol(
         finalTranscript: String, transcription: TranscriptionOutput,
+        labeledSegments: [TimestampedSegment]?, // swiftlint:disable:this discouraged_optional_collection
         ctx: JobContext, workDir: URL, outputDir: URL,
     ) async throws {
         // --- Save Transcript & Audio (always) ---
@@ -1052,10 +1073,14 @@ class PipelineQueue {
             }
         }
 
-        // --- Persist transcript segments for late re-assignment ---
-        if let cachedSegments = transcription.cachedSegments {
+        // --- Persist transcript segments for the UI + late re-assignment ---
+        // Prefer the diarized/labeled segments (real speaker names) over the
+        // pre-diarization cache. The cache only carries "Remote"/mic-label
+        // tags, so the renderer's `_segments.json` view would otherwise show
+        // exactly those two speakers regardless of what the diarizer found.
+        if let segments = labeledSegments ?? transcription.cachedSegments {
             let segPath = recordingsDir.appendingPathComponent("\(ctx.slug)_segments.json")
-            if let data = try? JSONEncoder().encode(cachedSegments) {
+            if let data = try? JSONEncoder().encode(segments) {
                 try? data.write(to: segPath, options: .atomic)
             }
         }
@@ -1173,8 +1198,64 @@ class PipelineQueue {
             }
         }
 
+        // Mirror the rename into the persisted `_segments.json` so the
+        // renderer's structured speaker list matches the rewritten `.txt`.
+        rewriteSegmentSpeakers(slug: slug, userMapping: mapping, priorMapping: namingData.mapping)
+
         removeNamingData(jobID: jobID, slug: slug)
         updateJobState(id: jobID, to: .done)
+    }
+
+    /// Rewrite the persisted `<slug>_segments.json` so its per-segment speaker
+    /// labels match the confirmed names — the structured mirror of the `.txt`
+    /// rewrite in `reapplySpeakerNames`. No-op when the sidecar is absent or
+    /// unreadable (e.g. diarization was disabled, so no segments were saved).
+    private func rewriteSegmentSpeakers(
+        slug: String?,
+        userMapping: [String: String],
+        priorMapping: [String: String],
+    ) {
+        guard let slug, let outputDir else { return }
+        let segPath = outputDir
+            .appendingPathComponent("recordings")
+            .appendingPathComponent("\(slug)_segments.json")
+        guard let data = try? Data(contentsOf: segPath),
+              let segments = try? JSONDecoder().decode([TimestampedSegment].self, from: data)
+        else { return }
+        let updated = Self.applySpeakerNameMapping(
+            to: segments, userMapping: userMapping, priorMapping: priorMapping,
+        )
+        if let encoded = try? JSONEncoder().encode(updated) {
+            try? encoded.write(to: segPath, options: .atomic)
+        }
+    }
+
+    /// Apply a confirmed `label → name` mapping to persisted segments,
+    /// mirroring `reapplySpeakerNames`' `.txt` rewrite: a segment's speaker is
+    /// replaced when it equals the raw diarization label OR the prior
+    /// auto-matched name for that label. Pure + `nonisolated static` so it is
+    /// unit-testable without hopping the main actor.
+    nonisolated static func applySpeakerNameMapping(
+        to segments: [TimestampedSegment],
+        userMapping: [String: String],
+        priorMapping: [String: String],
+    ) -> [TimestampedSegment] {
+        segments.map { segment in
+            let current = segment.speaker
+            for (label, name) in userMapping where !name.isEmpty {
+                if current == label {
+                    var renamed = segment
+                    renamed.speaker = name
+                    return renamed
+                }
+                if let auto = priorMapping[label], auto != label, auto != name, current == auto {
+                    var renamed = segment
+                    renamed.speaker = name
+                    return renamed
+                }
+            }
+            return segment
+        }
     }
 
     // MARK: - Late Re-diarization
@@ -1379,11 +1460,16 @@ class PipelineQueue {
         cleanupSidecarFiles(slug: slug)
     }
 
-    /// Delete 16kHz audio and segment sidecar files for a slug.
+    /// Delete the transient 16 kHz working audio for a slug once naming has
+    /// resolved. `_segments.json` is deliberately NOT deleted here: it is the
+    /// renderer's structured transcript (diarized speaker labels + timings),
+    /// so it must outlive the naming step — otherwise a finalized meeting
+    /// would fall back to only the pre-diarization `.txt` and lose the very
+    /// speaker attribution this file carries.
     func cleanupSidecarFiles(slug: String?) {
         guard let slug, let outputDir else { return }
         let recordingsDir = outputDir.appendingPathComponent("recordings")
-        let suffixes = ["_16k.wav", "_app_16k.wav", "_mic_16k.wav", "_segments.json"]
+        let suffixes = ["_16k.wav", "_app_16k.wav", "_mic_16k.wav"]
         for suffix in suffixes {
             let path = recordingsDir.appendingPathComponent("\(slug)\(suffix)")
             try? FileManager.default.removeItem(at: path)
