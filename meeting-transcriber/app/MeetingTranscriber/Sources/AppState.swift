@@ -83,6 +83,16 @@ final class AppState { // swiftlint:disable:this type_body_length
     /// engine + VAD models stay warm.
     @ObservationIgnored private var liveTranscriptionController: LiveTranscriptionController?
 
+    /// Dedicated WhisperKit instance for the MAX-tier refine's re-transcription
+    /// (P0). Kept SEPARATE from `whisperKit` (the FAST pipeline's engine) because
+    /// `WhisperKit.transcribe` mutates shared decoder state with no lock —
+    /// letting a background refine and a live FAST job share one instance would
+    /// race. Created lazily on first refine, released when the refine queue
+    /// drains (`onRefineQueueDrained`); the RAM cost is acceptable for this
+    /// opt-in mode. Refines are serialized FIFO by the queue, so one instance is
+    /// enough.
+    @ObservationIgnored private var refineWhisperKit: WhisperKitEngine?
+
     /// Observable state for the live caption overlay. Always present (the
     /// `LiveCaptionsOverlay` window observes this); content is only populated
     /// when live transcription is on AND a recording is active.
@@ -1294,8 +1304,22 @@ final class AppState { // swiftlint:disable:this type_body_length
 
     /// Re-transcribe a durable track for MAX. WhisperKit large-v3-turbo is
     /// forced for both tracks (plan P0); it auto-loads its model on demand.
+    ///
+    /// Uses a DEDICATED WhisperKit instance, never the FAST pipeline's
+    /// `whisperKit`: the two would otherwise race on WhisperKit's unlocked,
+    /// mutable decoder state when a refine overlaps a live FAST job. Created
+    /// lazily and released on `onRefineQueueDrained`.
     private func refineTranscribe(audio: URL, track: WordTimeline.Track) async throws -> [WordTimeline.Word] {
-        try await whisperKit.transcribeWords(audioPath: audio, source: track).words
+        let engine: WhisperKitEngine
+        if let existing = refineWhisperKit {
+            engine = existing
+        } else {
+            let fresh = WhisperKitEngine()
+            fresh.language = whisperKit.language
+            refineWhisperKit = fresh
+            engine = fresh
+        }
+        return try await engine.transcribeWords(audioPath: audio, source: track).words
     }
 
     /// One offline diarization run at a swept cluster threshold, chunk
@@ -1337,6 +1361,12 @@ final class AppState { // swiftlint:disable:this type_body_length
                 title: "Speaker attribution upgraded",
                 body: "\(job.meetingTitle): \(report.speakerCount) speakers, \(corrections) corrections",
             )
+        }
+        // Free the dedicated refine WhisperKit once no refine remains; the next
+        // refine lazily reloads it. Runs on the main actor (queue is @MainActor).
+        pipelineQueue.onRefineQueueDrained = { [weak self] in
+            self?.refineWhisperKit?.unload()
+            self?.refineWhisperKit = nil
         }
     }
 }
