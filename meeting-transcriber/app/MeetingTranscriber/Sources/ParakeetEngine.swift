@@ -12,7 +12,7 @@ private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "Parakee
 /// as the FluidAudio diarization models).
 @MainActor
 @Observable
-final class ParakeetEngine: TranscribingEngine, StreamingTranscribingEngine {
+final class ParakeetEngine: TranscribingEngine, StreamingTranscribingEngine, WordTimestampingEngine {
     private(set) var modelState: ModelState = .unloaded
     private(set) var downloadProgress: Double = 0
     private(set) var transcriptionProgress: Double = 0
@@ -123,6 +123,43 @@ final class ParakeetEngine: TranscribingEngine, StreamingTranscribingEngine {
         }
 
         return ParakeetTokenGrouping.groupIntoSegments(timings)
+    }
+
+    /// Transcribe a WAV file and return both display segments and the per-word
+    /// timeline (detokenized from `tokenTimings`), each word stamped with
+    /// `source`. Used by the dual-source pipeline for word-level speaker
+    /// attribution. The live `transcribeSamples` path is unaffected.
+    func transcribeWords(
+        audioPath: URL,
+        source: WordTimeline.Track,
+    ) async throws -> (segments: [TimestampedSegment], words: [WordTimeline.Word]) {
+        try await ensureModel()
+        guard let manager = asrManager else {
+            throw TranscriptionError.modelNotLoaded
+        }
+
+        transcriptionProgress = 0
+        var decoderState = await TdtDecoderState.make(decoderLayers: manager.decoderLayerCount)
+        var result = try await manager.transcribe(audioPath, decoderState: &decoderState, language: fluidLanguageHint)
+        transcriptionProgress = 1.0
+
+        if vocabularyBooster?.rescorer != nil, let timings = result.tokenTimings, !timings.isEmpty {
+            result = try await applyVocabularyRescoring(
+                result: result, timings: timings, audioPath: audioPath,
+            )
+        }
+
+        guard let timings = result.tokenTimings, !timings.isEmpty else {
+            // No per-token timestamps: emit a single full-span segment, no words.
+            let segments = result.text.isEmpty ? [] : [
+                TimestampedSegment(start: 0, end: result.duration, text: result.text.trimmingCharacters(in: .whitespaces)),
+            ]
+            return (segments, [])
+        }
+
+        let segments = ParakeetTokenGrouping.groupIntoSegments(timings)
+        let words = ParakeetTokenGrouping.groupIntoWords(timings, source: source)
+        return (segments, words)
     }
 
     /// Live transcription entry point: transcribe a raw 16 kHz mono Float32

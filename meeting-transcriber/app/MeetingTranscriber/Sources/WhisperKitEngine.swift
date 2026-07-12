@@ -39,7 +39,7 @@ extension TimestampedSegment {
 
 @MainActor
 @Observable
-final class WhisperKitEngine: TranscribingEngine, StreamingTranscribingEngine {
+final class WhisperKitEngine: TranscribingEngine, StreamingTranscribingEngine, WordTimestampingEngine {
     var modelVariant = "openai_whisper-large-v3-v20240930_turbo"
     var language: String?
     private(set) var modelState: ModelState = .unloaded
@@ -158,6 +158,75 @@ final class WhisperKitEngine: TranscribingEngine, StreamingTranscribingEngine {
         }
         transcriptionProgress = 1.0
         return segments
+    }
+
+    /// Transcribe a WAV file and return both display segments and the per-word
+    /// timeline (`wordTimestamps: true`), each word stamped with `source`.
+    /// Used by the dual-source pipeline for word-level speaker attribution.
+    /// The live-captions `transcribeSamples` path stays on `wordTimestamps:
+    /// false` and is unaffected.
+    func transcribeWords(
+        audioPath: URL,
+        source: WordTimeline.Track,
+    ) async throws -> (segments: [TimestampedSegment], words: [WordTimeline.Word]) {
+        try await ensureModel()
+        guard let pipe else {
+            throw TranscriptionError.modelNotLoaded
+        }
+
+        transcriptionProgress = 0
+        let totalWindows = max(1, Self.estimateWindowCount(audioPath: audioPath))
+
+        let options = DecodingOptions(
+            language: language,
+            wordTimestamps: true,
+        )
+
+        let results = await pipe.transcribe(
+            audioPaths: [audioPath.path],
+            decodeOptions: options,
+        ) { [weak self] progress in
+            Task { @MainActor in
+                guard let self else { return }
+                self.transcriptionProgress = min(
+                    Double(progress.windowId + 1) / Double(totalWindows),
+                    1.0,
+                )
+            }
+            return nil
+        }
+
+        guard let firstResult = results.first, let transcriptionResults = firstResult else {
+            return ([], [])
+        }
+
+        var segments: [TimestampedSegment] = []
+        var words: [WordTimeline.Word] = []
+        var lastText = ""
+        for segment in transcriptionResults.flatMap(\.segments) {
+            let text = Self.stripWhisperTokens(segment.text).trimmingCharacters(in: .whitespaces)
+            // Hallucination filter: skip consecutive identical text (and its words).
+            if text.isEmpty || text == lastText { continue }
+            lastText = text
+            segments.append(TimestampedSegment(
+                start: TimeInterval(segment.start),
+                end: TimeInterval(segment.end),
+                text: text,
+            ))
+            for wordTiming in segment.words ?? [] {
+                let token = Self.stripWhisperTokens(wordTiming.word).trimmingCharacters(in: .whitespaces)
+                guard !token.isEmpty else { continue }
+                words.append(WordTimeline.Word(
+                    start: TimeInterval(wordTiming.start),
+                    end: TimeInterval(wordTiming.end),
+                    text: token,
+                    probability: wordTiming.probability,
+                    source: source,
+                ))
+            }
+        }
+        transcriptionProgress = 1.0
+        return (segments, words)
     }
 
     /// Transcribe a raw 16 kHz mono Float32 PCM buffer (no file). Used by
