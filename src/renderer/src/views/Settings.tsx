@@ -14,6 +14,7 @@ import {
   Trash2
 } from 'lucide-react'
 import timbreMark from '../assets/timbre-mark.png'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { PermissionChecklist } from '../components/PermissionChecklist'
 import { useSettings } from '../state/settings'
 import { useOnboardingComplete } from '../state/onboarding'
@@ -106,6 +107,8 @@ export function SettingsView(): JSX.Element {
   const [tagError, setTagError] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState('')
+  // Tag pending a delete confirmation (drives the ConfirmDialog).
+  const [tagDeletePending, setTagDeletePending] = useState<TagDef | null>(null)
 
   const onPickFolder = useCallback(async () => {
     const result = await window.api.settings.pickFolder()
@@ -450,15 +453,7 @@ export function SettingsView(): JSX.Element {
                   className="tag-manager__delete"
                   aria-label={`Delete ${tag.name}`}
                   title={`Delete ${tag.name}`}
-                  onClick={() => {
-                    if (
-                      confirm(
-                        `Delete tag "${tag.name}"? Meetings keep their tag ids but the label disappears.`
-                      )
-                    ) {
-                      void deleteTag(tag.id)
-                    }
-                  }}
+                  onClick={() => setTagDeletePending(tag)}
                 >
                   <Trash2 size={12} aria-hidden="true" />
                 </button>
@@ -531,6 +526,22 @@ export function SettingsView(): JSX.Element {
           </a>
         </div>
       </Section>
+
+      {tagDeletePending && (
+        <ConfirmDialog
+          title={`Delete tag "${tagDeletePending.name}"?`}
+          body="Meetings keep working; the label just disappears from all of them."
+          confirmLabel="Delete tag"
+          danger
+          onConfirm={async () => {
+            const t = tagDeletePending
+            if (!t) return
+            await deleteTag(t.id)
+            setTagDeletePending(null)
+          }}
+          onCancel={() => setTagDeletePending(null)}
+        />
+      )}
     </div>
   )
 }

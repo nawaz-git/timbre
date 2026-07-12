@@ -1,3 +1,4 @@
+import { shell } from 'electron'
 import { promises as fs } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
@@ -1176,6 +1177,22 @@ export async function renameMeetingTitle(
  *   - `live:*` → refused (stop the recording first).
  * Idempotent: missing files are ignored (`force: true`).
  */
+/**
+ * Move a path to the macOS Trash if it exists. Idempotent: a missing path
+ * is a no-op (mirrors the old `fs.rm(..., { force: true })` tolerance) so a
+ * protocol-only meeting with no audio, or a double-delete, never throws.
+ * Recoverability is the point — deletion goes through the Trash, not an
+ * irreversible unlink.
+ */
+async function trashIfExists(absPath: string): Promise<void> {
+  try {
+    await fs.access(absPath)
+  } catch {
+    return
+  }
+  await shell.trashItem(absPath)
+}
+
 export async function deleteMeeting(outputFolder: string, meetingId: string): Promise<void> {
   if (meetingId.startsWith('live:')) {
     throw new Error('Stop the live recording before deleting it.')
@@ -1188,7 +1205,7 @@ export async function deleteMeeting(outputFolder: string, meetingId: string): Pr
     const protocolsDir = join(ENGINE_DEFAULT_ROOT, 'protocols')
     await Promise.all(
       ['txt', 'md', 'meta.json', 'refining'].map((ext) =>
-        fs.rm(join(protocolsDir, `${prefix}.${ext}`), { force: true })
+        trashIfExists(join(protocolsDir, `${prefix}.${ext}`))
       )
     )
     const recordingsDir = join(ENGINE_DEFAULT_ROOT, 'recordings')
@@ -1197,7 +1214,7 @@ export async function deleteMeeting(outputFolder: string, meetingId: string): Pr
       await Promise.all(
         files
           .filter((f) => f.startsWith(prefix))
-          .map((f) => fs.rm(join(recordingsDir, f), { force: true }))
+          .map((f) => trashIfExists(join(recordingsDir, f)))
       )
     } catch {
       // recordings dir may not exist (e.g. protocol-only meeting) — nothing to do.
@@ -1210,7 +1227,7 @@ export async function deleteMeeting(outputFolder: string, meetingId: string): Pr
   if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
     throw new Error(`Invalid meeting id: ${meetingId}`)
   }
-  await fs.rm(join(outputFolder, folderId), { recursive: true, force: true })
+  await trashIfExists(join(outputFolder, folderId))
 }
 
 /**
