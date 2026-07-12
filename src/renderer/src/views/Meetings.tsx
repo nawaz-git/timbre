@@ -1850,7 +1850,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             {speakersInTranscript.length > 0 &&
               (showNamingPanel ? (
                 <div
-                  className="naming-panel"
+                  className="notice notice--info naming-panel"
                   id="meeting-naming-panel"
                   role="group"
                   aria-label="Name the speakers"
@@ -2047,7 +2047,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 re-analyse; "Later" clears the queue (next rename re-populates). */}
             {reassignQueue.length > 0 && (
               <div
-                className="cascade-banner"
+                className="notice cascade-banner"
                 style={{
                   // Single-speaker case: tint the accent stripe with that
                   // speaker's color (familiar v0.7 behaviour). With multiple

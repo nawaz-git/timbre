@@ -22,7 +22,7 @@ export function ToastViewport({
       {toasts.map((t) => (
         <div
           key={t.id}
-          className={`toast toast--${t.kind}`}
+          className={`toast toast--${t.kind}${t.kind === 'error' ? ' notice--danger' : ''}`}
           role={t.kind === 'error' ? 'alert' : 'status'}
         >
           <span className="toast__text">{t.text}</span>
