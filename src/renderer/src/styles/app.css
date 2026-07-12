@@ -3336,18 +3336,44 @@
    the tab strip. Solid raised surface — NEVER transparent. The
    3px left accent stripe is coloured by the renamed speaker via
    an inline style on borderLeftColor. */
+/* ============================================================
+ * Notice family — one inline banner/notice vocabulary.
+ * ============================================================
+ * A raised card with a 3px tonal left stripe. Tone comes from a
+ * modifier (info / warn / danger) via the `--notice-stripe` custom
+ * property; no modifier = a neutral divider stripe. Consuming surfaces
+ * (naming panel, cascade banner) add `.notice` and keep only their own
+ * inner layout, so surface, border, radius, and stripe live in ONE
+ * place instead of being copied per banner. Toasts reuse the same
+ * `--notice-stripe` token for their stripe while keeping their own
+ * floating-overlay surface. */
+.notice {
+  margin: var(--space-2, 8px) 0;
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--surface-raised);
+  border: 1px solid var(--divider);
+  border-left: 3px solid var(--notice-stripe, var(--divider));
+  border-radius: var(--radius-lg, 8px);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.04));
+  color: var(--fg);
+}
+.notice--info {
+  --notice-stripe: var(--accent);
+}
+.notice--warn {
+  --notice-stripe: var(--status-transcribing);
+}
+.notice--danger {
+  --notice-stripe: var(--danger);
+}
+
+/* Cascade banner — a horizontal notice (icon · body · actions). Surface
+   comes from `.notice`; only the row layout is bespoke. Neutral stripe
+   (no modifier) since it's a plain confirmation prompt. */
 .cascade-banner {
   display: flex;
   align-items: center;
   gap: var(--space-3, 12px);
-  margin: var(--space-2, 8px) 0;
-  padding: var(--space-3, 12px) var(--space-4, 16px);
-  background: var(--surface-raised, var(--bg-elevated, var(--bg-elev)));
-  border: 1px solid var(--divider);
-  border-left: 3px solid var(--divider);
-  border-radius: var(--radius-lg, 8px);
-  color: var(--fg);
-  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.04));
 }
 .cascade-banner__icon {
   display: inline-flex;
@@ -3622,10 +3648,10 @@
 }
 .row-menu__item--danger,
 .row-menu__item--danger .row-menu__icon {
-  color: var(--danger, #ef4444);
+  color: var(--danger);
 }
 .row-menu__item--danger:hover {
-  background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .tag-picker {
@@ -4163,7 +4189,7 @@
   max-width: 380px;
 }
 .network__error {
-  color: var(--danger, #f87171);
+  color: var(--danger);
 }
 .link-btn {
   background: transparent;
@@ -4966,17 +4992,9 @@
 
 /* ── Speaker naming panel — "Who was in this meeting?" ──────────
    The single naming surface. Wraps the speaker pills with a prompt +
-   Done, shown while the meeting still has unnamed speakers. Solid
-   raised surface (never transparent), matching the cascade banner. */
-.naming-panel {
-  margin: var(--space-2, 8px) 0;
-  padding: var(--space-3, 12px) var(--space-4, 16px);
-  background: var(--surface-raised, var(--bg-elevated));
-  border: 1px solid var(--divider);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius-lg, 8px);
-  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.04));
-}
+   Done, shown while the meeting still has unnamed speakers. Composes the
+   `.notice notice--info` family (raised surface + accent stripe); only
+   its stacked head/pills/hint layout is defined here. */
 .naming-panel__head {
   display: flex;
   align-items: center;
@@ -5022,9 +5040,11 @@
 
 /* ── Toasts — bottom-centre transient confirmations ────────────
    Replaces the ad-hoc statusBanner. Auto-dismissing stack (max 3),
-   portalled to <body>. Success/info carry the accent stripe, errors
-   the danger stripe + soft tint. Motion is disabled under
-   prefers-reduced-motion. */
+   portalled to <body>. Part of the notice family: the stripe reads the
+   shared `--notice-stripe` token (accent by default; `notice--danger`
+   flips it to the danger tone on errors), while the floating overlay
+   surface + soft error tint stay toast-specific. Motion is disabled
+   under prefers-reduced-motion. */
 .toast-viewport {
   position: fixed;
   left: 50%;
@@ -5049,15 +5069,17 @@
   padding: var(--space-3, 10px) var(--space-3, 12px);
   background: var(--surface-overlay, var(--surface-raised));
   border: 1px solid var(--divider-strong);
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--notice-stripe, var(--accent));
   border-radius: var(--radius-lg, 8px);
   box-shadow: var(--shadow-lg);
   color: var(--fg);
   font-size: var(--text-body-size, 13px);
   animation: toast-in 160ms ease;
 }
+/* Error toast: stripe tone comes from the shared `.notice--danger`
+   modifier (set on the element); only the overlay-appropriate tint is
+   toast-specific. */
 .toast--error {
-  border-left-color: var(--danger);
   background: color-mix(in srgb, var(--danger-soft) 60%, var(--surface-overlay));
 }
 .toast__text {
