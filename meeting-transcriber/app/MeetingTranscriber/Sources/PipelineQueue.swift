@@ -1001,7 +1001,7 @@ class PipelineQueue {
                     merged = labelDualTrackWords(
                         appWords: appW, micWords: micWords,
                         appDiar: appDiar, micDiar: micDiar,
-                        autoNames: autoNames, micDelay: ctx.micDelay,
+                        autoNames: autoNames, ctx: ctx, workDir: workDir,
                     )
                 } else {
                     // Per-segment fallback (engine without word timestamps).
@@ -1035,7 +1035,7 @@ class PipelineQueue {
                     merged = labelDualTrackWords(
                         appWords: appW, micWords: micWords,
                         appDiar: appDiar, micDiar: nil,
-                        autoNames: autoNames, micDelay: ctx.micDelay,
+                        autoNames: autoNames, ctx: ctx, workDir: workDir,
                     )
                 } else {
                     let namedAppDiar = DiarizationResult(
@@ -1107,8 +1107,10 @@ class PipelineQueue {
         appDiar: DiarizationResult,
         micDiar: DiarizationResult?,
         autoNames: [String: String],
-        micDelay: TimeInterval,
+        ctx: JobContext,
+        workDir: URL,
     ) -> [TimestampedSegment] {
+        let micDelay = ctx.micDelay
         let appNames = DiarizationProcess.unprefixNames(autoNames, prefix: "R_")
         let appUtterances = WordTimeline.attribute(
             words: appWords, diarization: appDiar.segments, turnSpeakerMap: appNames,
@@ -1133,9 +1135,34 @@ class PipelineQueue {
             }
         }
 
-        return DiarizationProcess.mergeConsecutiveSpeakers(
-            (appUtterances + micUtterances).sorted { $0.start < $1.start },
+        // Cross-track echo/bleed dedup: drop mic utterances that duplicate an
+        // overlapping app utterance (no-headphones bleed). RMS is compared over
+        // each utterance's own-track span — mic utterances are on the global
+        // (micDelay-shifted) timeline, so un-shift them back to the native mic
+        // file when measuring.
+        let appAudio = workDir.appendingPathComponent("app_16k.wav")
+        let micAudio = workDir.appendingPathComponent("mic_16k.wav")
+        let deduped = CrossTrackDedup.dedup(
+            mic: micUtterances,
+            app: appUtterances,
+            micRMS: { AudioMixer.rmsDecibels(file: micAudio, start: $0.start - micDelay, end: $0.end - micDelay) },
+            appRMS: { AudioMixer.rmsDecibels(file: appAudio, start: $0.start, end: $0.end) },
         )
+        if !deduped.dropped.isEmpty {
+            for seg in deduped.dropped {
+                logger.info(
+                    "[\(ctx.shortID, privacy: .public)] echo_dedup_drop start=\(seg.start, privacy: .public)s text=\(seg.text, privacy: .private)",
+                )
+            }
+            if deduped.dropRatio > 0.2 {
+                addWarning(
+                    id: ctx.jobID,
+                    "Dropped \(deduped.droppedCount) duplicated mic line(s) from app-audio bleed — consider using headphones",
+                )
+            }
+        }
+
+        return DiarizationProcess.mergeConsecutiveSpeakers(deduped.kept)
     }
 
     /// Stage 3 — persist the transcript + audio, run protocol generation
