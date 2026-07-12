@@ -16,13 +16,16 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Search,
   SkipBack,
   SkipForward,
   Subtitles,
   Tag as TagIcon,
-  Trash2
+  Trash2,
+  X
 } from 'lucide-react'
-import { formatDate, formatDuration } from '../state/format'
+import { formatDate, formatDateRelative, formatDuration } from '../state/format'
+import { filterMeetingsByQuery, groupMeetingsByDate, highlightParts } from '../state/meetingSearch'
 import { useTags } from '../state/tags'
 import { useAppStatus } from '../state/appStatus'
 import { ConfirmDialog } from '../components/ConfirmDialog'
@@ -38,6 +41,7 @@ import type {
   MeetingTranscript,
   NumSpeakersHint,
   ProcessingStage,
+  TranscriptSearchHit,
   TranscriptSegment
 } from '../../../shared/types'
 
@@ -234,6 +238,13 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [tab, setTab] = useState<TabKey>('transcript')
   const [tagFilter, setTagFilter] = useState<string | null>(null)
+
+  // Library search — client-side over title/speakers/tags, plus a debounced
+  // full-text pass across transcript files (the `In transcripts` group).
+  const [query, setQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const [txHits, setTxHits] = useState<TranscriptSearchHit[]>([])
+  const [searching, setSearching] = useState(false)
 
   // Single source of truth for live recording/processing state. Used to show
   // honest per-meeting processing stage/elapsed and the stuck → "Process now"
@@ -481,6 +492,63 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       console.error('Failed to load enrolled speakers', err)
       setEnrolledSpeakers([])
     }
+  }, [])
+
+  // Search state is driven from event handlers (typing / clear), NOT set
+  // synchronously inside the debounce effect — that would trip the
+  // cascading-render lint rule. The `searching` spinner flips on in the
+  // change handler; the effect only schedules the async fetch.
+  const onSearchChange = useCallback((value: string) => {
+    setQuery(value)
+    if (value.trim() === '') {
+      setSearching(false)
+      setTxHits([])
+    } else {
+      setSearching(true)
+    }
+  }, [])
+
+  const clearSearch = useCallback(() => {
+    setQuery('')
+    setSearching(false)
+    setTxHits([])
+  }, [])
+
+  // Debounced full-text transcript search (300 ms). A search error falls back
+  // silently to the client-side title/speaker results. No synchronous setState
+  // in the body — all state changes happen inside the async callback.
+  useEffect(() => {
+    const q = query.trim()
+    if (!q) return
+    const handle = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const hits = await window.api.meetings.searchTranscripts(q)
+          setTxHits(hits)
+        } catch (err) {
+          console.warn('Transcript search failed', err)
+          setTxHits([])
+        } finally {
+          setSearching(false)
+        }
+      })()
+    }, 300)
+    return () => window.clearTimeout(handle)
+  }, [query])
+
+  // ⌘F focuses the search field while the Meetings view is mounted (it only
+  // mounts on this view, so the shortcut is naturally scoped here). A future
+  // in-transcript find can pre-empt this by handling ⌘F on the detail pane.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+        searchInputRef.current?.select()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
   }, [])
 
   const onSelect = useCallback(
@@ -1174,14 +1242,319 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
   // ─── Render ───────────────────────────────────────────────────────────
 
-  const filteredMeetings = useMemo(() => {
-    if (!tagFilter) return meetings
-    return meetings.filter((m) => m.tagIds.includes(tagFilter))
-  }, [meetings, tagFilter])
+  const tagNamesFor = useCallback(
+    (m: MeetingSummary): string[] =>
+      m.tagIds.map((id) => tagById(id)?.name).filter((n): n is string => !!n),
+    [tagById]
+  )
+
+  // Tag filter, then client-side text filter over title / speakers / tag names.
+  const tagFiltered = useMemo(
+    () => (tagFilter ? meetings.filter((m) => m.tagIds.includes(tagFilter)) : meetings),
+    [meetings, tagFilter]
+  )
+  const visibleMeetings = useMemo(
+    () => filterMeetingsByQuery(tagFiltered, query, tagNamesFor),
+    [tagFiltered, query, tagNamesFor]
+  )
+  const dateGroups = useMemo(() => groupMeetingsByDate(visibleMeetings), [visibleMeetings])
+
+  // Full-text hits NOT already surfaced by the metadata filter, resolved to
+  // their summary row (respecting the active tag filter) → the bottom group.
+  const transcriptOnlyHits = useMemo(() => {
+    if (!query.trim() || txHits.length === 0) return []
+    const shown = new Set(visibleMeetings.map((m) => m.id))
+    const byId = new Map(tagFiltered.map((m) => [m.id, m]))
+    const out: Array<{ meeting: MeetingSummary; snippet: string }> = []
+    for (const hit of txHits) {
+      if (shown.has(hit.id)) continue
+      const meeting = byId.get(hit.id)
+      if (meeting) out.push({ meeting, snippet: hit.snippet })
+    }
+    return out
+  }, [query, txHits, visibleMeetings, tagFiltered])
+
+  const totalResults = visibleMeetings.length + transcriptOnlyHits.length
+  const noResults = query.trim() !== '' && totalResults === 0
+
+  const renderMeetingRow = (m: MeetingSummary, snippet?: string): JSX.Element => {
+    const isEditing = rowEditingId === m.id
+    return (
+      <div
+        key={m.id}
+        role="button"
+        tabIndex={0}
+        className={
+          'meetings__row' +
+          (m.id === selectedId ? ' meetings__row--active' : '') +
+          (isEditing ? ' meetings__row--editing' : '') +
+          (m.isLive ? ' meetings__row--live' : '') +
+          (m.status === 'processing' ? ' meetings__row--processing' : '')
+        }
+        onClick={() => {
+          if (isEditing) return
+          void onSelect(m)
+        }}
+        onKeyDown={(e) => {
+          if (isEditing) return
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            void onSelect(m)
+          }
+        }}
+      >
+        <div className="meetings__row-main">
+          {isEditing ? (
+            <input
+              autoFocus
+              className="meetings__row-input"
+              value={rowEditingValue}
+              onChange={(e) => setRowEditingValue(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                e.stopPropagation()
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void commitRowRename()
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  cancelRowRename()
+                }
+              }}
+              onBlur={() => void commitRowRename()}
+            />
+          ) : (
+            <div className="meetings__row-title">
+              {m.isLive && (
+                <span className="meetings__row-live-dot" aria-label="Recording in progress" />
+              )}
+              <span>{m.title}</span>
+              {m.status === 'processing' && (
+                <span
+                  className="processing-pill"
+                  aria-label="Processing"
+                  title="Transcribing and separating speakers"
+                >
+                  <Loader2
+                    size={11}
+                    strokeWidth={2}
+                    aria-hidden="true"
+                    className="home-status-icon--spin"
+                  />
+                  <span>Processing</span>
+                </span>
+              )}
+              {m.status === 'refining' && (
+                <span
+                  className="processing-pill"
+                  aria-label="Refining"
+                  title="Upgrading speaker attribution (Max accuracy)"
+                >
+                  <Loader2
+                    size={11}
+                    strokeWidth={2}
+                    aria-hidden="true"
+                    className="home-status-icon--spin"
+                  />
+                  <span>Refining</span>
+                </span>
+              )}
+            </div>
+          )}
+          {!isEditing && !m.isLive && (
+            <div className="meetings__row-actions">
+              <div className="meetings__row-tag-wrap">
+                <button
+                  type="button"
+                  className={
+                    'meetings__row-action' +
+                    (rowMenuForId === m.id || tagPickerForRowId === m.id
+                      ? ' meetings__row-action--open'
+                      : '')
+                  }
+                  aria-label="Meeting actions"
+                  title="Meeting actions"
+                  aria-haspopup="menu"
+                  aria-expanded={rowMenuForId === m.id}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setTagPickerForRowId(null)
+                    setTagPickerAnchor(null)
+                    if (rowMenuForId === m.id) {
+                      setRowMenuForId(null)
+                      setRowMenuAnchor(null)
+                    } else {
+                      setRowMenuForId(m.id)
+                      setRowMenuAnchor(e.currentTarget)
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.stopPropagation()
+                    }
+                  }}
+                >
+                  <MoreVertical size={15} strokeWidth={2} aria-hidden="true" />
+                </button>
+                {rowMenuForId === m.id && (
+                  <RowMenu
+                    anchorEl={rowMenuAnchor}
+                    onClose={() => {
+                      setRowMenuForId(null)
+                      setRowMenuAnchor(null)
+                    }}
+                    items={[
+                      {
+                        key: 'rename',
+                        label: 'Edit title',
+                        icon: <PencilIcon size={13} />,
+                        onSelect: () => {
+                          setRowMenuForId(null)
+                          setRowMenuAnchor(null)
+                          beginRowRename(m)
+                        }
+                      },
+                      {
+                        key: 'tags',
+                        label: 'Edit tags',
+                        icon: <TagIcon size={13} strokeWidth={2} aria-hidden="true" />,
+                        onSelect: () => {
+                          setTagPickerForRowId(m.id)
+                          setTagPickerAnchor(rowMenuAnchor)
+                          setRowMenuForId(null)
+                        }
+                      },
+                      {
+                        key: 'delete',
+                        label: 'Delete meeting',
+                        icon: <Trash2 size={13} strokeWidth={2} aria-hidden="true" />,
+                        danger: true,
+                        onSelect: () => {
+                          setRowMenuForId(null)
+                          setRowMenuAnchor(null)
+                          void onDeleteMeeting(m)
+                        }
+                      }
+                    ]}
+                  />
+                )}
+                {tagPickerForRowId === m.id && (
+                  <TagPicker
+                    allTags={allTags}
+                    activeTagIds={m.tagIds}
+                    anchorEl={tagPickerAnchor}
+                    onToggle={(tagId) => void onToggleTagForRow(m.id, tagId)}
+                    onClose={() => {
+                      setTagPickerForRowId(null)
+                      setTagPickerAnchor(null)
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        {m.isLive ? (
+          <div className="meetings__row-meta meetings__row-meta--live">
+            Recording in progress — full transcript when meeting ends.
+          </div>
+        ) : m.status === 'processing' ? (
+          <div className="meetings__row-meta meetings__row-meta--processing">
+            {(() => {
+              const proc = appStatus.processing?.find((p) => p.id === m.id)
+              if (proc?.stuck) return "Processing didn't finish — open to recover it."
+              if (!proc) return 'Processing · Working…'
+              return `Processing · ${PROCESSING_STAGE_LABEL[proc.stage]} · ${formatProcessingElapsed(proc.startedAt)} elapsed`
+            })()}
+          </div>
+        ) : (
+          <div className="meetings__row-meta">
+            <span>{formatDateRelative(m.date)}</span>
+            <span aria-hidden="true">·</span>
+            <span className="meetings__row-meta-duration">
+              {formatDuration(m.durationSeconds)}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
+            </span>
+          </div>
+        )}
+        {snippet && (
+          <div className="meetings__row-snippet">
+            {highlightParts(snippet, query).map((part, i) =>
+              part.mark ? <mark key={i}>{part.text}</mark> : <span key={i}>{part.text}</span>
+            )}
+          </div>
+        )}
+        {m.tagIds.length > 0 && (
+          <div className="meetings__row-tags">
+            {m.tagIds.map((id) => {
+              const t = tagById(id)
+              if (!t) return null
+              return (
+                <span
+                  key={id}
+                  className="meetings__row-tag-pill"
+                  style={{ background: t.color }}
+                >
+                  <TagIcon size={9} aria-hidden="true" className="meetings__row-tag-icon" />
+                  <span>{t.name}</span>
+                </span>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="meetings">
       <div className="meetings__list-wrap">
+        {/* Search — matches title, speakers, tags, and (debounced) transcripts. ⌘F focuses it. */}
+        <div className="meetings__search">
+          <Search size={14} aria-hidden="true" className="meetings__search-icon" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            role="searchbox"
+            className="meetings__search-input"
+            placeholder="Search meetings"
+            aria-label="Search meetings"
+            value={query}
+            onChange={(e) => onSearchChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && query) {
+                e.preventDefault()
+                clearSearch()
+              }
+            }}
+          />
+          {searching && (
+            <Loader2
+              size={14}
+              aria-hidden="true"
+              className="meetings__search-spinner home-status-icon--spin"
+            />
+          )}
+          {query && !searching && (
+            <button
+              type="button"
+              className="meetings__search-clear"
+              onClick={clearSearch}
+              aria-label="Clear search"
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+
+        {/* Live result-count announcement for screen readers (search only). */}
+        <div className="sr-only" role="status" aria-live="polite">
+          {query.trim() ? `${totalResults} ${totalResults === 1 ? 'meeting' : 'meetings'}` : ''}
+        </div>
+
         {/* Tag filter chips */}
         <div className="tag-filter-row" role="toolbar" aria-label="Filter meetings by tag">
           <button
@@ -1225,7 +1598,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
               <div className="skeleton-row" />
             </div>
           )}
-          {!loading && filteredMeetings.length === 0 && (
+          {!loading && !query.trim() && dateGroups.length === 0 && (
             <div className="empty-state empty-state--in-list">
               <Inbox size={32} aria-hidden="true" className="empty-state__icon" />
               <div className="empty-state__title">
@@ -1238,249 +1611,36 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
               </div>
             </div>
           )}
+          {!loading && noResults && (
+            <div className="empty-state empty-state--in-list">
+              <Search size={28} aria-hidden="true" className="empty-state__icon" />
+              <div className="empty-state__title">
+                {searching ? 'Searching…' : `Nothing matches "${query.trim()}"`}
+              </div>
+              {!searching && (
+                <button type="button" className="btn btn--small" onClick={clearSearch}>
+                  Clear search
+                </button>
+              )}
+            </div>
+          )}
           {!loading &&
-            filteredMeetings.map((m) => {
-              const isEditing = rowEditingId === m.id
-              // Live placeholder rows are in-memory (no file on disk yet), so
-              // they carry no actions menu — only saved meetings do.
-              return (
-                <div
-                  key={m.id}
-                  role="button"
-                  tabIndex={0}
-                  className={
-                    'meetings__row' +
-                    (m.id === selectedId ? ' meetings__row--active' : '') +
-                    (isEditing ? ' meetings__row--editing' : '') +
-                    (m.isLive ? ' meetings__row--live' : '') +
-                    (m.status === 'processing' ? ' meetings__row--processing' : '')
-                  }
-                  onClick={() => {
-                    if (isEditing) return
-                    void onSelect(m)
-                  }}
-                  onKeyDown={(e) => {
-                    if (isEditing) return
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      void onSelect(m)
-                    }
-                  }}
-                >
-                  <div className="meetings__row-main">
-                    {isEditing ? (
-                      <input
-                        autoFocus
-                        className="meetings__row-input"
-                        value={rowEditingValue}
-                        onChange={(e) => setRowEditingValue(e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => {
-                          e.stopPropagation()
-                          if (e.key === 'Enter') {
-                            e.preventDefault()
-                            void commitRowRename()
-                          } else if (e.key === 'Escape') {
-                            e.preventDefault()
-                            cancelRowRename()
-                          }
-                        }}
-                        onBlur={() => void commitRowRename()}
-                      />
-                    ) : (
-                      <div className="meetings__row-title">
-                        {m.isLive && (
-                          <span
-                            className="meetings__row-live-dot"
-                            aria-label="Recording in progress"
-                          />
-                        )}
-                        <span>{m.title}</span>
-                        {m.status === 'processing' && (
-                          <span
-                            className="processing-pill"
-                            aria-label="Processing"
-                            title="Transcribing and separating speakers"
-                          >
-                            <Loader2
-                              size={11}
-                              strokeWidth={2}
-                              aria-hidden="true"
-                              className="home-status-icon--spin"
-                            />
-                            <span>Processing</span>
-                          </span>
-                        )}
-                        {m.status === 'refining' && (
-                          <span
-                            className="processing-pill"
-                            aria-label="Refining"
-                            title="Upgrading speaker attribution (Max accuracy)"
-                          >
-                            <Loader2
-                              size={11}
-                              strokeWidth={2}
-                              aria-hidden="true"
-                              className="home-status-icon--spin"
-                            />
-                            <span>Refining</span>
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    {!isEditing && !m.isLive && (
-                      <div className="meetings__row-actions">
-                        <div className="meetings__row-tag-wrap">
-                          <button
-                            type="button"
-                            className={
-                              'meetings__row-action' +
-                              (rowMenuForId === m.id || tagPickerForRowId === m.id
-                                ? ' meetings__row-action--open'
-                                : '')
-                            }
-                            aria-label="Meeting actions"
-                            title="Meeting actions"
-                            aria-haspopup="menu"
-                            aria-expanded={rowMenuForId === m.id}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              // Any open tag popover closes when the menu opens.
-                              setTagPickerForRowId(null)
-                              setTagPickerAnchor(null)
-                              if (rowMenuForId === m.id) {
-                                setRowMenuForId(null)
-                                setRowMenuAnchor(null)
-                              } else {
-                                setRowMenuForId(m.id)
-                                setRowMenuAnchor(e.currentTarget)
-                              }
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.stopPropagation()
-                              }
-                            }}
-                          >
-                            <MoreVertical size={15} strokeWidth={2} aria-hidden="true" />
-                          </button>
-                          {rowMenuForId === m.id && (
-                            <RowMenu
-                              anchorEl={rowMenuAnchor}
-                              onClose={() => {
-                                setRowMenuForId(null)
-                                setRowMenuAnchor(null)
-                              }}
-                              items={[
-                                {
-                                  key: 'rename',
-                                  label: 'Edit title',
-                                  icon: <PencilIcon size={13} />,
-                                  onSelect: () => {
-                                    setRowMenuForId(null)
-                                    setRowMenuAnchor(null)
-                                    beginRowRename(m)
-                                  }
-                                },
-                                {
-                                  key: 'tags',
-                                  label: 'Edit tags',
-                                  icon: (
-                                    <TagIcon size={13} strokeWidth={2} aria-hidden="true" />
-                                  ),
-                                  onSelect: () => {
-                                    // Hand the kebab button to the TagPicker as
-                                    // its anchor, then close the menu.
-                                    setTagPickerForRowId(m.id)
-                                    setTagPickerAnchor(rowMenuAnchor)
-                                    setRowMenuForId(null)
-                                  }
-                                },
-                                {
-                                  key: 'delete',
-                                  label: 'Delete meeting',
-                                  icon: (
-                                    <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
-                                  ),
-                                  danger: true,
-                                  onSelect: () => {
-                                    setRowMenuForId(null)
-                                    setRowMenuAnchor(null)
-                                    void onDeleteMeeting(m)
-                                  }
-                                }
-                              ]}
-                            />
-                          )}
-                          {tagPickerForRowId === m.id && (
-                            <TagPicker
-                              allTags={allTags}
-                              activeTagIds={m.tagIds}
-                              anchorEl={tagPickerAnchor}
-                              onToggle={(tagId) =>
-                                void onToggleTagForRow(m.id, tagId)
-                              }
-                              onClose={() => {
-                                setTagPickerForRowId(null)
-                                setTagPickerAnchor(null)
-                              }}
-                            />
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  {m.isLive ? (
-                    <div className="meetings__row-meta meetings__row-meta--live">
-                      Recording in progress — full transcript when meeting ends.
-                    </div>
-                  ) : m.status === 'processing' ? (
-                    <div className="meetings__row-meta meetings__row-meta--processing">
-                      {(() => {
-                        const proc = appStatus.processing?.find((p) => p.id === m.id)
-                        if (proc?.stuck) return "Processing didn't finish — open to recover it."
-                        if (!proc) return 'Processing · Working…'
-                        return `Processing · ${PROCESSING_STAGE_LABEL[proc.stage]} · ${formatProcessingElapsed(proc.startedAt)} elapsed`
-                      })()}
-                    </div>
-                  ) : (
-                    <div className="meetings__row-meta">
-                      <span>{formatDate(m.date)}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="meetings__row-meta-duration">
-                        {formatDuration(m.durationSeconds)}
-                      </span>
-                      <span aria-hidden="true">·</span>
-                      <span>
-                        {m.speakerCount} {m.speakerCount === 1 ? 'speaker' : 'speakers'}
-                      </span>
-                    </div>
-                  )}
-                  {m.tagIds.length > 0 && (
-                    <div className="meetings__row-tags">
-                      {m.tagIds.map((id) => {
-                        const t = tagById(id)
-                        if (!t) return null
-                        return (
-                          <span
-                            key={id}
-                            className="meetings__row-tag-pill"
-                            style={{ background: t.color }}
-                          >
-                            <TagIcon
-                              size={9}
-                              aria-hidden="true"
-                              className="meetings__row-tag-icon"
-                            />
-                            <span>{t.name}</span>
-                          </span>
-                        )
-                      })}
-                    </div>
-                  )}
+            dateGroups.map((group) => (
+              <div key={group.key} className="meetings__group">
+                <div className="meetings__group-header" role="presentation">
+                  {group.label}
                 </div>
-              )
-            })}
+                {group.meetings.map((m) => renderMeetingRow(m))}
+              </div>
+            ))}
+          {!loading && transcriptOnlyHits.length > 0 && (
+            <div className="meetings__group">
+              <div className="meetings__group-header" role="presentation">
+                In transcripts
+              </div>
+              {transcriptOnlyHits.map(({ meeting, snippet }) => renderMeetingRow(meeting, snippet))}
+            </div>
+          )}
         </div>
       </div>
 

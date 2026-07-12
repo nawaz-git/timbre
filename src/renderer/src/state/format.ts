@@ -24,3 +24,28 @@ export function formatDate(iso: string): string {
     return iso
   }
 }
+
+function startOfDayMs(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+
+/**
+ * Compact, scannable date for meeting rows + recent cards:
+ *   - today            → `Today 14:05`
+ *   - within 6 days    → `Thu 14:05`
+ *   - otherwise        → `May 28, 14:05`
+ * The detail pane keeps the full `formatDate`. `now` is injectable for tests.
+ */
+export function formatDateRelative(iso: string, now: Date = new Date()): string {
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return iso
+    const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    const dayDiff = Math.round((startOfDayMs(now) - startOfDayMs(d)) / 86_400_000)
+    if (dayDiff <= 0) return `Today ${time}`
+    if (dayDiff <= 6) return `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${time}`
+    return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${time}`
+  } catch {
+    return iso
+  }
+}

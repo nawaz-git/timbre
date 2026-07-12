@@ -19,7 +19,8 @@ import type {
   PrivacyPane,
   RecordingStatus,
   Settings,
-  TagDef
+  TagDef,
+  TranscriptSearchHit
 } from '../../shared/types'
 import { getPermissionStatus, openPrivacyPane } from '../permissions'
 import { getChromeMeetSnapshot } from '../chromeProbe'
@@ -40,6 +41,7 @@ import {
   removeSpeakerLabelInMeeting,
   renameMeetingTitle,
   renameSpeakerInMeeting,
+  searchTranscripts,
   setMeetingTags,
   type ExportPreview
 } from '../meetings'
@@ -377,6 +379,19 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.meetingsDelete, async (_event, meetingId: string): Promise<void> => {
     const settings = await readSettings()
     return deleteMeeting(settings.outputFolder, meetingId)
+  })
+
+  ipcMain.handle(
+    IPC.meetingsSearchTranscripts,
+    async (_event, query: string): Promise<TranscriptSearchHit[]> => {
+      const settings = await readSettings()
+      return searchTranscripts(settings.outputFolder, query)
+    }
+  )
+
+  ipcMain.handle(IPC.meetingsReveal, async (_event, filePath: string): Promise<void> => {
+    // Highlight a specific file in Finder (e.g. a just-exported transcript).
+    shell.showItemInFolder(filePath)
   })
 
   // ── system:* — tray + permissions surface ─────────────────────────────

@@ -6,7 +6,8 @@ import type {
   MeetingSummary,
   MeetingTranscript,
   NumSpeakersHint,
-  SpeakerRecord
+  SpeakerRecord,
+  TranscriptSearchHit
 } from '../shared/types'
 import {
   enrollOrUpdateSpeaker,
@@ -174,6 +175,20 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+/** Distinct, trimmed, non-empty strings preserving first-seen order. */
+function uniqueNonEmpty(names: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const n of names) {
+    const v = (n ?? '').trim()
+    if (v && !seen.has(v)) {
+      seen.add(v)
+      out.push(v)
+    }
+  }
+  return out
+}
+
 interface MetadataFile {
   durationSeconds?: number
   speakers?: SpeakerRecord[]
@@ -301,6 +316,13 @@ async function listPerFolderMeetings(root: string): Promise<MeetingSummary[]> {
     const transcriptJson = await safeReadJson<TranscriptJSON>(join(folderPath, 'transcript.json'))
     const hasAudio = await pathExists(join(folderPath, 'audio.wav'))
     const hasVideo = await pathExists(join(folderPath, 'screen.mp4'))
+    // Speaker names for search — from speakers.json labels, else segments.
+    const speakerNames =
+      speakers && speakers.length > 0
+        ? uniqueNonEmpty(speakers.map((s) => s.label))
+        : transcriptJson?.segments
+          ? uniqueNonEmpty(transcriptJson.segments.map((s) => s.speaker))
+          : []
     results.push({
       id: `imported:${entry.name}`,
       title: metadata?.title?.trim() ? metadata.title : titleFromFolderName(entry.name),
@@ -314,7 +336,8 @@ async function listPerFolderMeetings(root: string): Promise<MeetingSummary[]> {
       tagIds: Array.isArray(metadata?.tags) ? metadata.tags : [],
       additionalSpeakers: Array.isArray(metadata?.additionalSpeakers)
         ? metadata.additionalSpeakers
-        : []
+        : [],
+      speakerNames
     })
   }
   return results
@@ -551,11 +574,13 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
     const { segmentsPath, audioPath, videoPath } = await findEngineSidecars(root, prefix)
     let durationSeconds = 0
     let speakerCount = 0
+    let speakerNames: string[] = []
     if (segmentsPath) {
       const segs = await safeReadJson<EngineSegmentJSON[]>(segmentsPath)
       if (Array.isArray(segs) && segs.length > 0) {
         durationSeconds = Math.ceil(Math.max(...segs.map((s) => s.end ?? 0)))
-        speakerCount = new Set(segs.map((s) => s.speaker)).size
+        speakerNames = uniqueNonEmpty(segs.map((s) => s.speaker))
+        speakerCount = speakerNames.length
       }
     } else {
       // .txt-only meeting (no structured segments.json): derive stats from the
@@ -565,16 +590,17 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       // but satisfies the "never show 0:00" requirement without extra I/O).
       try {
         const raw = await fs.readFile(txtPath, 'utf-8')
-        const names = new Set<string>()
+        const names: string[] = []
         let lastStart = 0
         for (const line of raw.split('\n')) {
           const m = line.match(ENGINE_TXT_LINE_RE)
           if (!m) continue
           const name = m[3].trim()
-          if (name) names.add(name)
+          if (name) names.push(name)
           lastStart = bracketToSeconds(m[1])
         }
-        speakerCount = names.size
+        speakerNames = uniqueNonEmpty(names)
+        speakerCount = speakerNames.length
         durationSeconds = lastStart
       } catch {
         // .txt unreadable — leave both at 0.
@@ -621,6 +647,7 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
       additionalSpeakers: Array.isArray(meta?.additionalSpeakers)
         ? meta.additionalSpeakers
         : [],
+      speakerNames,
       // A landed protocols/<prefix>.txt means the engine's FAST pipeline
       // finished (ready) — unless a refine marker says a MAX upgrade is
       // rewriting it right now.
@@ -722,6 +749,8 @@ async function listEngineProcessingMeetings(root: string): Promise<MeetingSummar
       additionalSpeakers: Array.isArray(meta?.additionalSpeakers)
         ? meta.additionalSpeakers
         : [],
+      // No transcript yet — speakers unknown until the pipeline finishes.
+      speakerNames: [],
       status: 'processing'
     })
   }
@@ -898,6 +927,7 @@ export async function listMeetings(outputFolder: string): Promise<MeetingSummary
         hasVideo: false,
         tagIds: [],
         additionalSpeakers: [],
+        speakerNames: [],
         isLive: true
       })
     }
@@ -1027,6 +1057,90 @@ export async function readTranscript(
     durationSeconds: tj?.duration,
     summaryMarkdown
   }
+}
+
+/** Per-file read cap for full-text search — big transcripts stay responsive. */
+const MAX_SEARCH_BYTES = 2 * 1024 * 1024
+
+/**
+ * First ±`radius`-char excerpt around a case-insensitive match of `query` in
+ * `text`, whitespace-collapsed with `…` ellipses when clipped. Returns null
+ * when there's no match. Pure — unit-testable.
+ */
+export function firstMatchSnippet(text: string, query: string, radius = 60): string | null {
+  const idx = text.toLowerCase().indexOf(query.toLowerCase())
+  if (idx < 0) return null
+  const start = Math.max(0, idx - radius)
+  const end = Math.min(text.length, idx + query.length + radius)
+  let snippet = text.slice(start, end).replace(/\s+/g, ' ').trim()
+  if (start > 0) snippet = `…${snippet}`
+  if (end < text.length) snippet = `${snippet}…`
+  return snippet
+}
+
+/** Read up to `MAX_SEARCH_BYTES` of a UTF-8 file; null if unreadable. */
+async function readCappedText(path: string): Promise<string | null> {
+  let handle: import('fs').promises.FileHandle
+  try {
+    handle = await fs.open(path, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const { size } = await handle.stat()
+    const len = Math.min(size, MAX_SEARCH_BYTES)
+    if (len <= 0) return ''
+    const buf = Buffer.alloc(len)
+    await handle.read(buf, 0, len, 0)
+    return buf.toString('utf-8')
+  } catch {
+    return null
+  } finally {
+    await handle.close()
+  }
+}
+
+/**
+ * Full-text search across every meeting's transcript. Scans engine protocols
+ * (`protocols/<prefix>.txt`) and imported folders (`<folder>/transcript.txt`),
+ * reading at most 2 MB/file, and returns the first-match snippet per meeting.
+ * Empty query → no hits (the renderer keeps showing the normal list). The
+ * returned ids match `listMeetings` ids so the renderer can resolve rows.
+ */
+export async function searchTranscripts(
+  outputFolder: string,
+  query: string
+): Promise<TranscriptSearchHit[]> {
+  const q = query.trim()
+  if (!q) return []
+  const hits: TranscriptSearchHit[] = []
+
+  const protocolsDir = join(ENGINE_DEFAULT_ROOT, 'protocols')
+  try {
+    for (const filename of await fs.readdir(protocolsDir)) {
+      if (!filename.endsWith('.txt')) continue
+      const text = await readCappedText(join(protocolsDir, filename))
+      if (text === null) continue
+      const snippet = firstMatchSnippet(text, q)
+      if (snippet) hits.push({ id: `engine:${filename.slice(0, -4)}`, snippet })
+    }
+  } catch {
+    // No protocols dir — nothing to search there.
+  }
+
+  try {
+    for (const entry of await fs.readdir(outputFolder, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const text = await readCappedText(join(outputFolder, entry.name, 'transcript.txt'))
+      if (text === null) continue
+      const snippet = firstMatchSnippet(text, q)
+      if (snippet) hits.push({ id: `imported:${entry.name}`, snippet })
+    }
+  } catch {
+    // No output folder — nothing to search there.
+  }
+
+  return hits
 }
 
 /**
