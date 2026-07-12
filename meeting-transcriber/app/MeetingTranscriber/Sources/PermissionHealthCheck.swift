@@ -405,10 +405,11 @@ enum PermissionHealthCheck {
 
     // MARK: - Debug Logging
 
-    /// Appender for `/tmp/mt-permission.log` — independent of `os_log`, which is not visible
-    /// for ad-hoc signed dev bundles. The log file is truncated on first write per process
-    /// (via the one-shot `init` of the static instance) so it cannot grow unbounded across
-    /// long-running sessions.
+    /// Appender for the engine permission-health log — independent of `os_log`, which is not
+    /// visible for ad-hoc signed dev bundles. Lives under the Application Support ipc dir
+    /// (0600), not a fixed world-writable `/tmp` path. Bounded on open: if the file already
+    /// exceeds 1 MB it is trimmed to its last 256 KB, so it survives the always-running
+    /// engine's long life without growing unbounded while preserving recent verdicts.
     private final class DebugLogFile: @unchecked Sendable {
         private let path: String
         private let formatter: ISO8601DateFormatter
@@ -417,7 +418,33 @@ enum PermissionHealthCheck {
         init(path: String) {
             self.path = path
             self.formatter = ISO8601DateFormatter()
-            try? FileManager.default.removeItem(atPath: path)
+            Self.prepareFile(at: path)
+        }
+
+        /// Ensure the parent dir exists, cap the file at 1 MB (keep the last 256 KB), and
+        /// lock it to owner-only (0600). Replaces the old truncate-per-launch behaviour so
+        /// history is retained across launches — Electron reads the freshest per-service
+        /// verdict from it as a fallback when the JSON verdict is absent/stale.
+        private static func prepareFile(at path: String) {
+            let fm = FileManager.default
+            let url = URL(fileURLWithPath: path)
+            try? fm.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+            )
+            if fm.fileExists(atPath: path) {
+                if let attrs = try? fm.attributesOfItem(atPath: path),
+                   let size = attrs[.size] as? Int, size > 1_048_576,
+                   let handle = try? FileHandle(forReadingFrom: url) {
+                    try? handle.seek(toOffset: UInt64(size - 262_144))
+                    let tail = (try? handle.readToEnd()) ?? Data()
+                    try? handle.close()
+                    try? tail.write(to: url)
+                }
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            } else {
+                fm.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
+            }
         }
 
         func append(_ line: String) {
@@ -436,7 +463,7 @@ enum PermissionHealthCheck {
         }
     }
 
-    private static let debugLogFile = DebugLogFile(path: "/tmp/mt-permission.log")
+    private static let debugLogFile = DebugLogFile(path: AppPaths.permissionHealthLog.path)
 
     static func debugLog(_ line: String) {
         debugLogFile.append(line)

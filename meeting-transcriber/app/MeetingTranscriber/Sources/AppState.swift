@@ -1027,6 +1027,25 @@ final class AppState { // swiftlint:disable:this type_body_length
             "ax=\(result.accessibility) healthy=\(result.isHealthy) problems=\(result.problems)"
         PermissionHealthCheck.debugLog(line)
 
+        // Publish the structured verdict Electron reads first (out of /tmp). Map
+        // to wire strings up front so only Sendable values cross into the
+        // detached task, which fetches the notification-auth status (async) and
+        // writes the JSON atomically off the main actor.
+        let screenStr = PermissionVerdictFile.verdictString(result.screenRecording)
+        let micStr = PermissionVerdictFile.verdictString(result.microphone)
+        let axStr = PermissionVerdictFile.verdictString(result.accessibility)
+        let updatedAt = Int(Date().timeIntervalSince1970 * 1000)
+        Task.detached {
+            let notifications = await NotificationManager.notificationAuthStatusString()
+            try? PermissionVerdictFile.write(
+                screen: screenStr,
+                mic: micStr,
+                ax: axStr,
+                notifications: notifications,
+                updatedAt: updatedAt,
+            )
+        }
+
         let problems = result.problems
         if !problems.isEmpty, problems != previousProblems {
             PermissionHealthCheck.debugLog("[PermissionHealthCheck] Sending notification: \(result.notificationBody)")
