@@ -128,7 +128,8 @@ export async function importFile(
   filePath: string,
   outputRoot: string,
   jobId: string,
-  numSpeakers?: number
+  numSpeakers?: number,
+  language?: string
 ): Promise<BatchInvocationResult> {
   const sourceName = basename(filePath)
   const folder = await createMeetingFolder(outputRoot, sourceName)
@@ -150,6 +151,7 @@ export async function importFile(
       inputFile: filePath,
       outputDir: folder,
       numSpeakers,
+      language,
       onEvent: (ev) => {
         if (ev.event === 'transcribing') {
           internal.progressPercent = Math.round(ev.progress * 100)
@@ -176,6 +178,7 @@ export async function reanalyzeMeetingProc(opts: {
   meetingId: string
   jobId: string
   numSpeakers?: number
+  language?: string
 }): Promise<BatchInvocationResult> {
   const { reanalyzeMeeting } = await import('./meetings')
   internal.state = 'transcribing'
@@ -195,6 +198,7 @@ export async function reanalyzeMeetingProc(opts: {
       meetingId: opts.meetingId,
       jobId: opts.jobId,
       numSpeakers: opts.numSpeakers,
+      language: opts.language,
       onEvent: (ev) => {
         if (ev.event === 'transcribing') {
           internal.progressPercent = Math.round(ev.progress * 100)

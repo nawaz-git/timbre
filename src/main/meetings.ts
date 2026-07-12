@@ -914,6 +914,7 @@ export async function reanalyzeMeeting(opts: {
   meetingId: string
   jobId: string
   numSpeakers?: number
+  language?: string
   onEvent?: (ev: BatchEvent) => void
 }): Promise<string> {
   if (opts.meetingId.startsWith('engine:')) {
@@ -939,6 +940,7 @@ export async function reanalyzeMeeting(opts: {
     inputFile: audio,
     outputDir: folder,
     numSpeakers: opts.numSpeakers,
+    language: opts.language,
     onEvent: opts.onEvent ?? ((): void => {})
   })
 }
