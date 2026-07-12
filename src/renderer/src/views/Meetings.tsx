@@ -34,6 +34,7 @@ import {
 import { useTags } from '../state/tags'
 import { useToast } from '../state/toast'
 import { useAppStatus } from '../state/appStatus'
+import { colorForSpeaker } from '../state/speakerColor'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { MarkdownLite } from '../components/MarkdownLite'
 import { PencilIcon } from '../components/PencilIcon'
@@ -162,15 +163,6 @@ const TAB_DEFS: { key: TabKey; label: string }[] = [
   { key: 'tags', label: 'Tags' }
 ]
 
-const SPEAKER_PALETTE = ['#8ab4f8', '#fdd663', '#a1e3a1', '#f28b82', '#c58af9', '#79d5ff']
-
-function colorForSpeaker(name: string): string {
-  let h = 0
-  for (let i = 0; i < name.length; i++) {
-    h = (h * 31 + name.charCodeAt(i)) >>> 0
-  }
-  return SPEAKER_PALETTE[h % SPEAKER_PALETTE.length]
-}
 
 function formatHHMMSS(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return '0:00'

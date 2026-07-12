@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, X } from 'lucide-react'
 import type { EnrolledSpeaker } from '../../../shared/types'
+import { colorForSpeaker } from '../state/speakerColor'
 
 interface SpeakerPickerProps {
   /** Currently-assigned name for this cluster. */
@@ -63,18 +64,6 @@ interface SpeakerPickerProps {
   hideInMeetingGroup?: boolean
   /** Optional placeholder for the new-name input (defaults to "New name…"). */
   newNamePlaceholder?: string
-}
-
-// Mirror of `colorForSpeaker` in Meetings.tsx so the picker can render its
-// own dots without taking a dependency on the parent module. Both functions
-// share the same palette + hash so colours stay consistent across surfaces.
-const SPEAKER_PALETTE = ['#8ab4f8', '#fdd663', '#a1e3a1', '#f28b82', '#c58af9', '#79d5ff']
-function dotColor(name: string): string {
-  let h = 0
-  for (let i = 0; i < name.length; i++) {
-    h = (h * 31 + name.charCodeAt(i)) >>> 0
-  }
-  return SPEAKER_PALETTE[h % SPEAKER_PALETTE.length]
 }
 
 const POPUP_WIDTH = 300
@@ -431,7 +420,7 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
                 >
                   <span
                     className="speaker-picker__dot"
-                    style={{ background: dotColor(name) }}
+                    style={{ background: colorForSpeaker(name) }}
                     aria-hidden="true"
                   />
                   <span className="speaker-picker__name">{name}</span>
@@ -466,7 +455,7 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
             >
               <span
                 className="speaker-picker__dot"
-                style={{ background: dotColor(name) }}
+                style={{ background: colorForSpeaker(name) }}
                 aria-hidden="true"
               />
               <span className="speaker-picker__name">{name}</span>
@@ -493,7 +482,7 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
             >
               <span
                 className="speaker-picker__dot"
-                style={{ background: dotColor(s.name) }}
+                style={{ background: colorForSpeaker(s.name) }}
                 aria-hidden="true"
               />
               <span className="speaker-picker__name">{s.name}</span>

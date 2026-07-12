@@ -68,6 +68,26 @@
   --status-transcribing: #f59e0b;
   --status-idle: #71717a;
 
+  /* ── Speaker ramp — 12 muted, evenly-spread hues ─────────────────
+   * The single palette for per-speaker colour (dots, pills, transcript
+   * labels, the audio seek track), consumed via `state/speakerColor.ts`.
+   * Dark mode: desaturated pastels (~50% sat, high lightness) so a hue
+   * reads on the near-black surface as both a fill and as text. Kept
+   * deliberately muted — the monochrome UI stays the star; speakers are
+   * a quiet accent, not a rainbow. */
+  --speaker-1: hsl(210 52% 72%);
+  --speaker-2: hsl(38 58% 70%);
+  --speaker-3: hsl(150 42% 68%);
+  --speaker-4: hsl(352 56% 75%);
+  --speaker-5: hsl(265 48% 76%);
+  --speaker-6: hsl(186 50% 68%);
+  --speaker-7: hsl(22 56% 72%);
+  --speaker-8: hsl(322 50% 75%);
+  --speaker-9: hsl(96 40% 68%);
+  --speaker-10: hsl(240 46% 77%);
+  --speaker-11: hsl(168 42% 66%);
+  --speaker-12: hsl(292 44% 74%);
+
   /* ── Shadow (solid elevation; popover glass handled per-component) ── */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.20);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.28);
@@ -119,6 +139,21 @@
   --status-watching: #52525b;
   --status-transcribing: #b45309;
   --status-idle: #a1a1aa;
+
+  /* ── Speaker ramp — deeper on white (~50% sat, lower lightness) so
+   * each hue holds ≥3:1 against the light surface as a fill and label. */
+  --speaker-1: hsl(210 52% 42%);
+  --speaker-2: hsl(38 62% 38%);
+  --speaker-3: hsl(150 46% 34%);
+  --speaker-4: hsl(352 56% 46%);
+  --speaker-5: hsl(265 44% 50%);
+  --speaker-6: hsl(186 54% 34%);
+  --speaker-7: hsl(22 60% 42%);
+  --speaker-8: hsl(322 48% 46%);
+  --speaker-9: hsl(96 44% 34%);
+  --speaker-10: hsl(240 46% 50%);
+  --speaker-11: hsl(168 46% 32%);
+  --speaker-12: hsl(292 42% 48%);
 
   /* ── Shadow ──────────────────────────────────────────────────── */
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
