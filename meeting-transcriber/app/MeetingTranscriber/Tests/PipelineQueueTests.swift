@@ -2394,6 +2394,34 @@ final class PipelineQueueTests: XCTestCase {
         XCTAssertFalse(idleQueue.hasPendingIdleUnloadForTesting)
     }
 
+    func testEmptyTranscriptFailureArmsIdleUnload() async throws {
+        // A failing LAST job must still arm the idle-unload fuse. The empty-
+        // transcript path previously returned early, bypassing the tail that
+        // arms the fuse — so the model stayed resident forever after the final
+        // job failed. Now it throws and flows through the shared catch → tail.
+        let engine = MockEngine()
+        engine.segmentsToReturn = [] // empty transcript → "Empty transcript" failure
+        let idleQueue = makeIdleUnloadQueue(engine: engine, interval: 0.1)
+
+        let audioPath = try createTestAudioFile(in: tmpDir)
+        let job = PipelineJob(
+            meetingTitle: "Silent Meeting",
+            appName: "Teams",
+            mixPath: audioPath,
+            appPath: nil, micPath: nil, micDelay: 0,
+        )
+        idleQueue.enqueue(job)
+        await idleQueue.processNext()
+
+        XCTAssertEqual(idleQueue.jobs.first?.state, .error)
+        XCTAssertEqual(idleQueue.jobs.first?.error, "Empty transcript")
+        XCTAssertTrue(idleQueue.hasPendingIdleUnloadForTesting)
+
+        try await Task.sleep(for: .seconds(0.5))
+        XCTAssertEqual(engine.unloadCallCount, 1)
+        XCTAssertEqual(engine.modelState, .unloaded)
+    }
+
     func testIdleUnloadCancelledByNewEnqueue() {
         let engine = MockEngine()
         let idleQueue = makeIdleUnloadQueue(engine: engine, interval: 0.1)
