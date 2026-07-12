@@ -31,23 +31,24 @@ import {
   Tray,
   app,
   nativeImage,
+  shell,
   BrowserWindow,
   type MenuItemConstructorOptions
 } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import type {
-  RecordingStatus,
-  ChromeMeetSnapshot,
+  AppStatus,
   PermissionStatus,
   HelperPermissionSnapshot,
   GrantStatus
 } from '../shared/types'
 import { onStatusChange, getStatus, startWatching, stopWatching } from './recording'
 import { getPermissionStatus, openPrivacyPane } from './permissions'
-import { getChromeMeetSnapshot } from './chromeProbe'
-import { getWatchdogSignal } from './captureWatchdog'
+import { getWatchdogSignal, getLastReadyPrefix } from './captureWatchdog'
 import { probeHelperPermissions } from './onboarding'
+import { getAppStatus, onAppStatusChange, confirmIfRecording } from './status'
+import { liveRecordingsRoot } from './meetings'
 
 let tray: Tray | null = null
 
@@ -183,13 +184,18 @@ export function createTray(): void {
     void refreshEnginePerms()
   }, 10_000)
 
-  // Chrome probe push channel — chromeProbe.ts broadcasts to all renderer
-  // windows, but the tray lives in main and doesn't get those. We poll
-  // its snapshot once a second (cheap — just a struct read).
+  // The single status source pushes on every meaningful change (recording,
+  // processing, meet-detected, attention) — repaint the tray off that instead
+  // of a blind 1.5s poll. A slow 10s safety poll covers anything time-based
+  // that didn't push (e.g. a stuck threshold crossing while idle).
+  onAppStatusChange(() => {
+    rebuildMenu()
+    refreshTitle()
+  })
   setInterval(() => {
     rebuildMenu()
     refreshTitle()
-  }, 1500)
+  }, 10_000)
 
   // Per-second title timer ONLY ticks while a meeting is active. Started
   // and stopped from `refreshTitle()`.
@@ -214,33 +220,29 @@ function rebuildMenu(): void {
 
 function refreshTitle(): void {
   if (!tray) return
-  const status = getStatus()
-  const chrome = getChromeMeetSnapshot()
+  const status = getAppStatus()
 
   // Title text shown NEXT to the icon. On a crowded menubar, every extra
   // pixel can push us off-screen — v0.12 shipped "Meeting · 4:23" type
   // titles and the user reported the icon vanishing entirely during a
   // live meeting (macOS hides menubar items when they don't fit).
   //
-  // Policy now: NEVER more than 1 character of title text. The icon
-  // alone carries the brand; states are conveyed via a single-glyph
-  // indicator. Full state text lives in the menu + tooltip.
+  // Policy: NEVER more than 1 glyph of title text, chosen from the single
+  // status source — attention ⚠, recording ●, processing ◐, else nothing.
+  // Full state text lives in the menu + tooltip.
   let title = ''
-  if (permMissing(enginePerms.screenRecording)) {
-    title = '⚠'
-  } else if (status.state === 'recording' || (chrome.tab && status.state === 'watching')) {
-    title = '●'
-  }
+  if (status.attention) title = '⚠'
+  else if (status.activityKind === 'recording') title = '●'
+  else if (status.activityKind === 'processing') title = '◐'
   tray.setTitle(title)
 
   // Tooltip — long-form status, only visible on hover so it never costs
   // menubar width. macOS shows tooltips with a ~500ms hover delay.
-  tray.setToolTip(buildTooltip(status, chrome))
+  tray.setToolTip(buildTooltip(status))
 
-  // Manage the per-second tick. We only run the timer when there's a
-  // changing value to display (mm:ss meeting timer in the tooltip).
-  // Saves a wakeup-per-second when nothing's happening.
-  const needsTick = status.state === 'recording' || status.state === 'transcribing'
+  // Manage the per-second tick. We only run the timer while recording, so the
+  // tooltip's mm:ss stays live; other states have no per-second value.
+  const needsTick = status.activityKind === 'recording'
   if (needsTick && !titleTimer) {
     titleTimer = setInterval(() => refreshTitle(), 1000)
   } else if (!needsTick && titleTimer) {
@@ -249,23 +251,27 @@ function refreshTitle(): void {
   }
 }
 
-function buildTooltip(status: RecordingStatus, chrome: ChromeMeetSnapshot): string {
-  if (permMissing(enginePerms.screenRecording)) {
-    return 'Timbre — Screen Recording permission required'
+function buildTooltip(status: AppStatus): string {
+  if (status.attention) return `Timbre — ${status.attention.message}`
+  switch (status.activityKind) {
+    case 'recording': {
+      const t =
+        typeof status.recordingElapsedSec === 'number'
+          ? ` · ${formatMMSS(status.recordingElapsedSec)}`
+          : ''
+      return `Timbre — recording${t}`
+    }
+    case 'processing': {
+      const n = status.processingCount ?? 1
+      return `Timbre — processing ${n} meeting${n === 1 ? '' : 's'}`
+    }
+    case 'meet-detected':
+      return 'Timbre — Meet open, waiting for capture'
+    case 'watching':
+      return 'Timbre — watching for meetings'
+    case 'paused':
+      return 'Timbre — paused'
   }
-  if (status.state === 'recording' && typeof status.elapsedSeconds === 'number') {
-    return `Timbre — recording meeting · ${formatMMSS(status.elapsedSeconds)}`
-  }
-  if (status.state === 'transcribing') {
-    return `Timbre — transcribing · ${status.progressPercent ?? 0}%`
-  }
-  if (chrome.tab) {
-    return `Timbre — Google Meet detected (${chrome.tab.meetingId})`
-  }
-  if (status.state === 'watching') {
-    return 'Timbre — watching for meetings'
-  }
-  return 'Timbre — paused'
 }
 
 function formatMMSS(totalSec: number): string {
@@ -275,28 +281,32 @@ function formatMMSS(totalSec: number): string {
 }
 
 function buildMenu(): Menu {
-  const status: RecordingStatus = getStatus()
+  const status = getAppStatus()
   const perms: PermissionStatus = getPermissionStatus()
-  const chrome: ChromeMeetSnapshot = getChromeMeetSnapshot()
 
   const items: MenuItemConstructorOptions[] = []
 
   // ── Status row ──────────────────────────────────────────────────────
-  // Single non-clickable label that summarises what the app is doing.
-  // Distinct icon styling via a leading glyph chosen per state.
-  const stateLabel = stateRowLabel(status, chrome)
-  items.push({ label: stateLabel, enabled: false })
+  // Non-clickable summary from the single status source, mirroring the
+  // tooltip. Leading glyph reads as a coloured-dot status badge.
+  items.push({ label: menuStatusLabel(status), enabled: false })
 
-  // Sub-label if Chrome probe has more context (meeting id detected).
-  if (chrome.tab) {
-    items.push({ label: `   ${chrome.tab.meetingId} · ${shortenHost(chrome.tab.url)}`, enabled: false })
+  // Context sub-row: who + when while recording; the meet id while a Meet
+  // is open but capture isn't confirmed yet.
+  if (status.activityKind === 'recording' && status.recordingStartedAt) {
+    const who = status.recordingMeetingId ?? 'meeting'
+    items.push({
+      label: `   ${who} · started ${formatClock(status.recordingStartedAt)}`,
+      enabled: false
+    })
+  } else if (status.activityKind === 'meet-detected' && status.meetTab) {
+    items.push({ label: `   ${status.meetTab.meetingId}`, enabled: false })
   }
 
   items.push({ type: 'separator' })
 
-  // ── Permission warnings ─────────────────────────────────────────────
-  // Surface BEFORE the action items, because nothing else works if Screen
-  // Recording is denied. One-click open of System Settings.
+  // ── Permission warnings (actions) ───────────────────────────────────
+  // The status row summarises the problem; these are the one-click fixes.
   if (permMissing(enginePerms.screenRecording)) {
     items.push({
       label: '⚠︎  Grant Screen Recording…',
@@ -345,23 +355,20 @@ function buildMenu(): Menu {
     items.push({ type: 'separator' })
   }
 
-  // ── Watch toggle ────────────────────────────────────────────────────
-  // The primary control. Disabled while transcribing (you can't pause
-  // mid-transcription — the engine is post-processing audio already
-  // recorded).
-  const watching = status.state === 'watching' || status.state === 'recording'
-  if (watching) {
+  // ── Watch toggle (recording-aware) ──────────────────────────────────
+  // Pause routes through the recording-aware guard so it can't silently
+  // end a live recording.
+  const watchOn = getStatus().state !== 'idle'
+  if (watchOn) {
     items.push({
       label: 'Pause watching',
-      enabled: status.state !== 'transcribing',
       click: () => {
-        stopWatching()
+        void pauseWatching()
       }
     })
   } else {
     items.push({
-      label: 'Start watching',
-      enabled: status.state !== 'transcribing',
+      label: 'Resume watching',
       click: () => {
         // Fire-and-forget: startWatching may await a graceful stop of a stale
         // engine; the tray refreshes from the status listener when it settles.
@@ -372,7 +379,7 @@ function buildMenu(): Menu {
 
   items.push({ type: 'separator' })
 
-  // ── Window controls ─────────────────────────────────────────────────
+  // ── Window + meeting shortcuts ──────────────────────────────────────
   items.push({
     label: 'Show Timbre',
     click: () => {
@@ -380,16 +387,26 @@ function buildMenu(): Menu {
     },
     accelerator: 'CommandOrControl+0'
   })
+  items.push({
+    label: 'Open latest meeting',
+    enabled: getLastReadyPrefix() !== null,
+    click: () => {
+      openLatestMeeting()
+    }
+  })
+  items.push({
+    label: 'Open recordings folder',
+    click: () => {
+      void shell.openPath(liveRecordingsRoot)
+    }
+  })
   items.push({ type: 'separator' })
 
-  // ── Quit ────────────────────────────────────────────────────────────
+  // ── Quit (recording-aware) ──────────────────────────────────────────
   items.push({
     label: 'Quit Timbre',
     click: () => {
-      // Force-quit irrespective of the macOS "close window keeps app alive"
-      // convention. The tray is the user's contract that the app is
-      // running; quit from the tray means quit for real.
-      app.quit()
+      void quitWithGuard()
     },
     accelerator: 'Command+Q'
   })
@@ -397,34 +414,58 @@ function buildMenu(): Menu {
   return Menu.buildFromTemplate(items)
 }
 
-/**
- * Best-effort summary line for the top of the menu. Bullet-leading
- * glyph reads as a coloured-dot status badge — green/amber/red maps to
- * macOS's own "live-recording dot" convention even though menu items
- * can't actually render in colour.
- */
-function stateRowLabel(status: RecordingStatus, chrome: ChromeMeetSnapshot): string {
-  if (status.state === 'transcribing') {
-    return `◐  Transcribing · ${status.progressPercent ?? 0}%`
+/** The menu status row: glyph + summary from the single status source. */
+function menuStatusLabel(status: AppStatus): string {
+  if (status.attention) return `⚠  ${status.attention.message}`
+  switch (status.activityKind) {
+    case 'recording': {
+      const t =
+        typeof status.recordingElapsedSec === 'number'
+          ? ` · ${formatMMSS(status.recordingElapsedSec)}`
+          : ''
+      return `●  Recording${t}`
+    }
+    case 'processing': {
+      const n = status.processingCount ?? 1
+      return `◐  Processing ${n} meeting${n === 1 ? '' : 's'}`
+    }
+    case 'meet-detected':
+      return '●  Meet open — waiting for capture'
+    case 'watching':
+      return '●  Watching for meetings'
+    case 'paused':
+      return '○  Paused (not watching)'
   }
-  if (status.state === 'recording') {
-    return '●  Recording meeting'
-  }
-  if (chrome.tab && status.state === 'watching') {
-    return '●  Meeting detected — capturing'
-  }
-  if (status.state === 'watching') {
-    return '●  Watching for meetings'
-  }
-  return '○  Paused (not watching)'
 }
 
-function shortenHost(url: string): string {
-  try {
-    const u = new URL(url)
-    return u.host.replace(/^www\./, '')
-  } catch {
-    return url
+/** "2:00 PM"-style clock label from an epoch-ms timestamp. */
+function formatClock(epochMs: number): string {
+  return new Date(epochMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+
+/** Pause watching, guarded so a live recording isn't ended without consent. */
+async function pauseWatching(): Promise<void> {
+  if (!(await confirmIfRecording('stop'))) return
+  const graceMs = getAppStatus().kind === 'recording' ? 5000 : 250
+  stopWatching(graceMs)
+}
+
+/** Quit, guarded so a live recording isn't ended without consent. */
+async function quitWithGuard(): Promise<void> {
+  if (!(await confirmIfRecording('quit'))) return
+  app.quit()
+}
+
+/** Deep-link to the freshest finished meeting (last "Transcript ready"). */
+function openLatestMeeting(): void {
+  const prefix = getLastReadyPrefix()
+  if (!prefix) return
+  showMainWindow()
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('meetings:openMeeting', { id: `engine:${prefix}` })
+      break
+    }
   }
 }
 
