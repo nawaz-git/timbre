@@ -19,13 +19,12 @@ import { useAppStatus } from '../state/appStatus'
 import { useSettings } from '../state/settings'
 import { useTags } from '../state/tags'
 import { usePermissions, useChromeMeet, useCaptureWatchdog } from '../state/permissions'
-import { formatDateRelative, formatDuration } from '../state/format'
+import { formatDateRelative, formatDuration, PROCESSING_STAGE_LABEL } from '../state/format'
 import type {
   ActivityKind,
   AppStatus,
   BackendEvent,
   MeetingSummary,
-  ProcessingStage,
   SpeakerMatch
 } from '../../../shared/types'
 
@@ -36,14 +35,6 @@ const STATE_LABEL: Record<ActivityKind, string> = {
   'meet-detected': 'Meeting detected',
   recording: 'Recording',
   processing: 'Processing'
-}
-
-/** Human stage labels for a processing meeting (matches the meeting detail). */
-const STAGE_LABEL: Record<ProcessingStage, string> = {
-  transcribing: 'Transcribing speech',
-  diarizing: 'Identifying speakers',
-  summarizing: 'Writing summary',
-  unknown: 'Working…'
 }
 
 /** One sentence per kind. */
@@ -343,7 +334,7 @@ export function HomeView({ onOpenMeeting, onViewAll }: HomeViewProps): JSX.Eleme
                   <Loader2 size={12} aria-hidden="true" className="home-status-icon--spin" />
                   <span className="hero__processing-title">{p.title}</span>
                   <span className="hero__processing-stage">
-                    {STAGE_LABEL[p.stage]} · {formatMinutesElapsed(p.startedAt)} elapsed
+                    {PROCESSING_STAGE_LABEL[p.stage]} · {formatMinutesElapsed(p.startedAt)} elapsed
                   </span>
                 </div>
               ))}
