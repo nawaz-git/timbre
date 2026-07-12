@@ -23,6 +23,11 @@ export function buildEngineConfigPayload(
   return {
     screenCaptureScope: settings.screenCaptureScope,
     disableAppAudioTap: settings.disableAppAudioTap,
+    // Retire the engine's native post-processing speaker-naming window in
+    // favour of the in-app naming panel. Written unconditionally — the engine
+    // ignores unknown keys today (verified in EngineConfig.read), so it's a
+    // no-op until the engine honours it (ENG-2).
+    suppressSpeakerNamingWindow: true,
     processingMode: settings.processingMode,
     asrLanguage: settings.asrLanguage,
     numSpeakersHint: typeof settings.numSpeakers === 'number' ? settings.numSpeakers : 0,

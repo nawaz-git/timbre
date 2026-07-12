@@ -15,6 +15,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     processingMode: 'fast',
     asrLanguage: '',
     llmRepair: false,
+    launchAtLogin: true,
     ...overrides
   }
 }
@@ -32,6 +33,7 @@ test('buildEngineConfigPayload carries every bridge field', () => {
   assert.deepEqual(payload, {
     screenCaptureScope: 'entireScreen',
     disableAppAudioTap: false,
+    suppressSpeakerNamingWindow: true,
     processingMode: 'max',
     asrLanguage: 'en',
     numSpeakersHint: 3,

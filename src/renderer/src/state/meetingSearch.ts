@@ -86,6 +86,23 @@ export function filterMeetingsByQuery(
 }
 
 /**
+ * True when a speaker label is still an auto-generated placeholder the user
+ * hasn't named — `Speaker`, `Speaker 2`, `Speaker_2`, or a raw diarization
+ * prefix (`R_…` / `M_…`). Drives the "Who was in this meeting?" naming panel.
+ * Exported so the knowledge-graph stream can gate the same panel as a
+ * deep-link target. Pure — unit-testable.
+ */
+export function isUnnamedSpeaker(name: string): boolean {
+  const n = name.trim()
+  return /^speaker( \d+|_\d+)?$/i.test(n) || /^R_|^M_/.test(n)
+}
+
+/** True when at least one speaker in the list is still unnamed. */
+export function hasUnnamedSpeakers(names: string[]): boolean {
+  return names.some(isUnnamedSpeaker)
+}
+
+/**
  * Split a snippet around case-insensitive matches of `query` into text/mark
  * parts, so the renderer can wrap matches in `<mark>` without dangerouslySet
  * HTML. Pure — unit-testable.
