@@ -192,6 +192,12 @@ interface InternalState {
   lastProbeAt: number
   /** Base tick cadence the interval fires at; the watching-state target. */
   baseIntervalMs: number
+  /** Monotonic epoch bumped on every start AND stop. A tick captures it at
+   *  entry and, after its await(s), bails if it changed — so a tick suspended
+   *  inside a multi-second osascript call can't resurrect a meeting a
+   *  concurrent `stopChromeProbe()` already cleared. Epoch (not a bare stopped
+   *  flag) so a stop→restart also invalidates the stale in-flight tick. */
+  generation: number
 }
 
 const state: InternalState = {
@@ -199,7 +205,22 @@ const state: InternalState = {
   timer: null,
   busy: false,
   lastProbeAt: 0,
-  baseIntervalMs: WATCHING_INTERVAL_MS
+  baseIntervalMs: WATCHING_INTERVAL_MS,
+  generation: 0
+}
+
+/**
+ * Whether a resumed probe tick still belongs to the current probe epoch. A tick
+ * captures the `generation` at entry and re-checks it after each await, before
+ * committing any snapshot push or engine-signal write. If `startChromeProbe` /
+ * `stopChromeProbe` bumped the generation while the tick was suspended (e.g.
+ * mid-osascript), the tick is stale and must bail — otherwise a paused/stopped
+ * meeting gets re-lit and the `active_meeting.json` signal re-written, keeping
+ * the app recording ~12–27 s longer with nothing to re-clear it until the
+ * engine ages the signal out. Pure + exported for unit testing.
+ */
+export function isProbeTickCurrent(capturedGeneration: number, currentGeneration: number): boolean {
+  return capturedGeneration === currentGeneration
 }
 
 export function getChromeMeetSnapshot(): ChromeMeetSnapshot {
@@ -229,6 +250,9 @@ export function startChromeProbe(intervalMs = WATCHING_INTERVAL_MS): void {
   if (process.platform !== 'darwin') return
   if (state.timer) return
   state.baseIntervalMs = intervalMs
+  // New epoch: invalidate any tick still suspended from a previous run so a
+  // stop→restart can't let a stale osascript result land in the new session.
+  state.generation++
   // First tick fires immediately so the UI doesn't have to wait 3s.
   void tick()
   state.timer = setInterval(() => {
@@ -237,6 +261,9 @@ export function startChromeProbe(intervalMs = WATCHING_INTERVAL_MS): void {
 }
 
 export function stopChromeProbe(): void {
+  // New epoch FIRST: any tick suspended inside osascript is now stale and will
+  // bail on resume instead of resurrecting the snapshot/signal we clear below.
+  state.generation++
   if (state.timer) {
     clearInterval(state.timer)
     state.timer = null
@@ -273,6 +300,12 @@ export async function probeOnce(): Promise<{
   if (process.platform !== 'darwin') {
     return { automationState: getAutomationChromeState(), tabFound: false }
   }
+  // Capture the probe epoch: this one-shot awaits inside osascript just like a
+  // loop tick, so a concurrent start/stopChromeProbe() could clear the shared
+  // snapshot/signal underneath us. Guard our writes with it so probeOnce never
+  // resurrects epoch-guarded state a stop already cleared — its return value
+  // (the wizard's Automation verdict) is unaffected either way.
+  const generation = state.generation
   let sawRunningBrowser = false
   for (const browser of CHROMIUM_BROWSERS) {
     // probeOnce is the wizard's one-shot Automation test, so read liveness fresh
@@ -291,8 +324,11 @@ export async function probeOnce(): Promise<{
             url: m[0],
             meetingId: m[1].toLowerCase()
           }
-          updateSnapshot({ available: true, tab })
-          await writeActiveMeetingSignal(tab)
+          // Skip the shared-state writes if a concurrent stop bumped the epoch.
+          if (isProbeTickCurrent(generation, state.generation)) {
+            updateSnapshot({ available: true, tab })
+            await writeActiveMeetingSignal(tab)
+          }
           return { automationState: 'granted', tabFound: true }
         }
       }
@@ -301,14 +337,18 @@ export async function probeOnce(): Promise<{
       // osascript -1743 (and the assistive/authorized variants) == TCC denied.
       if (/-1743|not allowed|not authorized/i.test(msg)) {
         setAutomationChromeState('denied')
-        updateSnapshot({ available: false, error: 'Automation permission denied', tab: null })
+        if (isProbeTickCurrent(generation, state.generation)) {
+          updateSnapshot({ available: false, error: 'Automation permission denied', tab: null })
+        }
         return { automationState: 'denied', tabFound: false }
       }
       // Other errors (app not scriptable, transient) — try the next browser.
     }
   }
   // Automation works (or no supported browser is open) but no Meet tab exists.
-  if (sawRunningBrowser) updateSnapshot({ available: true, tab: null })
+  if (sawRunningBrowser && isProbeTickCurrent(generation, state.generation)) {
+    updateSnapshot({ available: true, tab: null })
+  }
   return { automationState: getAutomationChromeState(), tabFound: false }
 }
 
@@ -334,8 +374,13 @@ async function tick(): Promise<void> {
   }
   state.lastProbeAt = now
   state.busy = true
+  const generation = state.generation
   try {
     const tab = await findFirstMeetTab(recordingActive)
+    // A stopChromeProbe()/startChromeProbe() ran while we were suspended inside
+    // osascript — this result belongs to a dead epoch. Bail before any snapshot
+    // push or signal write so we don't resurrect a meeting the stop cleared.
+    if (!isProbeTickCurrent(generation, state.generation)) return
     updateSnapshot({ available: true, tab })
     // Refresh (or clear) the engine signal on every real probe so it acts as a
     // heartbeat the engine can age out if Mintr stops updating it. While
@@ -343,6 +388,10 @@ async function tick(): Promise<void> {
     // staleness window.
     await writeActiveMeetingSignal(tab)
   } catch (err) {
+    // Same guard on the failure path: a stop mid-osascript must win over a
+    // stale error verdict, which would otherwise overwrite the cleared snapshot
+    // and re-mark Automation state.
+    if (!isProbeTickCurrent(generation, state.generation)) return
     const msg = err instanceof Error ? err.message : String(err)
     // osascript exit codes:
     //   -1743 — user has not granted automation permission yet (TCC denied)
