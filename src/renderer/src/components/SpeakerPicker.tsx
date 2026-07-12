@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Check, X } from 'lucide-react'
 import type { EnrolledSpeaker } from '../../../shared/types'
 import { colorForSpeaker } from '../state/speakerColor'
+import { useRovingFocus } from './useRovingFocus'
 
 interface SpeakerPickerProps {
   /** Currently-assigned name for this cluster. */
@@ -130,6 +131,11 @@ export function SpeakerPicker(props: SpeakerPickerProps): JSX.Element | null {
   // trigger and clamp against the right edge of the window so it never
   // hangs off-screen on narrow widths.
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
+
+  // Arrow/Home/End rove through the selectable name buttons (skipping the
+  // static current-speaker row) and focus returns to the anchor on close.
+  // autoFocusFirst is off so the add/rename inputs keep their own focus.
+  useRovingFocus(wrapRef, 'button.speaker-picker__item', anchorEl, { autoFocusFirst: false })
 
   useLayoutEffect(() => {
     function measure(): void {
