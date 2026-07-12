@@ -446,8 +446,9 @@ function formatClock(epochMs: number): string {
 /** Pause watching, guarded so a live recording isn't ended without consent. */
 async function pauseWatching(): Promise<void> {
   if (!(await confirmIfRecording('stop'))) return
-  const graceMs = getAppStatus().kind === 'recording' ? 5000 : 250
-  stopWatching(graceMs)
+  // The engine's SIGTERM → escalation stop already gives a live recording time
+  // to finalise before the hard kill, so no extra stop-grace is threaded here.
+  stopWatching()
 }
 
 /** Quit, guarded so a live recording isn't ended without consent. */
