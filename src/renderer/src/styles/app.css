@@ -1916,6 +1916,16 @@
    names, and 14px/1.55 body text. Subtle bottom borders between
    rows for legibility. */
 
+/* Transcript tabpanel wrapper — a transparent flex passthrough so the
+   inner `.transcript-list` keeps owning its own scroll (no double-scroll,
+   no extra padding) while the panel gains a labelled tabpanel role. */
+.transcript-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .transcript-list {
   display: flex;
   flex-direction: column;
