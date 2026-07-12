@@ -116,6 +116,12 @@ interface RunBatchOptions {
   numSpeakers?: number
   /** Optional global speakers DB path forwarded as `--global-db`. Defaults to the user's global DB. */
   globalDB?: string
+  /**
+   * Optional ASR language (ISO 639-1) forwarded as `--language`. Empty / absent
+   * = auto-detect (mt-batch's default) — so a user who locks a language in
+   * Settings gets it honoured on imports too, not just live meetings.
+   */
+  language?: string
   /** Called for each parsed event. Errors during processing are reported via the `error` event. */
   onEvent: (ev: BatchEvent) => void
 }
@@ -152,6 +158,10 @@ export function runBatch(opts: RunBatchOptions): Promise<string> {
     // mt-batch tolerates a non-existent file (treats as empty list).
     const globalDB = opts.globalDB ?? globalSpeakersDBPath()
     args.push('--global-db', globalDB)
+    // Only forward an explicit language; empty = auto-detect (omit the flag).
+    if (opts.language && opts.language.length > 0) {
+      args.push('--language', opts.language)
+    }
 
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
 

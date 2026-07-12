@@ -148,7 +148,7 @@ export function registerIpcHandlers(): void {
       // Fire-and-forget: kicks off transcription in main, surfaces progress
       // via `backend:event` IPC + recording.status polling. The renderer
       // receives the jobId immediately so it can correlate later events.
-      importFile(filePath, outputDir, jobId, numSpeakers)
+      importFile(filePath, outputDir, jobId, numSpeakers, settings.asrLanguage)
         .then((result) => {
           console.log('[backend:spawn] done', result)
         })
@@ -217,7 +217,8 @@ export function registerIpcHandlers(): void {
         outputFolder: settings.outputFolder,
         meetingId,
         jobId,
-        numSpeakers: hint
+        numSpeakers: hint,
+        language: settings.asrLanguage
       })
         .then((result) => {
           console.log('[meetings:reanalyze] done', result)
