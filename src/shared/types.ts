@@ -24,6 +24,16 @@ export interface Settings {
    */
   screenCaptureScope: ScreenCaptureScope
   /**
+   * Kill switch for the app-audio CATap. Default false. When true the engine
+   * records the microphone (and screen video) only — it creates NO CoreAudio
+   * process tap or aggregate device at all. Rides the same engine_config.json
+   * bridge as `screenCaptureScope` and is read fresh by the engine each
+   * meeting. Immediate field mitigation: if capturing a browser's audio ever
+   * destabilises the meeting, turning this on isolates the app tap in one step
+   * while still saving the mic-side transcript.
+   */
+  disableAppAudioTap: boolean
+  /**
    * Auto-start watching for meetings on app launch. Default true — Mintr
    * is meant to feel like a passive background utility (Tailscale / 1Password
    * style); the user shouldn't have to press a button before every meeting.
