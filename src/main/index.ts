@@ -19,6 +19,7 @@ import { setRecordingActiveProvider, startChromeProbe, stopChromeProbe } from '.
 import { writeEngineConfig } from './engineConfig'
 import { onStatusChange, startWatching } from './recording'
 import { isRecordingActive, startCaptureWatchdog, stopCaptureWatchdog } from './captureWatchdog'
+import { startCaptureSignal, stopCaptureSignal } from './captureSignal'
 import {
   disableEngineLaunch,
   isEngineAlive,
@@ -364,6 +365,13 @@ app.whenReady().then(async () => {
     console.warn('[main] startCaptureWatchdog failed', err)
   )
 
+  // Capture heartbeat — the truthful "audio is being written right now" signal.
+  // Polls the newest raw-recording WAV for mtime+size growth. Runs for the
+  // whole app lifetime (even while paused) so a manually-launched engine still
+  // yields honest recording UI. Drives the started/saved notifications and
+  // feeds the app-status machine.
+  startCaptureSignal()
+
   // Auto-start watching on launch unless the user opted out. The tray
   // exists at this point so the user has a way to pause if they want.
   try {
@@ -405,5 +413,6 @@ app.on('before-quit', () => {
   disableEngineLaunch()
   stopChromeProbe()
   stopCaptureWatchdog()
+  stopCaptureSignal()
   stopEngineSupervisor()
 })

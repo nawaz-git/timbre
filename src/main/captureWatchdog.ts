@@ -223,8 +223,6 @@ function makeWatcher(path: string, kind: 'live' | 'imported'): FSWatcher {
   // surfaced in the UI because of exactly this. macOS's fs.watch
   // supports `recursive: true` natively (via FSEvents under the hood).
   const w = watch(path, { persistent: false, recursive: true }, (eventType, filename) => {
-    const wasIdle = state.lastEngineWriteAt === 0
-    const previousAge = Date.now() - state.lastEngineWriteAt
     // Any change at all bumps the engine-write timestamp — this is the
     // signal that the helper IS doing work (which clears the watchdog).
     state.lastEngineWriteAt = Date.now()
@@ -235,25 +233,14 @@ function makeWatcher(path: string, kind: 'live' | 'imported'): FSWatcher {
     if (kind === 'live' && filename) maybeClearPlaceholderForFile(filename)
     queueMeetingsChange(kind, filename ?? null, eventType)
 
-    // Capture-lifecycle notifications. Until the capture heartbeat (which
-    // will drive these from verified WAV growth) lands, we synthesise the
-    // events from file writes — but key STRICTLY off the recording WAVs the
-    // engine emits, never arbitrary churn, so we never announce "Recording
-    // started" for a transcript, metadata, or placeholder write. A landed
-    // transcript fires the single "ready" notification that matters.
-    if (kind === 'live' && filename) {
-      const isRecordingWav = /_(mix|app|mic)\.wav$/.test(filename)
-      if (isRecordingWav && (wasIdle || previousAge > 8000)) {
-        scheduleCaptureStartedNotification(filename)
-      }
-      if (isRecordingWav) {
-        scheduleCaptureEndedNotification()
-      }
-      // fs.watch is recursive, so a protocol transcript arrives as
-      // `protocols/<prefix>.txt` — the signal that the pipeline finished.
-      if (/^protocols\/.*\.txt$/.test(filename)) {
-        scheduleReadyNotification(filename)
-      }
+    // The started/saved capture notifications are now driven by the capture
+    // heartbeat (`captureSignal.ts`): it fires them from verified WAV `active`
+    // transitions instead of raw write bursts, so they stay honest when the
+    // engine stalls. Here we only handle the transcript-ready signal — fs.watch
+    // is recursive, so a finished protocol transcript arrives as
+    // `protocols/<prefix>.txt`, the signal that the pipeline completed.
+    if (kind === 'live' && filename && /^protocols\/.*\.txt$/.test(filename)) {
+      scheduleReadyNotification(filename)
     }
   })
   w.on('error', (err) => {
@@ -280,7 +267,13 @@ let endedNotificationTimer: NodeJS.Timeout | null = null
 const readyNotifiedPrefixes = new Set<string>()
 const readyNotificationTimers = new Map<string, NodeJS.Timeout>()
 
-function scheduleCaptureStartedNotification(filename?: string): void {
+/**
+ * Announce that recording has started. Driven by `captureSignal.ts` on a
+ * verified WAV `active` transition (not raw file churn), so it never fires for
+ * a stray transcript/metadata write. Debounced so a burst of events still
+ * yields one notification.
+ */
+export function scheduleCaptureStartedNotification(filename?: string): void {
   // Debounce — multiple file-change events when a new meeting folder
   // appears should produce ONE notification, not five.
   const now = Date.now()
@@ -299,7 +292,12 @@ function scheduleCaptureStartedNotification(filename?: string): void {
   }
 }
 
-function scheduleCaptureEndedNotification(): void {
+/**
+ * Announce that recording has stopped and processing has begun. Driven by
+ * `captureSignal.ts` when the WAV stops growing. Coalesces the finalisation
+ * write-burst by firing only after events settle.
+ */
+export function scheduleCaptureEndedNotification(): void {
   // Notification fires only after writes settle (no new event for 3.5s).
   // The "ended" notification therefore lands ~3s after the user clicks
   // Leave on the Meet.
