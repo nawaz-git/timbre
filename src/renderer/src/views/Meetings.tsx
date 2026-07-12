@@ -271,6 +271,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // Meeting pending a Move-to-Trash confirmation (drives the ConfirmDialog).
   const [deletePending, setDeletePending] = useState<MeetingSummary | null>(null)
 
+  // Transient "Copied" affordance for the Copy-transcript action.
+  const [copiedTranscript, setCopiedTranscript] = useState(false)
+
   // Animated tab indicator. We measure the currently-active tab button's
   // offsetLeft + offsetWidth and slide a single underline pseudo-element to
   // its position via a CSS transform. Re-measures on tab change, layout
@@ -995,6 +998,25 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     }
   }, [selectedId, selectedMeeting])
 
+  const onCopyTranscript = useCallback(async () => {
+    // Prefer diarized segments as `[mm:ss] Speaker: text`; fall back to the
+    // raw protocol text when there are no segments.
+    const text =
+      segments.length > 0
+        ? segments
+            .map((seg) => `[${formatHHMMSS(seg.start)}] ${seg.speaker}: ${seg.text.trim()}`)
+            .join('\n')
+        : (transcript?.transcript ?? '')
+    if (!text.trim()) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedTranscript(true)
+      setTimeout(() => setCopiedTranscript(false), 1600)
+    } catch {
+      // Clipboard access denied — rare in the packaged app; nothing to do.
+    }
+  }, [segments, transcript])
+
   const onExport = useCallback(
     async (format: ExportFormat) => {
       if (!selectedId || !selectedMeeting) return
@@ -1446,6 +1468,13 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   }}
                 >
                   Show in Finder
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => void onCopyTranscript()}
+                  disabled={segments.length === 0 && !transcript?.transcript}
+                >
+                  {copiedTranscript ? 'Copied' : 'Copy transcript'}
                 </button>
               </div>
             </div>
@@ -1901,9 +1930,16 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   )}
                 {!transcriptLoading &&
                   segments.length === 0 &&
-                  selectedMeeting.status !== 'processing' && (
+                  selectedMeeting.status !== 'processing' &&
+                  (transcript?.transcript?.trim() ? (
+                    // Diarized segments are absent, but a raw transcript exists
+                    // (e.g. the engine wrote a protocol without a segments
+                    // sidecar). Show it verbatim rather than a dead-end empty
+                    // state — the text is what the user came for.
+                    <pre className="transcript-raw">{transcript.transcript}</pre>
+                  ) : (
                     <div className="empty">(No transcript text yet.)</div>
-                  )}
+                  ))}
                 {!transcriptLoading && segments.length > 0 && (
                   <div className="transcript-list" ref={transcriptListRef}>
                     {segments.map((seg, i) => (
