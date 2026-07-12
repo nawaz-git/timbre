@@ -33,6 +33,7 @@ import {
   stopEngineSupervisor,
   type SuperviseReason
 } from './engineSupervisor'
+import { startAppStatus, stopAppStatus } from './status'
 
 // `mt-audio://` MUST be registered as privileged before app.whenReady().
 // Without this, the renderer's <audio src="mt-audio://..."> gets blocked by
@@ -372,6 +373,11 @@ app.whenReady().then(async () => {
   // feeds the app-status machine.
   startCaptureSignal()
 
+  // App-status machine — the single source of truth. Started after its inputs
+  // (recording, capture heartbeat, chrome probe, watchdog) so its first
+  // recompute sees real state; it also re-runs on every input change hook.
+  startAppStatus()
+
   // Auto-start watching on launch unless the user opted out. The tray
   // exists at this point so the user has a way to pause if they want.
   try {
@@ -414,5 +420,6 @@ app.on('before-quit', () => {
   stopChromeProbe()
   stopCaptureWatchdog()
   stopCaptureSignal()
+  stopAppStatus()
   stopEngineSupervisor()
 })

@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto'
 import { promises as fs } from 'fs'
 import { IPC } from '../../shared/types'
 import type {
+  AppStatus,
   BackendJob,
   ChromeMeetSnapshot,
   EnrolledSpeaker,
@@ -22,6 +23,7 @@ import type {
 } from '../../shared/types'
 import { getPermissionStatus, openPrivacyPane } from '../permissions'
 import { getChromeMeetSnapshot } from '../chromeProbe'
+import { getAppStatus } from '../status'
 import { writeEngineConfig } from '../engineConfig'
 import { showMainWindow } from '../tray'
 import { deleteSpeakerFromGlobalDB, listEnrolledSpeakers, numSpeakersToArg } from '../backend'
@@ -360,6 +362,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.systemChromeMeet, async (): Promise<ChromeMeetSnapshot> => {
     return getChromeMeetSnapshot()
+  })
+
+  ipcMain.handle(IPC.appStatusGet, async (): Promise<AppStatus> => {
+    return getAppStatus()
   })
 
   ipcMain.handle(IPC.systemShowWindow, async (): Promise<void> => {

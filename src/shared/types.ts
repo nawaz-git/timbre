@@ -157,6 +157,86 @@ export interface EngineHeartbeat {
   updatedAt: number
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// AppStatus — the single source of truth for what Timbre is doing.
+//
+// One state machine in the main process (`src/main/status.ts`) owns app
+// status; every surface (tray glyph + menu, Home hero, meeting rows,
+// notifications, dock) renders THIS object rather than re-deriving its own.
+// "Recording" is shown ONLY when audio is verifiably being written to disk
+// (the capture heartbeat), never because a browser tab exists.
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * The app's status, in strict priority order (first match wins):
+ *   attention → recording → processing → meet-detected → watching → paused
+ * `attention` means something needs the user (permission broken, live capture
+ * failed, an engine meeting's processing dead-ended, or the engine is missing).
+ */
+export type AppStatusKind =
+  | 'attention'
+  | 'recording'
+  | 'processing'
+  | 'meet-detected'
+  | 'watching'
+  | 'paused'
+
+/** The underlying activity kind — `AppStatusKind` with `attention` removed. */
+export type ActivityKind = Exclude<AppStatusKind, 'attention'>
+
+/** Pipeline stage of a processing meeting (inferred without the engine status file). */
+export type ProcessingStage = 'transcribing' | 'diarizing' | 'summarizing' | 'unknown'
+
+/** One meeting currently in the post-recording pipeline. */
+export interface ProcessingItem {
+  /** Meeting id (`engine:<prefix>`). */
+  id: string
+  title: string
+  /** Epoch ms recording ended / processing began (mix-WAV mtime). */
+  startedAt: number
+  stage: ProcessingStage
+  /** Real progress 0–100 when the engine status file provides it; else absent. */
+  percent?: number
+  /** Recorded length estimate in seconds (from WAV size), when known. */
+  estDurationSec?: number
+  /** True when the pipeline appears to have stalled and needs recovery. */
+  stuck?: boolean
+}
+
+/** A condition that needs the user's attention. Priority already resolved in main. */
+export interface AppAttention {
+  code: 'permission' | 'capture-failed' | 'processing-stuck' | 'engine-missing'
+  message: string
+  /** Related meeting id, when the attention is about a specific meeting. */
+  meetingId?: string
+}
+
+/**
+ * The single status object broadcast to every surface. `kind` is the resolved
+ * ladder value (may be `attention`); `activityKind` is what's actually
+ * happening underneath so a surface can render the activity block AND the
+ * attention banner at once (the Home hero does exactly this).
+ */
+export interface AppStatus {
+  kind: AppStatusKind
+  /** The activity underneath any attention overlay. */
+  activityKind: ActivityKind
+  // ── recording ──
+  /** Chrome meet id when known (best-effort context; recording is proven by the heartbeat). */
+  recordingMeetingId?: string
+  /** Epoch ms the current recording began (WAV birthtime). */
+  recordingStartedAt?: number
+  /** Elapsed recording seconds (computed live on read). */
+  recordingElapsedSec?: number
+  // ── processing ──
+  processingCount?: number
+  processing?: ProcessingItem[]
+  // ── attention ──
+  attention?: AppAttention
+  // ── context every surface may need ──
+  meetTab?: { meetingId: string; url: string } | null
+}
+
 export interface MeetingSummary {
   /** Folder name — used as a stable id. */
   id: string
@@ -340,6 +420,12 @@ export const IPC = {
   systemOpenSettings: 'system:openSettings',
   /** Returns the most recent Chrome meet.google.com tab snapshot. */
   systemChromeMeet: 'system:chromeMeet',
+  /**
+   * Pull the current `AppStatus` (the single source of truth for recording /
+   * processing / attention state). The matching push channel is
+   * `app-status:update` (broadcast, deliberately NOT in this invoke const).
+   */
+  appStatusGet: 'app-status:get',
   /** Brings the main app window forward (called from tray menu). */
   systemShowWindow: 'system:showWindow',
   /** Quits the app (called from tray menu). */

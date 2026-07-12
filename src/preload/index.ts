@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import { IPC } from '../shared/types'
 import type {
+  AppStatus,
   BackendEvent,
   BackendJob,
   CaptureWatchdogSignal,
@@ -156,6 +157,20 @@ const api = {
       ipcRenderer.on('chrome-meet:update', listener)
       return () => {
         ipcRenderer.removeListener('chrome-meet:update', listener)
+      }
+    },
+    /**
+     * The single source of truth for what Timbre is doing (recording /
+     * processing / attention). `appStatus()` pulls the current value on mount;
+     * `onAppStatus()` subscribes to the `app-status:update` push. Every surface
+     * renders this same object instead of re-deriving its own status.
+     */
+    appStatus: (): Promise<AppStatus> => ipcRenderer.invoke(IPC.appStatusGet),
+    onAppStatus: (handler: (status: AppStatus) => void): (() => void) => {
+      const listener = (_: Electron.IpcRendererEvent, status: AppStatus): void => handler(status)
+      ipcRenderer.on('app-status:update', listener)
+      return () => {
+        ipcRenderer.removeListener('app-status:update', listener)
       }
     },
     showWindow: (): Promise<void> => ipcRenderer.invoke(IPC.systemShowWindow),
