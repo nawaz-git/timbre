@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MTPipelineCore
 import os.log
 import WhisperKit
 

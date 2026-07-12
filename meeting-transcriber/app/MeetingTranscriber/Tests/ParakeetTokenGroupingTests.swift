@@ -1,5 +1,6 @@
 import FluidAudio
 @testable import MeetingTranscriber
+import MTPipelineCore
 import XCTest
 
 final class ParakeetTokenGroupingTests: XCTestCase {

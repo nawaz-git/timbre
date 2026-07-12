@@ -2,18 +2,11 @@
 // same gap as AudioMixer.swift; preemptively guarded.
 @preconcurrency import AVFoundation
 import Foundation
+import MTPipelineCore
 import os.log
 import WhisperKit
 
 private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "WhisperKitEngine")
-
-/// A transcribed segment with timestamps and optional speaker label.
-struct TimestampedSegment: Codable {
-    let start: TimeInterval // seconds
-    let end: TimeInterval // seconds
-    let text: String
-    var speaker: String = ""
-}
 
 extension TimestampedSegment {
     /// Format timestamp as [MM:SS] or [H:MM:SS] for long recordings.

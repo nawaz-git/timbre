@@ -1,5 +1,6 @@
 // swiftlint:disable file_length
 import Foundation
+import MTPipelineCore
 import os.log
 
 private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "PipelineQueue")
@@ -1111,58 +1112,38 @@ class PipelineQueue {
         workDir: URL,
     ) -> [TimestampedSegment] {
         let micDelay = ctx.micDelay
-        let appNames = DiarizationProcess.unprefixNames(autoNames, prefix: "R_")
-        let appUtterances = WordTimeline.attribute(
-            words: appWords, diarization: appDiar.segments, turnSpeakerMap: appNames,
-        )
-
-        var micUtterances: [TimestampedSegment] = []
-        if let micWords {
-            let shiftedWords = micDelay == 0 ? micWords : micWords.map { $0.shifted(by: micDelay) }
-            if let micDiar {
-                let micNames = DiarizationProcess.unprefixNames(autoNames, prefix: "M_")
-                let shiftedSegs = micDelay == 0 ? micDiar.segments : micDiar.segments.map {
-                    DiarizationResult.Segment(start: $0.start + micDelay, end: $0.end + micDelay, speaker: $0.speaker)
-                }
-                micUtterances = WordTimeline.attribute(
-                    words: shiftedWords, diarization: shiftedSegs, turnSpeakerMap: micNames,
-                )
-            } else {
-                // Mic diarization unavailable → attribute to the known local speaker.
-                micUtterances = WordTimeline.utterances(
-                    from: shiftedWords.map { WordTimeline.AttributedWord(word: $0, speaker: micLabel) },
-                )
-            }
-        }
-
-        // Cross-track echo/bleed dedup: drop mic utterances that duplicate an
-        // overlapping app utterance (no-headphones bleed). RMS is compared over
-        // each utterance's own-track span — mic utterances are on the global
-        // (micDelay-shifted) timeline, so un-shift them back to the native mic
-        // file when measuring.
+        // Echo/bleed dedup compares RMS over each utterance's own-track span.
+        // Mic utterances live on the global (micDelay-shifted) timeline, so
+        // un-shift them back to the native mic file when measuring.
         let appAudio = workDir.appendingPathComponent("app_16k.wav")
         let micAudio = workDir.appendingPathComponent("mic_16k.wav")
-        let deduped = CrossTrackDedup.dedup(
-            mic: micUtterances,
-            app: appUtterances,
+        let result = DualTrackAttribution.attribute(
+            appWords: appWords,
+            micWords: micWords,
+            appTurns: appDiar.segments,
+            micTurns: micDiar?.segments,
+            appNames: DiarizationProcess.unprefixNames(autoNames, prefix: "R_"),
+            micNames: DiarizationProcess.unprefixNames(autoNames, prefix: "M_"),
+            micLabel: micLabel,
+            micDelay: micDelay,
             micRMS: { AudioMixer.rmsDecibels(file: micAudio, start: $0.start - micDelay, end: $0.end - micDelay) },
             appRMS: { AudioMixer.rmsDecibels(file: appAudio, start: $0.start, end: $0.end) },
         )
-        if !deduped.dropped.isEmpty {
-            for seg in deduped.dropped {
+        if !result.dropped.isEmpty {
+            for seg in result.dropped {
                 logger.info(
                     "[\(ctx.shortID, privacy: .public)] echo_dedup_drop start=\(seg.start, privacy: .public)s text=\(seg.text, privacy: .private)",
                 )
             }
-            if deduped.dropRatio > 0.2 {
+            if result.dropRatio > 0.2 {
                 addWarning(
                     id: ctx.jobID,
-                    "Dropped \(deduped.droppedCount) duplicated mic line(s) from app-audio bleed — consider using headphones",
+                    "Dropped \(result.droppedCount) duplicated mic line(s) from app-audio bleed — consider using headphones",
                 )
             }
         }
 
-        return DiarizationProcess.mergeConsecutiveSpeakers(deduped.kept)
+        return result.kept
     }
 
     /// Stage 3 — persist the transcript + audio, run protocol generation

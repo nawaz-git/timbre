@@ -11,6 +11,7 @@ let package = Package(
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "1.0.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.5"),
         .package(path: "../../tools/audiotap"),
+        .package(path: "../../tools/pipeline-core"),
     ],
     targets: [
         .executableTarget(
@@ -19,6 +20,7 @@ let package = Package(
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "AudioTapLib", package: "audiotap"),
+                .product(name: "MTPipelineCore", package: "pipeline-core"),
             ],
             path: "Sources",
             // Assets.xcassets is compiled by `actool` in scripts/build_release.sh,
@@ -50,6 +52,7 @@ let package = Package(
                 "MeetingTranscriber",
                 "ViewInspector",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
+                .product(name: "MTPipelineCore", package: "pipeline-core"),
             ],
             path: "Tests",
             // __Snapshots__ is the SnapshotTesting reference-image directory.

@@ -1,5 +1,6 @@
 // swiftlint:disable file_length
 @testable import MeetingTranscriber
+import MTPipelineCore
 import os
 import XCTest
 

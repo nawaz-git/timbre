@@ -1,4 +1,5 @@
 @testable import MeetingTranscriber
+import MTPipelineCore
 import XCTest
 
 /// Regression coverage for the integration bug where the persisted

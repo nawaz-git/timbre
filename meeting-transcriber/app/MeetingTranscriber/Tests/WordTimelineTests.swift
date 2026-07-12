@@ -1,4 +1,5 @@
 @testable import MeetingTranscriber
+import MTPipelineCore
 import XCTest
 
 /// Pure-logic tests for `WordTimeline` — the word-level speaker-attribution

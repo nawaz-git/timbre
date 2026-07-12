@@ -3,6 +3,7 @@
 // "no centroid yet" (legacy entries / dim-mismatch / empty input), which is
 // semantically distinct from an empty embedding vector.
 import Foundation
+import MTPipelineCore
 import os.log
 
 private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "SpeakerMatcher")
@@ -29,14 +30,13 @@ class SpeakerMatcher {
     /// `matchSimilarityMargin`. Expressing the rule in similarity keeps the two
     /// implementations in agreement.
     ///
-    /// Provisional values — the enrolled-voice benchmark will re-fit them. This
-    /// is the single named source; `GlobalSpeakerDB` mirrors these numbers with
-    /// a cross-reference until the shared pipeline target lands and can import
-    /// them directly.
-    static let matchSimilarityFloor: Float = 0.65
+    /// Both matchers now import these from the shared `SpeakerMatchRule` in
+    /// `MTPipelineCore` — one definition, re-exposed here under the names the
+    /// app's call sites already use.
+    static let matchSimilarityFloor: Float = SpeakerMatchRule.similarityFloor
     /// Required top-1 − top-2 similarity gap. In distance space this is the same
     /// number: `dist2 − dist1 = sim1 − sim2`, so it maps 1:1 to `confidenceMargin`.
-    static let matchSimilarityMargin: Float = 0.08
+    static let matchSimilarityMargin: Float = SpeakerMatchRule.similarityMargin
     /// The similarity floor expressed as the cosine-DISTANCE ceiling this
     /// matcher scores in (`distance = 1 − similarity`). A match requires
     /// `distance < matchDistanceCeiling`, i.e. `similarity > matchSimilarityFloor`.
