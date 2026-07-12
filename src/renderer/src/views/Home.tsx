@@ -487,7 +487,8 @@ export function HomeView({ onOpenMeeting, onViewAll }: HomeViewProps): JSX.Eleme
                 className={
                   'recent-card' +
                   (m.isLive ? ' recent-card--live' : '') +
-                  (m.status === 'processing' ? ' recent-card--processing' : '')
+                  (m.status === 'processing' ? ' recent-card--processing' : '') +
+                  (m.status === 'failed' ? ' recent-card--failed' : '')
                 }
                 onClick={() => onOpenMeeting(m.id)}
                 title={m.title}
@@ -522,6 +523,12 @@ export function HomeView({ onOpenMeeting, onViewAll }: HomeViewProps): JSX.Eleme
                       <span>REFINING</span>
                     </span>
                   )}
+                  {!m.isLive && m.status === 'failed' && (
+                    <span className="recent-card__failed-badge" aria-label="Failed">
+                      <AlertTriangle size={10} strokeWidth={2} aria-hidden="true" />
+                      <span>FAILED</span>
+                    </span>
+                  )}
                 </div>
                 {m.isLive ? (
                   <div className="recent-card__meta recent-card__meta--live">
@@ -530,6 +537,10 @@ export function HomeView({ onOpenMeeting, onViewAll }: HomeViewProps): JSX.Eleme
                 ) : m.status === 'processing' ? (
                   <div className="recent-card__meta recent-card__meta--processing">
                     Processing — audio ready, transcript coming.
+                  </div>
+                ) : m.status === 'failed' ? (
+                  <div className="recent-card__meta recent-card__meta--failed">
+                    {m.errorMessage ?? 'Processing failed.'}
                   </div>
                 ) : (
                   <div className="recent-card__meta">

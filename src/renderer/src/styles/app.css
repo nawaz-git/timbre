@@ -3029,6 +3029,63 @@
   margin: 0;
   color: var(--danger);
 }
+/* ── Failed pipeline states ──────────────────────────────────
+ * A meeting whose engine pipeline errored. Minimal danger-toned surfacing
+ * so the failure is visible and retryable; a functional pass that a later
+ * visual polish refines.
+ */
+.failed-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: var(--radius-full, 999px);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font: 600 11px/1 var(--font-sans);
+}
+.meetings__row--failed .meetings__row-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.meetings__row-meta--failed {
+  color: var(--danger);
+}
+.recent-card__failed-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-full, 999px);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.recent-card__meta--failed {
+  color: var(--danger);
+}
+.meetings__detail-failed {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md, 8px);
+  background: var(--danger-soft);
+  font: 400 12.5px/1.5 var(--font-sans);
+  color: var(--fg);
+}
+.meetings__detail-failed button {
+  margin-left: auto;
+}
 
 /* ── Tighten action row when overflow risk ─────────────────── */
 
