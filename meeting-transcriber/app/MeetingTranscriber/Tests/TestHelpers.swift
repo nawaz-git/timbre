@@ -270,8 +270,19 @@ class MockRecorder: RecordingProvider {
     var micLevelDBFS: Double = -120
     var appLevelDBFS: Double = -120
 
-    func start(appPID _: pid_t, noMic _: Bool, micDeviceUID _: String?, debugLogging _: Bool) {
+    /// Last `disableAppAudioTap` argument `start()` was called with — lets a
+    /// test assert the kill switch is threaded through from the WatchLoop.
+    var disableAppAudioTapArg: Bool?
+
+    func start(
+        appPID _: pid_t,
+        noMic _: Bool,
+        micDeviceUID _: String?,
+        debugLogging _: Bool,
+        disableAppAudioTap: Bool,
+    ) {
         startCalled = true
+        disableAppAudioTapArg = disableAppAudioTap
     }
 
     func stop() throws -> RecordingResult {

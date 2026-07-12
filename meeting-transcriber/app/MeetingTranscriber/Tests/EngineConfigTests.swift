@@ -60,4 +60,45 @@ final class EngineConfigTests: XCTestCase {
         let cfg = EngineConfig.read(from: url)
         XCTAssertEqual(cfg.screenCaptureScope, .chromeWindow)
     }
+
+    // MARK: - disableAppAudioTap kill switch
+
+    /// `disableAppAudioTap: true` round-trips (and scope still decodes).
+    func testReadsDisableAppAudioTap() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"{"screenCaptureScope":"chromeWindow","disableAppAudioTap":true}"#, to: url)
+
+        let cfg = EngineConfig.read(from: url)
+        XCTAssertTrue(cfg.disableAppAudioTap)
+        XCTAssertEqual(cfg.screenCaptureScope, .chromeWindow)
+    }
+
+    /// `disableAppAudioTap: false` round-trips as false.
+    func testReadsDisableAppAudioTapFalse() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"{"disableAppAudioTap":false}"#, to: url)
+
+        let cfg = EngineConfig.read(from: url)
+        XCTAssertFalse(cfg.disableAppAudioTap)
+    }
+
+    /// A payload without the key (older Electron writer) defaults the switch off
+    /// — the safe default is normal dual-source capture.
+    func testMissingDisableAppAudioTapDefaultsFalse() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write(#"{"screenCaptureScope":"entireScreen"}"#, to: url)
+
+        let cfg = EngineConfig.read(from: url)
+        XCTAssertFalse(cfg.disableAppAudioTap)
+        XCTAssertEqual(cfg.screenCaptureScope, .entireScreen)
+    }
+
+    /// Missing file → in-code default has the switch off.
+    func testDefaultHasKillSwitchOff() {
+        XCTAssertFalse(EngineConfig.default.disableAppAudioTap)
+        XCTAssertFalse(EngineConfig.read(from: tempURL()).disableAppAudioTap)
+    }
 }

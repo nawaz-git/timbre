@@ -16,6 +16,11 @@ public class AudioCaptureSession {
     private let debugLogging: Bool
     private let appLiveSink: LiveAudioSink?
     private let micLiveSink: LiveAudioSink?
+    /// When false, the session records the microphone only — it creates NO
+    /// CoreAudio process tap or aggregate device (the T13 `disableAppAudioTap`
+    /// kill switch). No IOProc runs, so the tap-health watchdog and the
+    /// heartbeat's `lastIOCallbackAt` stay dormant.
+    private let captureAppAudio: Bool
 
     /// One serial queue shared by the tap and the mic engine so their lifecycle
     /// operations (start, stop, device-change rebuilds) serialize with each other
@@ -43,6 +48,9 @@ public class AudioCaptureSession {
     /// - Parameter micLiveSink: Optional real-time buffer callback for the mic
     ///   track (mono Float32 at file rate, typically 16 kHz post-resample).
     ///   Called from the AVAudioEngine tap thread — non-blocking.
+    /// - Parameter captureAppAudio: When false, skip the app-audio process tap
+    ///   entirely and record the microphone only (the `disableAppAudioTap` kill
+    ///   switch). Defaults to true (normal dual-source capture).
     public init(
         pids: [pid_t],
         appOutputURL: URL,
@@ -53,6 +61,7 @@ public class AudioCaptureSession {
         debugLogging: Bool = false,
         appLiveSink: LiveAudioSink? = nil,
         micLiveSink: LiveAudioSink? = nil,
+        captureAppAudio: Bool = true,
     ) {
         self.pids = pids
         self.sampleRate = sampleRate
@@ -63,36 +72,46 @@ public class AudioCaptureSession {
         self.debugLogging = debugLogging
         self.appLiveSink = appLiveSink
         self.micLiveSink = micLiveSink
+        self.captureAppAudio = captureAppAudio
     }
 
     /// Start capturing app audio (and optionally mic audio).
     public func start() throws {
-        // Create app output file and get its file descriptor
-        // Restrict permissions to owner-only (0600) — audio may contain sensitive meeting content
-        FileManager.default.createFile(
-            atPath: appOutputURL.path,
-            contents: nil,
-            attributes: [.posixPermissions: 0o600],
-        )
-        let handle = try FileHandle(forWritingTo: appOutputURL)
+        // App-audio process tap. Skipped entirely in mic-only mode
+        // (`captureAppAudio == false`, the T13 kill switch): no output file, no
+        // aggregate device, no process tap, no IOProc — the mic below is the
+        // sole source. `startedAppCapture` is nil in that mode so the watchdog
+        // wiring is skipped too.
+        var startedAppCapture: AppAudioCapture?
+        if captureAppAudio {
+            // Create app output file and get its file descriptor
+            // Restrict permissions to owner-only (0600) — audio may contain sensitive meeting content
+            FileManager.default.createFile(
+                atPath: appOutputURL.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600],
+            )
+            let handle = try FileHandle(forWritingTo: appOutputURL)
 
-        let capture = AppAudioCapture(
-            pids: pids,
-            outputFileDescriptor: handle.fileDescriptor,
-            sampleRate: sampleRate,
-            channels: channels,
-            debugLogging: debugLogging,
-            liveSink: appLiveSink,
-            captureControl: captureControl,
-        )
-        do {
-            try capture.start()
-        } catch {
-            try? handle.close()
-            throw error
+            let capture = AppAudioCapture(
+                pids: pids,
+                outputFileDescriptor: handle.fileDescriptor,
+                sampleRate: sampleRate,
+                channels: channels,
+                debugLogging: debugLogging,
+                liveSink: appLiveSink,
+                captureControl: captureControl,
+            )
+            do {
+                try capture.start()
+            } catch {
+                try? handle.close()
+                throw error
+            }
+            appFileHandle = handle
+            appCapture = capture
+            startedAppCapture = capture
         }
-        appFileHandle = handle
-        appCapture = capture
 
         // Start mic capture if requested
         if let micURL = micOutputURL {
@@ -107,16 +126,21 @@ public class AudioCaptureSession {
                 micCapture = mic
                 // Give the app tap's health watchdog a mic-liveness reference so
                 // its all-zero rebuild only fires when the meeting isn't simply
-                // silent (the asymmetry guard). Without a mic the guard stays off.
-                capture.setPeerActivityProvider { [weak mic] in
+                // silent (the asymmetry guard). Only meaningful when there IS an
+                // app tap — in mic-only mode there is no watchdog to feed.
+                startedAppCapture?.setPeerActivityProvider { [weak mic] in
                     (mic?.currentLevelDBFS ?? -120) > CaptureTuning.micSilenceFloorDBFS
                 }
             } catch {
-                logger.error("Failed to start mic capture: \(error). Continuing with app audio only.")
+                if captureAppAudio {
+                    logger.error("Failed to start mic capture: \(error). Continuing with app audio only.")
+                } else {
+                    logger.error("Failed to start mic capture in mic-only mode: \(error). Recording will have no audio.")
+                }
             }
         }
 
-        logger.info("Capture session started (PIDs \(self.pids), rate: \(self.sampleRate), channels: \(self.channels))")
+        logger.info("Capture session started (appTap: \(self.captureAppAudio), PIDs \(self.pids), rate: \(self.sampleRate), channels: \(self.channels))")
     }
 
     /// Instantaneous app-audio level in dBFS, decayed to -120 when no buffer has
@@ -192,7 +216,10 @@ public class AudioCaptureSession {
     /// caught in tests/dev, and best-effort stop in every build so production can
     /// never drop a running tap.
     deinit {
-        if appCapture != nil {
+        // `micCapture` is checked too so a leaked mic-only session (kill-switch
+        // mode, no `appCapture`) is still caught + stopped rather than dropping
+        // a live AVAudioEngine tap.
+        if appCapture != nil || micCapture != nil {
             assertionFailure("AudioCaptureSession deallocated with a live capture — stop() was never called")
             appCapture?.stop()
             micCapture?.stop()

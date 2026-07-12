@@ -10,7 +10,13 @@ private final class CapturingRecorder: RecordingProvider {
     var appLevelDBFS: Double = -120
     var micLevelDBFS: Double = -120
 
-    func start(appPID _: pid_t, noMic _: Bool, micDeviceUID _: String?, debugLogging _: Bool) {
+    func start(
+        appPID _: pid_t,
+        noMic _: Bool,
+        micDeviceUID _: String?,
+        debugLogging _: Bool,
+        disableAppAudioTap _: Bool,
+    ) {
         startCalled = true
     }
 
