@@ -21,6 +21,7 @@ import {
   allGranted,
   useHelperPermissions
 } from '../state/onboarding'
+import { useAppStatus } from '../state/appStatus'
 
 interface ServiceMeta {
   service: OnboardingService
@@ -273,6 +274,9 @@ export function PermissionChecklist({
   const { snapshot, refresh } = useHelperPermissions()
   const [verifying, setVerifying] = useState(false)
   const [verifyResult, setVerifyResult] = useState<'idle' | 'ok' | 'fail'>('idle')
+  // Recording keeps priority over UI actions: restarting the engine would
+  // interrupt a live recording, so the verify button is unavailable then.
+  const recording = useAppStatus().kind === 'recording'
 
   const onOpenPane = useCallback(
     (service: OnboardingService) => {
@@ -374,7 +378,8 @@ export function PermissionChecklist({
                 type="button"
                 className="btn btn--primary"
                 onClick={onRestartAndVerify}
-                disabled={verifying}
+                disabled={verifying || recording}
+                title={recording ? 'Unavailable while a meeting is being recorded.' : undefined}
               >
                 {verifying ? (
                   <Loader2

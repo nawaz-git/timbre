@@ -37,6 +37,7 @@ import { shell } from 'electron'
 import { openPrivacyPane } from './permissions'
 import { forceKillEngine, resolveLiveRecorderApp, startLiveRecorder } from './backend'
 import { resetCaptureWatchdog } from './captureWatchdog'
+import { confirmIfRecording } from './status'
 import { writeSettings } from './settings'
 import type {
   GrantStatus,
@@ -121,6 +122,11 @@ export function revealHelper(): { revealed: boolean; path?: string } {
  * clears before the respawn.
  */
 export async function restartEngine(): Promise<OnboardingRestartResult> {
+  // Recording-aware guard: restarting interrupts a live recording. No-op (true)
+  // when nothing is recording.
+  if (!(await confirmIfRecording('restart'))) {
+    return { ok: false, message: 'Cancelled — a meeting is being recorded.' }
+  }
   resetCaptureWatchdog()
   forceKillEngine()
   // Tiny pause so the OS reaps the killed PID before `open` tries to

@@ -23,7 +23,7 @@ import type {
 } from '../../shared/types'
 import { getPermissionStatus, openPrivacyPane } from '../permissions'
 import { getChromeMeetSnapshot } from '../chromeProbe'
-import { getAppStatus } from '../status'
+import { confirmIfRecording, getAppStatus } from '../status'
 import { writeEngineConfig } from '../engineConfig'
 import { showMainWindow } from '../tray'
 import { deleteSpeakerFromGlobalDB, listEnrolledSpeakers, numSpeakersToArg } from '../backend'
@@ -82,7 +82,14 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.recordingStop, async (): Promise<RecordingStatus> => {
+    // Recording-aware guard: if a meeting is being recorded, confirm first so a
+    // stray click can't silently end it. `confirmIfRecording` is a no-op (true)
+    // when nothing is recording.
+    if (!(await confirmIfRecording('stop'))) return getStatus()
     console.log('[recording] stop')
+    // The engine's SIGTERM → escalation stop (inside `stopLiveRecorder`) already
+    // gives a live recording time to finalise its WAV/transcript before the hard
+    // kill, so no extra stop-grace is threaded here.
     return stopWatching()
   })
 
@@ -394,6 +401,11 @@ export function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(IPC.systemRestartHelper, async (): Promise<{ ok: boolean; message?: string }> => {
+    // Recording-aware guard: restarting the engine interrupts a live recording,
+    // so confirm before killing it. No-op (true) when nothing is recording.
+    if (!(await confirmIfRecording('restart'))) {
+      return { ok: false, message: 'Cancelled — a meeting is being recorded.' }
+    }
     // Stop (which also kills) then start. The stopWatching path also
     // flips recording state to 'idle' which would cancel the Chrome
     // probe — so we call backend directly here, bypassing the

@@ -26,7 +26,7 @@
  * is recomputed live on every read so pulls are always current without a
  * per-second broadcast.
  */
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, dialog } from 'electron'
 import type {
   ActivityKind,
   AppAttention,
@@ -326,4 +326,57 @@ export function stopAppStatus(): void {
     clearInterval(state.permPoll)
     state.permPoll = null
   }
+}
+
+// ─── Recording-aware guards ───────────────────────────────────────────────
+
+/**
+ * Confirm a destructive action that would interrupt a live recording. Returns
+ * true to proceed, false to abort. When nothing is verifiably recording it
+ * returns true immediately (no dialog), so callers can wrap every stop/quit/
+ * restart path unconditionally. Otherwise it shows a native, recording-aware
+ * dialog whose default AND cancel are the SAFE choice ("Keep recording"), so an
+ * accidental Return/Escape never ends a recording. Attached to the focused
+ * window when there is one.
+ */
+export async function confirmIfRecording(action: 'stop' | 'quit' | 'restart'): Promise<boolean> {
+  if (getAppStatus().kind !== 'recording') return true
+
+  const copy = {
+    stop: {
+      title: 'Stop watching?',
+      message: 'A meeting is being recorded right now.',
+      detail:
+        'Stopping ends the recording. Timbre saves everything captured so far and processes the transcript.',
+      buttons: ['Keep recording', 'Stop and save']
+    },
+    quit: {
+      title: 'Quit Timbre?',
+      message: 'A meeting is being recorded right now.',
+      detail:
+        'Quitting stops the recording. Everything captured so far is saved and will be processed the next time Timbre starts.',
+      buttons: ['Keep recording', 'Quit and save']
+    },
+    restart: {
+      title: 'Restart the engine?',
+      message: 'A meeting is being recorded right now.',
+      detail: 'Restarting interrupts the recording. Do this only if capture is broken.',
+      buttons: ['Cancel', 'Restart engine']
+    }
+  }[action]
+
+  const focused = BrowserWindow.getFocusedWindow()
+  const opts = {
+    type: 'warning' as const,
+    title: copy.title,
+    message: copy.message,
+    detail: copy.detail,
+    buttons: copy.buttons,
+    defaultId: 0,
+    cancelId: 0
+  }
+  const { response } = focused
+    ? await dialog.showMessageBox(focused, opts)
+    : await dialog.showMessageBox(opts)
+  return response === 1
 }
