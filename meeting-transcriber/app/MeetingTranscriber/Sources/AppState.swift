@@ -549,10 +549,22 @@ final class AppState { // swiftlint:disable:this type_body_length
 
     // MARK: - Graceful Shutdown
 
-    /// Hard deadline for the ordered teardown before we force-exit. Kept under
-    /// Electron's 8 s kill-escalation budget so the engine self-exits via
-    /// SIGTERM well before Electron reaches SIGKILL.
+    /// Short deadline for the NON-finalize teardown tail (pipeline snapshot flush +
+    /// log streamer stop). Kept under Electron's 8 s kill-escalation budget so a
+    /// stuck tail self-exits via SIGTERM well before Electron reaches SIGKILL. The
+    /// finalize itself is bounded separately by `finalizeShutdownCapSeconds`.
     static let shutdownDeadlineSeconds: Double = 5
+
+    /// Generous ceiling on how long a graceful shutdown lets the recording finalize
+    /// (whole-file load + resample + mix) run before the engine force-exits. The
+    /// finalize now runs OFF the main actor with the heartbeat still beating, so
+    /// this is NOT the wedge deadline (that's `shutdownDeadlineSeconds`, applied to
+    /// the non-finalize tail) — it only bounds a legitimately long mix on a
+    /// multi-hour meeting so an engine that outlives its Electron parent still
+    /// self-terminates eventually. Electron's stop-escalation extends its own grace
+    /// to the same order of magnitude while the heartbeat advertises `processing`;
+    /// keep the two coupled if either changes.
+    static let finalizeShutdownCapSeconds: Double = 1800 // 30 minutes
 
     private enum ShutdownPhase { case idle, inProgress, done }
     @ObservationIgnored private var shutdownPhase: ShutdownPhase = .idle
@@ -589,16 +601,34 @@ final class AppState { // swiftlint:disable:this type_body_length
     func gracefulShutdown() async {
         guard shutdownPhase == .idle else { return }
         shutdownPhase = .inProgress
-        // Stop refreshing + delete the heartbeat FIRST — before any finalize that
-        // could wedge — so an Electron start racing this shutdown sees no
-        // heartbeat and won't reuse a dying engine (the cross-process shutdown signal).
-        stopEngineHeartbeat()
-        logger.info("graceful_shutdown starting (deadline \(Self.shutdownDeadlineSeconds)s)")
+        // Do NOT delete the heartbeat yet: it must keep beating (as `processing`,
+        // via the shutdownPhase check in writeHeartbeat) through the off-main
+        // finalize so Electron's stop-escalation extends its grace instead of
+        // SIGKILLing a long mix. One immediate write flips the advertised state to
+        // `processing` now, closing the window where a concurrent start's reuse
+        // probe could still see a fresh `recording`. The file is deleted at the END.
+        await writeHeartbeat()
+        logger.info("graceful_shutdown starting (finalize cap \(Int(Self.finalizeShutdownCapSeconds))s)")
 
-        let outcome = await raceAgainstDeadline(seconds: Self.shutdownDeadlineSeconds) { [weak self] in
+        // Generous cap on the WHOLE teardown: the finalize legitimately runs for
+        // minutes off-main (heartbeat beating), so the short wedge deadline would
+        // wrongly kill it — that short deadline is applied ONLY to the non-finalize
+        // tail inside performOrderedTeardown. onTimeout force-exits on the deadline
+        // task itself, i.e. OFF the (possibly wedged) main actor, so a stuck main
+        // can never prevent the self-terminate.
+        let outcome = await raceAgainstDeadline(
+            seconds: Self.finalizeShutdownCapSeconds,
+            onTimeout: {
+                logger.error("graceful_shutdown exceeded the finalize cap — forcing exit(0)")
+                exit(0)
+            },
+        ) { [weak self] in
             await self?.performOrderedTeardown()
         }
 
+        // Teardown finished. Stop refreshing + delete the heartbeat now so a later
+        // Electron start can't reuse this dying engine.
+        stopEngineHeartbeat()
         shutdownPhase = .done
         switch outcome {
         case .completed:
@@ -606,25 +636,35 @@ final class AppState { // swiftlint:disable:this type_body_length
             NSApp.terminate(nil)
 
         case .timedOut:
-            logger.error("graceful_shutdown exceeded \(Self.shutdownDeadlineSeconds)s deadline — forcing exit(0)")
+            // onTimeout already force-exited off-main; belt-and-suspenders.
+            logger.error("graceful_shutdown timed out — forcing exit(0)")
             exit(0)
         }
     }
 
-    /// Teardown order: stop the audio session FIRST (auto-detected meetings
-    /// destroy the tap via `recorder.stop()` before the screen recorder), then
-    /// finalize best-effort, then flush the pipeline snapshot so the enqueued
-    /// job survives the exit. Runs entirely through `WatchLoop.shutdown()` —
-    /// the existing single-flight stop machinery — never a parallel teardown.
+    /// Teardown order: finalize the in-flight recording FIRST via
+    /// `WatchLoop.shutdown()` (the existing single-flight stop machinery; its heavy
+    /// mix runs off-main, bounded by the gracefulShutdown-level finalize cap), then
+    /// the non-finalize tail — pipeline snapshot flush + log streamer stop — bounded
+    /// by the SHORT wedge deadline, because the recording is already safe and a
+    /// stuck flush should proceed to exit rather than wait out the finalize cap.
     private func performOrderedTeardown() async {
         let loop = watchLoop
         watchLoop = nil
         await loop?.shutdown()
+        _ = await raceAgainstDeadline(seconds: Self.shutdownDeadlineSeconds) { [weak self] in
+            await self?.flushNonFinalizeState()
+        }
+        logger.info("graceful_shutdown: ordered teardown finished")
+    }
+
+    /// The bounded non-finalize teardown tail: persist the pipeline queue snapshot
+    /// so the enqueued job survives the exit, then stop the log streamer.
+    private func flushNonFinalizeState() async {
         await pipelineQueue.awaitSnapshotFlush()
         #if !APPSTORE
             stopPersistentLogStreamer()
         #endif
-        logger.info("graceful_shutdown: ordered teardown finished")
     }
 
     // MARK: - Engine Heartbeat
@@ -664,12 +704,18 @@ final class AppState { // swiftlint:disable:this type_body_length
         let phase = watchLoop?.state ?? .idle
         let recorder = watchLoop?.activeRecorder
         let sck = await watchLoop?.currentScreenLiveness()
+        // A finalize in flight (its heavy mix now runs off-main with this heartbeat
+        // still beating) — or an in-progress graceful shutdown after `watchLoop` is
+        // nil'd — advertises `processing` so Electron reads a long mix as busy, not
+        // as a wedged `recording` engine.
+        let finalizing = (watchLoop?.isFinalizing ?? false) || shutdownPhase == .inProgress
         let heartbeat = EngineHeartbeat(
             pid: Int(ProcessInfo.processInfo.processIdentifier),
             version: Bundle.main.appVersion,
             state: EngineHeartbeat.livenessState(
                 watchPhase: phase,
                 pipelineProcessing: pipelineQueue.isProcessing,
+                finalizing: finalizing,
             ),
             startedAt: engineStartedAtMillis,
             lastIOCallbackAt: recorder?.lastIOCallbackAt.map(EngineHeartbeat.epochMillis),
