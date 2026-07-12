@@ -49,6 +49,40 @@ extension Transcribe {
         let micWords: [WordTimeline.Word]
         let appDiar: DiarizationOutput
         let micDiar: DiarizationOutput? // swiftlint:disable:this discouraged_optional_collection
+
+        /// Same output with a different app-track diarization (the MAX consensus
+        /// result substituted for the single-threshold one).
+        func replacingAppDiar(_ diar: DiarizationOutput) -> DualTrackEngineOutput {
+            DualTrackEngineOutput(
+                appSegments: appSegments, appWords: appWords,
+                micSegments: micSegments, micWords: micWords,
+                appDiar: diar, micDiar: micDiar,
+            )
+        }
+    }
+
+    /// MAX pass P1: diarize the app track at a cluster-threshold sweep
+    /// {0.5, 0.6, 0.7} and pick the consensus run via the shared, tested
+    /// `DiarizationConsensus`. Falls back to the single-threshold result when
+    /// the sweep is inconclusive. Each run reloads the offline model (the
+    /// threshold is fixed at construction) — acceptable for the accuracy-first
+    /// tier.
+    private func maxConsensusDiarize(appAudio: URL, fallback: DiarizationOutput) async throws -> DiarizationOutput {
+        var runs: [DiarizationOutput] = []
+        for threshold in [0.5, 0.6, 0.7] {
+            let sweepDiarizer = DiarizerWrapper(clusterThreshold: threshold, numSpeakers: numSpeakers)
+            try await sweepDiarizer.loadModel()
+            runs.append(try await sweepDiarizer.diarize(audioPath: appAudio))
+        }
+        let segmentRuns = runs.map { run in
+            run.segments.map { SpeakerSegment(start: $0.start, end: $0.end, speaker: $0.speaker) }
+        }
+        guard let pick = DiarizationConsensus.pickConsensus(runs: segmentRuns) else { return fallback }
+        Log.info(
+            "MAX consensus diarization: picked run \(pick.chosenIndex) " +
+                "(\(pick.speakerCount) speakers, stability \(String(format: "%.2f", pick.stability)))",
+        )
+        return runs[pick.chosenIndex]
     }
 
     /// Full dual-source pipeline: prepare both tracks, transcribe + diarize,
@@ -68,25 +102,34 @@ extension Transcribe {
         try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
         let runStart = Date()
 
-        if ProcessingMode(rawValue: mode.lowercased()) == .max {
-            Log.warn(
-                "mode=max requested — MAX accuracy-refinement passes are not available yet; " +
-                    "producing the fast dual-track result.",
-            )
-        }
+        let isMax = ProcessingMode(rawValue: mode.lowercased()) == .max
 
         let enrolled = loadEnrolledSpeakers()
         let appTrack = try await prepareTrack(url: appURL, outputURL: outputURL, basename: "app_16k")
         let micTrack = try await prepareTrack(url: micURL, outputURL: outputURL, basename: "mic_16k")
         let (transcriber, diarizer) = try await loadModels(engineChoice: engineChoice)
 
-        let engines = try await runDualTrackEngines(
+        let baseEngines = try await runDualTrackEngines(
             transcriber: transcriber,
             diarizer: diarizer,
             appAudio: appTrack.audioURL,
             micAudio: micTrack.audioURL,
             diarizeMic: micName.isEmpty,
         )
+
+        // MAX tier: replace the single-threshold app diarization with a
+        // cluster-threshold sweep + consensus pick (the shared, tested pass
+        // that fights the under-clustering "everyone is one speaker" failure).
+        // Utterance re-scoring + LLM repair also run in the app's live refine;
+        // they need per-chunk embeddings / a configured provider not wired into
+        // this CLI yet, so the import path ships the consensus win today.
+        let engines: DualTrackEngineOutput
+        if isMax {
+            let consensusDiar = try await maxConsensusDiarize(appAudio: appTrack.audioURL, fallback: baseEngines.appDiar)
+            engines = baseEngines.replacingAppDiar(consensusDiar)
+        } else {
+            engines = baseEngines
+        }
 
         // Only the app (remote) track is matched against the enrolled DB — the
         // local speaker's identity is known (`--mic-name`).
