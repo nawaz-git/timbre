@@ -128,6 +128,30 @@ export function onWatchdogSignalChange(fn: WatchdogListener): () => void {
 }
 
 /**
+ * Main-process listeners for meetings-folder changes. The renderer gets the
+ * `meetings:changed` push; in-process consumers (the processing-lifecycle
+ * tracker) subscribe here instead. Fired from the same debounced flush that
+ * pushes to the renderer.
+ */
+type MeetingsChangedListener = () => void
+const meetingsChangedListeners = new Set<MeetingsChangedListener>()
+
+export function onMeetingsChanged(fn: MeetingsChangedListener): () => void {
+  meetingsChangedListeners.add(fn)
+  return () => meetingsChangedListeners.delete(fn)
+}
+
+function notifyMeetingsChanged(): void {
+  for (const fn of meetingsChangedListeners) {
+    try {
+      fn()
+    } catch (err) {
+      console.error('[watchdog] meetings-changed listener threw', err)
+    }
+  }
+}
+
+/**
  * Force a fresh evaluation window for the watchdog. Called when the user
  * restarts the helper from the red banner (TICKET-003): we want to clear
  * the stale `helperPermissionLikely` flag so the renderer's red banner
@@ -412,6 +436,7 @@ function queueMeetingsChange(
         win.webContents.send('meetings:changed', { kind, filename })
       }
     }
+    notifyMeetingsChanged()
   }, DEBOUNCE_MS)
 }
 

@@ -74,6 +74,13 @@ const api = {
       mode?: 'fast' | 'max'
     ): Promise<BackendJob> =>
       ipcRenderer.invoke(IPC.meetingsReanalyze, meetingId, numSpeakers, mode),
+    /**
+     * Recover a processing/stuck engine meeting by running its recorded audio
+     * through the built-in pipeline. Returns a BackendJob whose progress arrives
+     * over the existing `backend:event` channel.
+     */
+    processNow: (meetingId: string): Promise<BackendJob> =>
+      ipcRenderer.invoke(IPC.meetingsProcessNow, meetingId),
     renameTitle: (meetingId: string, newTitle: string): Promise<{ title: string }> =>
       ipcRenderer.invoke(IPC.meetingsRenameTitle, meetingId, newTitle),
     export: (

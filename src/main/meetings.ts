@@ -650,6 +650,129 @@ async function listEngineProcessingMeetings(root: string): Promise<MeetingSummar
 }
 
 /**
+ * Rich per-prefix scan of engine meetings that are still processing (raw audio
+ * present, no `protocols/<prefix>.txt` yet). Feeds the processing-lifecycle
+ * tracker in `status.ts`, which infers stage and detects stalls from these
+ * fields. Kept separate from `listEngineProcessingMeetings` (which builds
+ * `MeetingSummary` rows for the list) so neither has to reshape the other, but
+ * they share the same discovery rule. Takes `root` as a parameter so it's
+ * testable without the module-level default.
+ */
+export interface ProcessingScanEntry {
+  /** Bare engine prefix (`YYYYMMDD_HHmm_<slug>`). */
+  prefix: string
+  title: string
+  /** Epoch ms recording ended / processing began (mix-WAV mtime, best-effort). */
+  startedAt: number
+  /** Recorded length estimate in seconds from the WAV size, when derivable. */
+  estDurationSec?: number
+  /** True once `<prefix>*_segments.json` exists (diarization produced output). */
+  hasSegments: boolean
+  /** Newest mtime among all `<prefix>*` files in `recordings/` (activity clock). */
+  lastChangeMs: number
+}
+
+export async function scanProcessingPrefixes(root: string): Promise<ProcessingScanEntry[]> {
+  const recordingsDir = join(root, 'recordings')
+  let entries: string[]
+  try {
+    entries = await fs.readdir(recordingsDir)
+  } catch {
+    return []
+  }
+  const prefixes = new Set<string>()
+  for (const e of entries) {
+    const rawSuffix = RAW_AUDIO_SUFFIXES.find((s) => e.endsWith(s))
+    if (rawSuffix) prefixes.add(e.slice(0, -rawSuffix.length))
+  }
+  if (prefixes.size === 0) return []
+
+  const protocolsDir = join(root, 'protocols')
+  const results: ProcessingScanEntry[] = []
+  for (const prefix of prefixes) {
+    if (!/^[A-Za-z0-9_-]+$/.test(prefix)) continue
+    // A landed transcript means the meeting is READY, not processing.
+    if (await pathExists(join(protocolsDir, `${prefix}.txt`))) continue
+
+    let lastChangeMs = 0
+    let hasSegments = false
+    let startedAt = 0
+    let mixPath: string | null = null
+    for (const e of entries) {
+      if (!e.startsWith(prefix)) continue
+      let st: import('fs').Stats
+      try {
+        st = await fs.stat(join(recordingsDir, e))
+      } catch {
+        continue
+      }
+      if (st.mtimeMs > lastChangeMs) lastChangeMs = st.mtimeMs
+      if (e.endsWith('_segments.json')) hasSegments = true
+      if (e.endsWith('_mix.wav')) {
+        startedAt = st.mtimeMs
+        mixPath = join(recordingsDir, e)
+      }
+    }
+    const { audioPath } = await findEngineSidecars(root, prefix)
+    if (startedAt === 0 && audioPath) {
+      try {
+        startedAt = (await fs.stat(audioPath)).mtimeMs
+      } catch {
+        // fall through to the lastChange fallback
+      }
+    }
+    if (startedAt === 0) startedAt = lastChangeMs || Date.now()
+
+    const durationPath = mixPath ?? audioPath
+    const estDurationSec = durationPath
+      ? ((await estimateWavDurationSec(durationPath)) ?? undefined)
+      : undefined
+
+    const meta = await safeReadJson<MetadataFile>(engineMetaPath(prefix))
+    results.push({
+      prefix,
+      title: meta?.title?.trim() ? meta.title : titleFromEnginePrefix(prefix),
+      startedAt,
+      estDurationSec,
+      hasSegments,
+      lastChangeMs: lastChangeMs || startedAt
+    })
+  }
+  return results
+}
+
+/**
+ * Estimate a WAV's recorded seconds from its size and header byteRate (uint32
+ * LE at offset 28). Returns null when the file is unreadable or doesn't look
+ * like a RIFF/WAVE header — we report "unknown" rather than guess a sample rate.
+ * Kept local (rather than importing the capture-signal helper) to avoid a
+ * meetings ⇆ captureSignal import cycle.
+ */
+async function estimateWavDurationSec(path: string): Promise<number | null> {
+  let handle: import('fs').promises.FileHandle
+  try {
+    handle = await fs.open(path, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const header = Buffer.alloc(44)
+    await handle.read(header, 0, 44, 0)
+    if (header.toString('ascii', 0, 4) !== 'RIFF') return null
+    if (header.toString('ascii', 8, 12) !== 'WAVE') return null
+    const byteRate = header.readUInt32LE(28)
+    if (byteRate <= 0) return null
+    const { size } = await handle.stat()
+    if (size <= 44) return 0
+    return (size - 44) / byteRate
+  } catch {
+    return null
+  } finally {
+    await handle.close()
+  }
+}
+
+/**
  * List all meetings the user has — file-imports (`mt-batch` subfolder format)
  * plus live recordings (`MeetingTranscriber.app` flat-prefix format).
  * De-duped and sorted newest-first.

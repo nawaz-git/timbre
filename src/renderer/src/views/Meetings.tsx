@@ -1,6 +1,7 @@
 import type React from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlertTriangle,
   Braces,
   Check,
   ChevronDown,
@@ -23,6 +24,7 @@ import {
 } from 'lucide-react'
 import { formatDate, formatDuration } from '../state/format'
 import { useTags } from '../state/tags'
+import { useAppStatus } from '../state/appStatus'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { PencilIcon } from '../components/PencilIcon'
 import { RowMenu } from '../components/RowMenu'
@@ -34,10 +36,44 @@ import type {
   MeetingSummary,
   MeetingTranscript,
   NumSpeakersHint,
+  ProcessingStage,
   TranscriptSegment
 } from '../../../shared/types'
 
 type TabKey = 'transcript' | 'speakers' | 'video' | 'export' | 'tags'
+
+/** Human stage labels for a processing meeting (the honest-progress copy). */
+const PROCESSING_STAGE_LABEL: Record<ProcessingStage, string> = {
+  transcribing: 'Transcribing speech',
+  diarizing: 'Identifying speakers',
+  summarizing: 'Writing summary',
+  unknown: 'Working…'
+}
+
+/** Compact elapsed like "3 min" / "1 hr 4 min" from an epoch-ms start. */
+function formatProcessingElapsed(startedAt: number): string {
+  const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+  if (sec < 60) return 'under a minute'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min} min`
+  const hr = Math.floor(min / 60)
+  const rem = min % 60
+  return rem ? `${hr} hr ${rem} min` : `${hr} hr`
+}
+
+/** "started 3 min ago" relative label from an epoch-ms start. */
+function formatStartedRelative(startedAt: number): string {
+  const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+  if (sec < 60) return 'started just now'
+  return `started ${formatProcessingElapsed(startedAt)} ago`
+}
+
+/** "Recorded ~12 min" from an estimated recording length in seconds. */
+function formatRecordedLength(estDurationSec: number | undefined): string | null {
+  if (!estDurationSec || estDurationSec <= 0) return null
+  const min = Math.round(estDurationSec / 60)
+  return min >= 1 ? `Recorded ~${min} min` : 'Recorded under a minute'
+}
 
 const NUM_SPEAKERS_OPTIONS: NumSpeakersHint[] = ['auto', 2, 3, 4, 5, 6]
 
@@ -196,6 +232,37 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [tab, setTab] = useState<TabKey>('transcript')
   const [tagFilter, setTagFilter] = useState<string | null>(null)
+
+  // Single source of truth for live recording/processing state. Used to show
+  // honest per-meeting processing stage/elapsed and the stuck → "Process now"
+  // recovery, rather than a static "transcript coming" guess.
+  const appStatus = useAppStatus()
+  // Recovery state is keyed by meeting id so it naturally scopes to the current
+  // selection (no reset effect needed — a different selection just doesn't match).
+  const [processingNowFor, setProcessingNowFor] = useState<string | null>(null)
+  const [processNowStartedFor, setProcessNowStartedFor] = useState<string | null>(null)
+  const [processNowError, setProcessNowError] = useState<{ id: string; message: string } | null>(
+    null
+  )
+
+  // Kick off the built-in pipeline for a stuck meeting. The invoke returns a
+  // job id immediately (mt-batch runs in the background); its progress + the
+  // recovered transcript surface as a new imported meeting via the existing
+  // backend:event + meetings:changed wiring.
+  const handleProcessNow = useCallback(async () => {
+    const id = selectedId
+    if (!id) return
+    setProcessingNowFor(id)
+    setProcessNowError((e) => (e?.id === id ? null : e))
+    try {
+      await window.api.meetings.processNow(id)
+      setProcessNowStartedFor(id)
+    } catch (err) {
+      setProcessNowError({ id, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setProcessingNowFor((cur) => (cur === id ? null : cur))
+    }
+  }, [selectedId])
 
   // Title editing
   const [titleEditing, setTitleEditing] = useState(false)
@@ -1336,7 +1403,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     </div>
                   ) : m.status === 'processing' ? (
                     <div className="meetings__row-meta meetings__row-meta--processing">
-                      Processing — audio ready, transcript coming.
+                      {(() => {
+                        const proc = appStatus.processing?.find((p) => p.id === m.id)
+                        if (proc?.stuck) return "Processing didn't finish — open to recover it."
+                        if (!proc) return 'Processing · Working…'
+                        return `Processing · ${PROCESSING_STAGE_LABEL[proc.stage]} · ${formatProcessingElapsed(proc.startedAt)} elapsed`
+                      })()}
                     </div>
                   ) : (
                     <div className="meetings__row-meta">
@@ -1908,19 +1980,83 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 {transcriptLoading && <div className="empty">Loading transcript…</div>}
                 {!transcriptLoading &&
                   segments.length === 0 &&
-                  selectedMeeting.status === 'processing' && (
-                    <div className="meetings__detail-processing" role="status">
-                      <Loader2
-                        size={16}
-                        aria-hidden="true"
-                        className="home-status-icon--spin"
-                      />
-                      <span>
-                        Transcribing and separating speakers… audio is ready to play
-                        above.
-                      </span>
-                    </div>
-                  )}
+                  selectedMeeting.status === 'processing' &&
+                  (() => {
+                    const proc = appStatus.processing?.find((p) => p.id === selectedMeeting.id)
+                    if (proc?.stuck) {
+                      const busy = processingNowFor === selectedMeeting.id
+                      const started = processNowStartedFor === selectedMeeting.id
+                      const error =
+                        processNowError?.id === selectedMeeting.id ? processNowError.message : null
+                      return (
+                        <div className="meetings__detail-stuck" role="alert">
+                          <div className="meetings__detail-stuck-head">
+                            <AlertTriangle size={16} aria-hidden="true" />
+                            <span>Processing didn&apos;t finish</span>
+                          </div>
+                          <p className="meetings__detail-stuck-body">
+                            The recording is safe on disk, but the transcript never arrived. You can
+                            process it now with the built-in pipeline.
+                          </p>
+                          <div className="meetings__detail-stuck-actions">
+                            <button
+                              className="btn btn--primary"
+                              onClick={() => void handleProcessNow()}
+                              disabled={busy || started}
+                            >
+                              {busy
+                                ? 'Processing…'
+                                : started
+                                  ? 'Processing started'
+                                  : 'Process now'}
+                            </button>
+                            <button
+                              className="btn"
+                              onClick={() =>
+                                void window.api.meetings.open(selectedMeeting.folderPath)
+                              }
+                            >
+                              Show files in Finder
+                            </button>
+                          </div>
+                          {started && !error && (
+                            <p className="meetings__detail-stuck-note">
+                              Processing started — it&apos;ll appear as a new meeting when it&apos;s
+                              ready.
+                            </p>
+                          )}
+                          {error && (
+                            <p className="meetings__detail-stuck-error">
+                              Couldn&apos;t start processing: {error}
+                            </p>
+                          )}
+                        </div>
+                      )
+                    }
+                    const stageLabel = proc ? PROCESSING_STAGE_LABEL[proc.stage] : 'Working…'
+                    const recorded = proc ? formatRecordedLength(proc.estDurationSec) : null
+                    const relStarted = proc ? formatStartedRelative(proc.startedAt) : null
+                    const subline = [recorded, stageLabel, relStarted].filter(Boolean).join(' · ')
+                    return (
+                      <div className="meetings__detail-processing" role="status">
+                        <div className="meetings__detail-processing-head">
+                          <Loader2
+                            size={16}
+                            aria-hidden="true"
+                            className="home-status-icon--spin"
+                          />
+                          <span>Processing this meeting</span>
+                        </div>
+                        {subline && (
+                          <div className="meetings__detail-processing-sub">{subline}</div>
+                        )}
+                        <p className="meetings__detail-processing-note">
+                          You can play the audio above while you wait. Fast mode usually takes about
+                          half the meeting length.
+                        </p>
+                      </div>
+                    )
+                  })()}
                 {!transcriptLoading &&
                   segments.length === 0 &&
                   selectedMeeting.status !== 'processing' &&
