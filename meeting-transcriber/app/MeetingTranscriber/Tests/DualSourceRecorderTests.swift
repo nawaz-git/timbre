@@ -51,9 +51,12 @@ final class DualSourceRecorderTests: XCTestCase {
 
     // MARK: - Stop Without Start
 
-    func testStopWithoutStartThrows() {
+    func testStopWithoutStartThrows() async {
         let recorder = DualSourceRecorder()
-        XCTAssertThrowsError(try recorder.stop()) { error in
+        do {
+            _ = try await recorder.stop()
+            XCTFail("stop() without a start must throw")
+        } catch {
             XCTAssertTrue(error is RecorderError)
         }
     }

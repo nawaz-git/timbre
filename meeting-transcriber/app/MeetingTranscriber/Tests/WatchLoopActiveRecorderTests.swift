@@ -20,7 +20,7 @@ private final class CapturingRecorder: RecordingProvider {
         startCalled = true
     }
 
-    func stop() -> RecordingResult {
+    func stop() async -> RecordingResult {
         stopCalled = true
         captureOnStop()
         return RecordingResult(
@@ -93,5 +93,44 @@ final class WatchLoopActiveRecorderTests: XCTestCase {
             loop.activeRecorder,
             "activeRecorder must be cleared after handleMeeting returns (defer)",
         )
+    }
+
+    /// The finalize signal must be raised for the whole `recorder.stop()` window
+    /// (so the heartbeat advertises `processing`, not a wedged `recording`) and
+    /// cleared once the finalize returns.
+    func testFinalizeRaisesFinalizingFlagDuringStopThenClears() async throws {
+        let recorder = CapturingRecorder()
+        let loop = WatchLoop(
+            detector: ImmediatelyInactiveDetector(),
+            recorderFactory: { recorder },
+            pipelineQueue: nil,
+            pollInterval: 0.01,
+            endGracePeriod: 0.01,
+            maxDuration: 10,
+            noMic: { true },
+        )
+        loop.permissionChecker = {
+            HealthCheckResult(screenRecording: .healthy, microphone: .healthy)
+        }
+
+        nonisolated(unsafe) var finalizingDuringStop = false
+        recorder.captureOnStop = { [weak loop] in
+            finalizingDuringStop = loop?.isFinalizing ?? false
+        }
+
+        let meeting = DetectedMeeting(
+            pattern: .teams,
+            windowTitle: "Test Meeting | Microsoft Teams",
+            ownerName: "Microsoft Teams",
+            windowPID: 9999,
+        )
+
+        try await loop.handleMeeting(meeting)
+
+        XCTAssertTrue(
+            finalizingDuringStop,
+            "isFinalizing must be raised while the recorder finalizes so the heartbeat reads processing",
+        )
+        XCTAssertFalse(loop.isFinalizing, "isFinalizing must be cleared after the finalize returns")
     }
 }

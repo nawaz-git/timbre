@@ -49,6 +49,13 @@ class WatchLoop {
     private var _activeScreenRecorder: AnyObject?
     private var manualRecordingTask: Task<Void, Never>?
 
+    /// True while a recording is being finalized (the off-MainActor mix inside
+    /// `recorder.stop()`). The engine heartbeat reads this to advertise
+    /// `processing` for the finalize window so Electron / the supervisor treat a
+    /// legitimately long mix as busy, not as a wedge. `@ObservationIgnored` — it is
+    /// polled by the heartbeat, never drives UI, and toggles around every finalize.
+    @ObservationIgnored private(set) var isFinalizing = false
+
     var isManualRecording: Bool {
         manualRecordingInfo != nil
     }
@@ -345,7 +352,7 @@ class WatchLoop {
     ) async -> String? {
         let screenPath = await stopScreenRecorder()
         do {
-            let recording = try recorder.stop()
+            let recording = try await finishRecording(recorder)
             enqueueRecording(
                 title: info.title, appName: info.appName,
                 recording: recording.withScreenPath(screenPath),
@@ -355,6 +362,19 @@ class WatchLoop {
             logger.error("Failed to stop manual recording: \(error)")
             return error.localizedDescription
         }
+    }
+
+    /// Finalize `recorder` with the finalize signal raised for the whole
+    /// (off-MainActor) mix, so the engine heartbeat advertises `processing` rather
+    /// than `recording` while `recorder.stop()` runs — the signal Electron's
+    /// stop-escalation and the supervisor use to tell a long finalize from a wedge.
+    /// The heavy work itself is offloaded inside `recorder.stop()`; this only
+    /// brackets it with the flag. Shared by the manual and auto-detected finalize
+    /// paths so both advertise identically.
+    private func finishRecording(_ recorder: any RecordingProvider) async throws -> RecordingResult {
+        isFinalizing = true
+        defer { isFinalizing = false }
+        return try await recorder.stop()
     }
 
     private func monitorManualRecording(pid: pid_t) async {
@@ -613,16 +633,18 @@ class WatchLoop {
         // than letting `CancellationError` discard it. The original bug lost
         // the entire recording here (no WAV finalization, no PipelineJob, no
         // naming dialog) because the cancellation propagated past `stop()` and
-        // `enqueueRecording()`. `recorder.stop()` + `enqueueRecording()` below
-        // are synchronous, so they still run to completion on the cancelled task.
+        // `enqueueRecording()`. `finishRecording` offloads the heavy mix to a
+        // DETACHED task (which does not inherit this task's cancellation) and
+        // awaits its value, so the finalize still runs to completion — then the
+        // synchronous `enqueueRecording()` below runs — on the cancelled task.
         do {
             try await waitForMeetingEnd(meeting)
         } catch is CancellationError {
             logger.info("Watch cancelled mid-recording — finalizing in-flight recording")
         }
 
-        // Stop recording
-        let recording = try recorder.stop()
+        // Stop recording (heavy mix offloaded off the MainActor inside stop()).
+        let recording = try await finishRecording(recorder)
         let screenPath = await stopScreenRecorder() // nil on disabled/failed
 
         // --- Enqueue for background processing ---
