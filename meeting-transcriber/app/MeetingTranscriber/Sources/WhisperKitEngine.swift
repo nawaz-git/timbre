@@ -83,6 +83,17 @@ final class WhisperKitEngine: TranscribingEngine, StreamingTranscribingEngine, W
         await task.value
     }
 
+    /// Release the loaded model so its memory is reclaimed. The next transcribe
+    /// lazily reloads it via `ensureModel`. Used to free the dedicated MAX-refine
+    /// instance once the refine queue drains.
+    func unload() {
+        loadingTask?.cancel()
+        loadingTask = nil
+        pipe = nil
+        modelState = .unloaded
+        downloadProgress = 0
+    }
+
     /// Ensure model is loaded, loading it if necessary.
     private func ensureModel() async throws {
         if pipe != nil { return }
