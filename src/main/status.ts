@@ -258,7 +258,7 @@ export function isProcessingStuck(
 }
 
 /** Is any engine binary currently running? (`pgrep -f` on both known paths.) */
-function isEngineProcessAlive(): boolean {
+export function isEngineProcessAlive(): boolean {
   for (const pattern of ENGINE_PROCESS_PATTERNS) {
     try {
       const res = spawnSync('/usr/bin/pgrep', ['-f', pattern], {

@@ -31,8 +31,8 @@ import { promises as fsp } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { BrowserWindow } from 'electron'
-import type { ChromeMeetSnapshot, ChromeMeetTab } from '../shared/types'
-import { setAutomationChromeState } from './permissions'
+import type { ChromeMeetSnapshot, ChromeMeetTab, PermissionState } from '../shared/types'
+import { getAutomationChromeState, setAutomationChromeState } from './permissions'
 
 const execFileP = promisify(execFile)
 
@@ -248,6 +248,58 @@ export function stopChromeProbe(): void {
   // Engine is no longer watching — remove the signal so a stale file can't
   // trigger a recording later.
   void writeActiveMeetingSignal(null)
+}
+
+/**
+ * Run ONE detection cycle on demand — the onboarding "Test Chrome detection"
+ * step. Unlike the polling `tick`, this surfaces an Automation denial honestly
+ * (the first osascript call touching Chrome is what triggers the macOS consent
+ * prompt) instead of swallowing it, so the wizard can tell the user exactly
+ * what happened: granted + a Meet tab, granted with none open, or denied.
+ * Also refreshes the shared snapshot so the rest of the app benefits.
+ */
+export async function probeOnce(): Promise<{
+  automationState: PermissionState
+  tabFound: boolean
+}> {
+  if (process.platform !== 'darwin') {
+    return { automationState: getAutomationChromeState(), tabFound: false }
+  }
+  let sawRunningBrowser = false
+  for (const browser of CHROMIUM_BROWSERS) {
+    if (!(await isAppRunning(browser.appName))) continue
+    sawRunningBrowser = true
+    try {
+      const urls = await fetchUrls(browser.appName)
+      // A successful osascript call proves Automation is granted for this browser.
+      setAutomationChromeState('granted')
+      for (const raw of urls) {
+        const m = MEET_URL_RE.exec(raw)
+        if (m) {
+          const tab: ChromeMeetTab = {
+            browser: browser.bundleId,
+            url: m[0],
+            meetingId: m[1].toLowerCase()
+          }
+          updateSnapshot({ available: true, tab })
+          await writeActiveMeetingSignal(tab)
+          return { automationState: 'granted', tabFound: true }
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // osascript -1743 (and the assistive/authorized variants) == TCC denied.
+      if (/-1743|not allowed|not authorized/i.test(msg)) {
+        setAutomationChromeState('denied')
+        updateSnapshot({ available: false, error: 'Automation permission denied', tab: null })
+        return { automationState: 'denied', tabFound: false }
+      }
+      // Other errors (app not scriptable, transient) — try the next browser.
+    }
+  }
+  // Automation works (or no supported browser is open) but no Meet tab exists.
+  if (sawRunningBrowser) updateSnapshot({ available: true, tab: null })
+  return { automationState: getAutomationChromeState(), tabFound: false }
 }
 
 async function tick(): Promise<void> {
