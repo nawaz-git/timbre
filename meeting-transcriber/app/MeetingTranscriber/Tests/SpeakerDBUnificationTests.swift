@@ -16,9 +16,11 @@ final class SpeakerDBUnificationTests: XCTestCase {
     // MARK: - Decision rule constants
 
     /// The distance ceiling is the similarity floor mirrored into distance space.
+    /// The floor/margin are the mainline-equivalent defaults (0.60 / 0.10) so
+    /// already-enrolled voices keep matching; the quality lane re-fits them.
     func testDistanceCeilingMirrorsSimilarityFloor() {
-        XCTAssertEqual(SpeakerMatcher.matchSimilarityFloor, 0.65, accuracy: 0.0001)
-        XCTAssertEqual(SpeakerMatcher.matchSimilarityMargin, 0.08, accuracy: 0.0001)
+        XCTAssertEqual(SpeakerMatcher.matchSimilarityFloor, 0.60, accuracy: 0.0001)
+        XCTAssertEqual(SpeakerMatcher.matchSimilarityMargin, 0.10, accuracy: 0.0001)
         XCTAssertEqual(
             SpeakerMatcher.matchDistanceCeiling,
             1 - SpeakerMatcher.matchSimilarityFloor,
@@ -27,16 +29,17 @@ final class SpeakerDBUnificationTests: XCTestCase {
     }
 
     /// A default-constructed matcher enforces the unified rule: a voice at
-    /// similarity 0.62 (which matched under the old 0.60 floor) is now rejected,
-    /// while a near-identical voice still matches.
+    /// similarity 0.62 matches under the 0.60 floor (the mainline behaviour —
+    /// tightening the floor to 0.65 would have regressed such enrolments), and a
+    /// near-identical voice still matches.
     func testDefaultMatcherEnforcesUnifiedFloor() throws {
         let dbPath = tmpDir.appendingPathComponent("speakers.json")
         let matcher = SpeakerMatcher(dbPath: dbPath)
         matcher.saveDB([StoredSpeaker(name: "Alice", embeddings: [[1, 0, 0]])])
 
-        // cos([1,0,0], [0.62, 0.7846, 0]) = 0.62 → similarity 0.62 < floor 0.65.
+        // cos([1,0,0], [0.62, 0.7846, 0]) = 0.62 → similarity 0.62 > floor 0.60.
         let borderline = matcher.match(embeddings: ["S0": [0.62, 0.7846, 0]])
-        XCTAssertEqual(borderline["S0"], "S0", "similarity 0.62 is below the 0.65 floor → no match")
+        XCTAssertEqual(borderline["S0"], "Alice", "similarity 0.62 is above the 0.60 floor → matches")
 
         let clear = matcher.match(embeddings: ["S0": [0.99, 0.01, 0]])
         XCTAssertEqual(clear["S0"], "Alice", "a near-identical voice still matches")
