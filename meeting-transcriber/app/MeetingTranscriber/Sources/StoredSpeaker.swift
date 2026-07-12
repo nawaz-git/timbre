@@ -51,7 +51,13 @@ struct StoredSpeaker: Codable, Identifiable {
         }
         centroid = try container.decodeIfPresent([Float].self, forKey: .centroid)
         centroidSampleCount = try container.decodeIfPresent(Int.self, forKey: .centroidSampleCount) ?? 0
-        lastUsed = try container.decodeIfPresent(Date.self, forKey: .lastUsed)
+        // `lastUsed` is a Unix-epoch-seconds number on disk — the format the
+        // Timbre/Electron writer (`backend.ts enrollOrUpdateSpeaker`) emits. We
+        // decode/encode it explicitly rather than via the default `Date`
+        // strategy (which is seconds-since-2001) so the engine and Electron
+        // agree byte-for-byte on the unified `global-speakers.json`.
+        lastUsed = try container.decodeIfPresent(Double.self, forKey: .lastUsed)
+            .map(Date.init(timeIntervalSince1970:))
         useCount = try container.decodeIfPresent(Int.self, forKey: .useCount) ?? 0
         isSynthetic = try container.decodeIfPresent(Bool.self, forKey: .isSynthetic) ?? false
     }
@@ -87,7 +93,9 @@ struct StoredSpeaker: Codable, Identifiable {
         if centroidSampleCount > 0 {
             try container.encode(centroidSampleCount, forKey: .centroidSampleCount)
         }
-        try container.encodeIfPresent(lastUsed, forKey: .lastUsed)
+        // Unix-epoch seconds — see the decode note; keeps the on-disk shape
+        // identical to Electron's writer for the shared global DB.
+        try container.encodeIfPresent(lastUsed?.timeIntervalSince1970, forKey: .lastUsed)
         // Skip when 0 so entries that pre-date recency tracking round-trip
         // byte-identical (no spurious useCount=0 field added on first save).
         if useCount > 0 {
