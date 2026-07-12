@@ -24,6 +24,7 @@ import type {
   Settings,
   StorageUsage,
   TagDef,
+  TagKind,
   TranscriptSearchHit
 } from '../../shared/types'
 import { getPermissionStatus, openPrivacyPane } from '../permissions'
@@ -445,13 +446,17 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     IPC.tagsAdd,
-    async (_event, name: string, color: string): Promise<TagDef> => addTag(name, color)
+    async (_event, name: string, color: string, kind?: TagKind): Promise<TagDef> =>
+      addTag(name, color, kind)
   )
 
   ipcMain.handle(
     IPC.tagsUpdate,
-    async (_event, id: string, patch: { name?: string; color?: string }): Promise<TagDef> =>
-      updateTag(id, patch)
+    async (
+      _event,
+      id: string,
+      patch: { name?: string; color?: string; kind?: TagKind }
+    ): Promise<TagDef> => updateTag(id, patch)
   )
 
   ipcMain.handle(IPC.tagsDelete, async (_event, id: string): Promise<void> => deleteTag(id))

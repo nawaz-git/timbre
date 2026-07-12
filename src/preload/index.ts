@@ -24,6 +24,7 @@ import type {
   Settings,
   StorageUsage,
   TagDef,
+  TagKind,
   TranscriptSearchHit
 } from '../shared/types'
 
@@ -137,10 +138,12 @@ const api = {
   },
   tags: {
     list: (): Promise<TagDef[]> => ipcRenderer.invoke(IPC.tagsList),
-    add: (name: string, color: string): Promise<TagDef> =>
-      ipcRenderer.invoke(IPC.tagsAdd, name, color),
-    update: (id: string, patch: { name?: string; color?: string }): Promise<TagDef> =>
-      ipcRenderer.invoke(IPC.tagsUpdate, id, patch),
+    add: (name: string, color: string, kind?: TagKind): Promise<TagDef> =>
+      ipcRenderer.invoke(IPC.tagsAdd, name, color, kind),
+    update: (
+      id: string,
+      patch: { name?: string; color?: string; kind?: TagKind }
+    ): Promise<TagDef> => ipcRenderer.invoke(IPC.tagsUpdate, id, patch),
     delete: (id: string): Promise<void> => ipcRenderer.invoke(IPC.tagsDelete, id)
   },
   file: {
