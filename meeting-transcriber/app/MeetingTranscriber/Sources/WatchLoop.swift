@@ -65,6 +65,17 @@ class WatchLoop {
     let recorderFactory: @MainActor () -> any RecordingProvider
     var pipelineQueue: PipelineQueue?
     var permissionChecker: () async -> HealthCheckResult = { await PermissionHealthCheck.runLive() }
+    /// Invoked from the watch poll cadence at most once per
+    /// `permissionRecheckInterval` to refresh the engine's permission verdict
+    /// while idle-watching, so the headless engine's verdict file doesn't age
+    /// past the desktop reader's staleness gate. Never fires during a recording
+    /// (the loop is blocked in `handleMeeting` then, so no mid-call mic probe).
+    /// AppState wires this to `checkPermissions()`, which writes the verdict
+    /// JSON + health log. Defaults to a no-op for tests.
+    var onPeriodicPermissionCheck: @MainActor () async -> Void = {}
+    /// Cadence for `onPeriodicPermissionCheck`. Default 5 min keeps the verdict
+    /// comfortably fresh under the desktop reader's 10-minute staleness gate.
+    var permissionRecheckInterval: TimeInterval = 300
 
     // Settings
     let pollInterval: TimeInterval
@@ -548,7 +559,18 @@ class WatchLoop {
 
     // MARK: - Watch Loop
 
+    /// Whether the periodic permission recheck is due. Pure so the cadence is
+    /// unit-testable without driving the poll loop.
+    nonisolated static func isPermissionRecheckDue(
+        now: Date, lastCheck: Date, interval: TimeInterval,
+    ) -> Bool {
+        now.timeIntervalSince(lastCheck) >= interval
+    }
+
     private func watchLoop() async {
+        // Seed from now so the first refresh is one interval out — AppState
+        // already runs the permission check at startup, so no immediate re-probe.
+        var lastPermissionRecheck = nowProvider()
         while !Task.isCancelled {
             if let meeting = detector.checkOnce() {
                 do {
@@ -573,6 +595,18 @@ class WatchLoop {
                         next.detail = "Polling for meetings..."
                     }
                 }
+            }
+
+            // Refresh the permission verdict on the watch cadence (throttled) so
+            // the headless engine's verdict file stays fresh while idle-watching.
+            // Runs only between meetings — the loop blocks in handleMeeting during
+            // a recording — so it never probes the mic mid-call.
+            let now = nowProvider()
+            if Self.isPermissionRecheckDue(
+                now: now, lastCheck: lastPermissionRecheck, interval: permissionRecheckInterval,
+            ) {
+                lastPermissionRecheck = now
+                await onPeriodicPermissionCheck()
             }
 
             try? await sleepProvider(pollInterval)
