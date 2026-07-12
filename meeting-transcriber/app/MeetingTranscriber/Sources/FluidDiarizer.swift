@@ -229,6 +229,7 @@ final class FluidDiarizer: DiarizationProvider, @unchecked Sendable {
     static func buildResult(
         segments unsorted: [MeetingTranscriber.DiarizationResult.Segment],
         speakerDatabase: [String: [Float]]?, // swiftlint:disable:this discouraged_optional_collection
+        chunkEmbeddings: [ChunkEmbedding]? = nil, // swiftlint:disable:this discouraged_optional_collection
     ) -> MeetingTranscriber.DiarizationResult {
         let segments = unsorted.sorted { $0.start < $1.start }
 
@@ -252,6 +253,7 @@ final class FluidDiarizer: DiarizationProvider, @unchecked Sendable {
             speakingTimes: speakingTimes,
             autoNames: [:],
             embeddings: embeddings,
+            chunkEmbeddings: chunkEmbeddings,
         )
     }
 }
@@ -309,6 +311,12 @@ struct FluidOfflineProcessor: OfflineDiarizationProcessing {
                 speaker: FluidDiarizer.normalizeSpeakerId(seg.speakerId),
             )
         }
-        return FluidDiarizer.buildResult(segments: segments, speakerDatabase: fluidResult.speakerDatabase)
+        // `chunkEmbeddings` is nil unless `OfflineDiarizerConfig.exposeChunkEmbeddings`
+        // is enabled (a MAX-tier concern); pass the passthrough through regardless.
+        return FluidDiarizer.buildResult(
+            segments: segments,
+            speakerDatabase: fluidResult.speakerDatabase,
+            chunkEmbeddings: fluidResult.chunkEmbeddings,
+        )
     }
 }

@@ -199,7 +199,7 @@ actor LiveSpeakerMatcher: LiveSpeakerMatching {
         if let cachedFrameCount = readCachedFrameCount() {
             // Cache hit: load only the embedding model. The savings vs.
             // the first-launch path are documented in the type docstring.
-            let modelsByName = try await DownloadUtils.loadModels(
+            let modelsByName = try await ModelHub.loadModels(
                 .diarizer,
                 modelNames: [ModelNames.Diarizer.embeddingFile],
                 directory: directory,
