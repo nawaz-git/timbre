@@ -37,5 +37,13 @@ let package = Package(
             ],
             path: "Sources/mt-batch",
         ),
+        .testTarget(
+            name: "mt-batch-tests",
+            dependencies: [
+                "mt-batch",
+                .product(name: "MTPipelineCore", package: "pipeline-core"),
+            ],
+            path: "Tests",
+        ),
     ],
 )
