@@ -7,7 +7,12 @@
  *   - wedged       — `recording` but its heartbeat stopped refreshing;
  *   - audio-wedged — heartbeat fresh, but the app tap stopped delivering
  *                    (its `lastIOCallbackAt` went stale) inside a live engine;
- *   - died         — no heartbeat at all while the user still wants it watching.
+ *   - died         — no heartbeat at all, OR a present-but-stale heartbeat whose
+ *                    process is no longer alive (a hard crash while watching leaves
+ *                    the file behind, so absence alone can't catch it) — while the
+ *                    user still wants it watching. A present-but-stale heartbeat
+ *                    whose process IS alive means the main actor is legitimately
+ *                    busy (e.g. a long off-main finalize), so it is left alone.
  *
  * On a wedge/death it drives the SAME graceful stop + reuse-aware relaunch the
  * user-action start path uses (injected as `restartEngine`) — never a parallel
@@ -79,6 +84,13 @@ export interface SuperviseInput {
   lastStartRequestedAt: number | null
   /** epoch-ms of supervisor-driven restarts within the rolling window. */
   recentRestarts: number[]
+  /**
+   * Whether ANY engine helper process is currently alive (pgrep). Threaded in
+   * (rather than called inside) so `superviseDecision` stays pure/testable. Only
+   * consulted for a present-but-stale heartbeat: dead process → crashed → relaunch;
+   * alive → the main actor is just busy, leave it be.
+   */
+  engineAlive: boolean
 }
 
 /**
@@ -89,7 +101,8 @@ export interface SuperviseInput {
  *    grace has elapsed since the last start/restart (don't kill a booting one).
  */
 export function superviseDecision(input: SuperviseInput): SuperviseAction {
-  const { heartbeat, now, expectedActive, lastStartRequestedAt, recentRestarts } = input
+  const { heartbeat, now, expectedActive, lastStartRequestedAt, recentRestarts, engineAlive } =
+    input
   const restartsInWindow = recentRestarts.filter((t) => now - t < RESTART_WINDOW_MS)
   const lastRestart = restartsInWindow.length ? restartsInWindow[restartsInWindow.length - 1] : null
   const capReached = restartsInWindow.length >= MAX_RESTARTS_PER_WINDOW
@@ -101,12 +114,18 @@ export function superviseDecision(input: SuperviseInput): SuperviseAction {
     return { kind: 'restart', reason, notify }
   }
 
+  // Past the startup grace since the last user start / restart? A freshly
+  // (re)started engine's absent-or-stale heartbeat is NOT a death — it is still
+  // booting and writing its first beat.
+  const bootingGraceElapsed = (): boolean => {
+    const lastActivity = Math.max(lastStartRequestedAt ?? -Infinity, lastRestart ?? -Infinity)
+    return now - lastActivity >= STARTUP_GRACE_MS
+  }
+
   if (!heartbeat) {
     // No engine advertising itself — only our problem if the user wants it up.
     if (!expectedActive) return { kind: 'none' }
-    // Give a freshly (re)started engine time to boot before calling it dead.
-    const lastActivity = Math.max(lastStartRequestedAt ?? -Infinity, lastRestart ?? -Infinity)
-    if (now - lastActivity < STARTUP_GRACE_MS) return { kind: 'none' }
+    if (!bootingGraceElapsed()) return { kind: 'none' }
     return decideRestart('died', false)
   }
 
@@ -124,6 +143,21 @@ export function superviseDecision(input: SuperviseInput): SuperviseAction {
       // wedged inside an otherwise-live engine.
       return decideRestart('audio-wedged', true)
     }
+    return { kind: 'none' }
+  }
+
+  // Non-recording heartbeat (watching / processing / idle). A hard crash while
+  // watching leaves a present-but-STALE file rather than an absent one, so the
+  // no-heartbeat died-branch above never fires — catch it here via process
+  // liveness. A stale `processing` (a long off-main finalize) is treated
+  // identically: only the DEAD process is relaunched; an alive one is left alone.
+  if (now - heartbeat.updatedAt > HEARTBEAT_STALE_MS) {
+    if (!expectedActive) return { kind: 'none' }
+    if (!bootingGraceElapsed()) return { kind: 'none' }
+    if (!engineAlive) return decideRestart('died', false)
+    // Process alive but the beat stalled — the main actor is legitimately busy
+    // (e.g. a long off-main finalize keeps the process up). Do NOT wedge-kill.
+    return { kind: 'none' }
   }
   return { kind: 'none' }
 }
@@ -133,6 +167,13 @@ export function superviseDecision(input: SuperviseInput): SuperviseAction {
 export interface SupervisorDeps {
   /** Read + parse the current engine heartbeat (null when absent/malformed). */
   readHeartbeat: () => Promise<EngineHeartbeat | null>
+  /**
+   * Whether any engine helper process is currently alive (pgrep). Lets the
+   * supervisor tell a hard crash (stale heartbeat + dead process → relaunch) from
+   * a busy-but-alive engine (stale heartbeat + live process → leave it). Wired to
+   * `backend.isEngineAlive` in `index.ts`.
+   */
+  isEngineAlive: () => boolean
   /**
    * Graceful stop (with the distinct reason for logging) + reuse-aware relaunch.
    * Wired in `index.ts` to `stopEngineGracefully` → `startLiveRecorder` so the
@@ -238,7 +279,10 @@ async function tick(deps: SupervisorDeps): Promise<void> {
       now,
       expectedActive: state.expectedActive,
       lastStartRequestedAt: state.lastStartRequestedAt,
-      recentRestarts: state.recentRestarts
+      recentRestarts: state.recentRestarts,
+      // Only load-bearing for a present-but-stale heartbeat; cheap enough (pgrep)
+      // at the 5 s tick cadence to read unconditionally and keep the decision pure.
+      engineAlive: deps.isEngineAlive()
     })
 
     switch (action.kind) {
