@@ -9,6 +9,7 @@ import type {
 } from '../shared/types'
 import {
   enrollOrUpdateSpeaker,
+  isEngineProcessAlive,
   readMeetingSpeakers,
   runBatch,
   writeMeetingSpeakers,
@@ -21,6 +22,7 @@ import {
   looksPreDiarizationSpeakers,
   parseEngineTxtSegments
 } from './engineTranscript'
+import { isRefineMarkerActive } from './engineRefineStatus'
 
 /**
  * The Swift live-recording engine (`MeetingTranscriber.app`, bundled inside
@@ -447,6 +449,13 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
   }
   const results: MeetingSummary[] = []
   const seenPrefixes = new Set<string>()
+  // Engine-alive is only consulted when a fresh `.refining` marker exists
+  // (rare), so probe for the helper process lazily and at most once per call.
+  let engineAliveMemo: boolean | undefined
+  const engineAlive = (): boolean => {
+    if (engineAliveMemo === undefined) engineAliveMemo = isEngineProcessAlive()
+    return engineAliveMemo
+  }
   for (const filename of entries) {
     // Only treat `.txt` as the canonical transcript marker. `.md` is the
     // structured protocol that sits next to it.
@@ -504,9 +513,21 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
     const meta = await safeReadJson<MetadataFile>(engineMetaPath(prefix))
     // MAX-tier refine in flight: the FAST transcript already landed (this row
     // exists), but the engine is re-writing it. A `<prefix>.refining` marker
-    // signals that; it is removed on completion. Surfaced as `refining` so the
-    // UI shows an upgrade-in-progress state rather than a stuck "ready".
-    const refining = await pathExists(join(protocolsDir, `${prefix}.refining`))
+    // signals that; the engine removes it on completion. A crash/quit/kill
+    // mid-refine can orphan the marker, so it only counts as `refining` while
+    // it is fresh AND a helper process is alive to finish the job — otherwise
+    // the meeting falls back to `ready` (the FAST transcript is usable).
+    let refining = false
+    try {
+      const marker = await fs.stat(join(protocolsDir, `${prefix}.refining`))
+      refining = isRefineMarkerActive({
+        markerMtimeMs: marker.mtimeMs,
+        nowMs: Date.now(),
+        engineAlive: engineAlive()
+      })
+    } catch {
+      // No marker (or unreadable) — not refining.
+    }
     results.push({
       id: `engine:${prefix}`,
       title: meta?.title?.trim() ? meta.title : titleFromEnginePrefix(prefix),
@@ -983,6 +1004,11 @@ async function reanalyzeEngineMeeting(opts: {
 }): Promise<string> {
   const root = ENGINE_DEFAULT_ROOT
   const recordingsDir = join(root, 'recordings')
+  // A prior refine may have left a `.refining` marker behind (including an
+  // orphaned one from a crash). Re-analysis overwrites the meeting's outputs
+  // itself and surfaces its own progress, so clear any marker up front —
+  // otherwise the row could stay stuck showing "Refining…" afterwards.
+  await fs.rm(join(root, 'protocols', `${opts.prefix}.refining`), { force: true })
   const files = await findEngineReanalysisFiles(recordingsDir, opts.prefix)
   const hasPair = Boolean(files.appPath && files.micPath)
   const singleInput = files.mixPath ?? files.appPath ?? files.micPath
@@ -1161,7 +1187,7 @@ export async function deleteMeeting(outputFolder: string, meetingId: string): Pr
     }
     const protocolsDir = join(ENGINE_DEFAULT_ROOT, 'protocols')
     await Promise.all(
-      ['txt', 'md', 'meta.json'].map((ext) =>
+      ['txt', 'md', 'meta.json', 'refining'].map((ext) =>
         fs.rm(join(protocolsDir, `${prefix}.${ext}`), { force: true })
       )
     )

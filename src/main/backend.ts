@@ -306,8 +306,9 @@ export function isLiveActive(): boolean {
  * Binary-path patterns matching every engine helper we might have to signal:
  * the v0.19+ rebranded `MintrEngine` and any pre-v0.19 `MeetingTranscriber`
  * helper still alive from an older install (including a standalone
- * `/Applications` copy). Shared by `forceKillEngine` (pkill) and
- * `isEngineAlive` (pgrep) so the two can't target different process sets.
+ * `/Applications` copy). Shared by `forceKillEngine` (pkill), `isEngineAlive`
+ * and `isEngineProcessAlive` (pgrep) so they can't target different process
+ * sets.
  */
 const ENGINE_PROCESS_PATTERNS = [
   'MintrEngine.app/Contents/MacOS/MintrEngine',
@@ -328,6 +329,29 @@ export function isEngineAlive(): boolean {
         stdio: ['ignore', 'pipe', 'pipe']
       })
       // pgrep exits 0 when at least one process matched.
+      if (result.status === 0) return true
+    } catch (err) {
+      console.warn(`[live-recorder] pgrep ${pattern} failed`, err)
+    }
+  }
+  return false
+}
+
+/**
+ * True when a live-recording helper Mach-O is actually running.
+ *
+ * Unlike {@link isLiveActive}, which only tracks the short-lived `open`
+ * dispatcher child (it clears within ~50ms of launch because the real helper
+ * re-parents to launchd), this scans for the launchd-owned helper itself — so
+ * it is a genuine "engine process alive" signal. Used to tell an in-flight MAX
+ * refine from an orphaned `.refining` marker.
+ */
+export function isEngineProcessAlive(): boolean {
+  for (const pattern of ENGINE_PROCESS_PATTERNS) {
+    try {
+      const result = spawnSync('/usr/bin/pgrep', ['-f', pattern], {
+        stdio: ['ignore', 'pipe', 'ignore']
+      })
       if (result.status === 0) return true
     } catch (err) {
       console.warn(`[live-recorder] pgrep ${pattern} failed`, err)
