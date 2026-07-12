@@ -8,13 +8,20 @@ import Foundation
 /// tracks then prints every remote sentence twice — once attributed to the
 /// remote speaker (app) and once to the local speaker (mic).
 ///
-/// For each mic utterance this drops it when an app utterance both overlaps it
-/// in time (≥ `minTimeOverlapRatio`) and matches its text (token-Jaccard ≥
-/// `minTextSimilarity`) — that's bleed — **unless** the mic copy is clearly
-/// louder than the app copy (mic RMS exceeds app RMS by more than
-/// `rmsGuardDecibels`), which means the local speaker genuinely said the same
-/// words and should be kept. All three conditions are required to drop, so
-/// genuine double-talk (two people, different words) is always kept.
+/// A mic utterance is bleed only with **positive loudness evidence**: RMS must
+/// be available on BOTH tracks (a text+time match alone never drops it — we
+/// never delete speech without evidence). Given RMS:
+///   * a normal-length utterance is bleed unless the mic copy is clearly LOUDER
+///     than the app copy (mic RMS > app RMS + `rmsGuardDecibels`), i.e. genuine
+///     local speech;
+///   * a SHORT utterance (a backchannel — ≤ `shortUtteranceMaxTokens` words or
+///     < `shortUtteranceMaxDurationSeconds`) is only dropped with the
+///     echo-attenuation signature — the mic copy measurably QUIETER than the
+///     app copy (mic RMS < app RMS − `shortUtteranceBleedMarginDecibels`) —
+///     because a genuine short "yeah"/"mm-hm" from the local speaker is loud at
+///     the mic, and dropping it on a mere text match would erase real speech.
+///
+/// Genuine double-talk (two people, different words) is always kept.
 ///
 /// Pure: RMS is supplied via injected providers so this unit-tests without any
 /// audio file.
@@ -29,13 +36,25 @@ public enum CrossTrackDedup {
     /// genuinely different double-talk.
     public static let minTextSimilarity = 0.8
 
-    /// The mic copy is kept (treated as genuine local speech, not bleed) when
+    /// A normal-length mic copy is kept (genuine local speech, not bleed) when
     /// its RMS exceeds the app copy's by more than this many dB.
     public static let rmsGuardDecibels: Float = 6.0
 
+    /// An utterance with at most this many words counts as SHORT (a
+    /// backchannel) and needs positive echo-attenuation evidence to drop.
+    public static let shortUtteranceMaxTokens = 2
+
+    /// An utterance shorter than this (seconds) counts as SHORT.
+    public static let shortUtteranceMaxDurationSeconds: TimeInterval = 1.0
+
+    /// A SHORT mic copy is bleed only when its RMS is at least this many dB
+    /// BELOW the app copy's (the echo picked up through the speakers is
+    /// attenuated). Provisional — the benchmark harness re-fits it.
+    public static let shortUtteranceBleedMarginDecibels: Float = 3.0
+
     /// dBFS over an utterance's time span on its own track, or `nil` when
-    /// unavailable (then the RMS rescue can't fire → the utterance is dropped
-    /// on a text+time match, per the plan's default).
+    /// unavailable. A `nil` on either track means no loudness evidence, so the
+    /// mic utterance is KEPT (never dropped without evidence).
     public typealias RMSProvider = (TimestampedSegment) -> Float?
 
     public struct Result: Sendable {
@@ -86,6 +105,7 @@ public enum CrossTrackDedup {
     ) -> Bool {
         var micLevel: Float?
         var micLevelComputed = false
+        let short = isShort(micSeg)
         for appSeg in app {
             guard timeOverlapRatio(micSeg, appSeg) >= minTimeOverlapRatio else { continue }
             guard tokenSimilarity(micSeg.text, appSeg.text) >= minTextSimilarity else { continue }
@@ -94,12 +114,29 @@ public enum CrossTrackDedup {
                 micLevel = micRMS(micSeg)
                 micLevelComputed = true
             }
-            if let mic = micLevel, let appLevel = appRMS(appSeg), mic > appLevel + rmsGuardDecibels {
-                continue // genuinely louder local speech — keep, try other app segs
+            // No loudness evidence on either track → never drop.
+            guard let mic = micLevel, let appLevel = appRMS(appSeg) else { continue }
+            if short {
+                // Backchannel: drop ONLY with the echo-attenuation signature —
+                // the mic copy measurably quieter than the app copy.
+                if mic < appLevel - shortUtteranceBleedMarginDecibels { return true }
+            } else {
+                // Normal-length: bleed unless the mic copy is clearly louder.
+                if mic <= appLevel + rmsGuardDecibels { return true }
             }
-            return true
+            // Otherwise this app seg isn't decisive — try the next one.
         }
         return false
+    }
+
+    /// A short utterance (backchannel) — few words or brief. Dropped only with
+    /// positive echo-attenuation evidence, never on a bare text+time match.
+    public static func isShort(_ seg: TimestampedSegment) -> Bool {
+        let duration = seg.end - seg.start
+        let wordCount = seg.text
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .lazy.filter { !$0.isEmpty }.count
+        return wordCount <= shortUtteranceMaxTokens || duration < shortUtteranceMaxDurationSeconds
     }
 
     /// Temporal overlap of two utterances as a fraction of the shorter one.
