@@ -71,17 +71,89 @@ function titleFromFolderName(name: string): string {
 }
 
 /**
+ * A raw Google Meet id slug like `meet__ifh-kkfh-dzg_` — opaque to a human,
+ * so we surface a weekday + time instead of it (see `formatMeetTitle`).
+ */
+const MEET_ID_SLUG_RE = /^meet__?[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}_?$/
+
+const WEEKDAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
+
+/**
+ * Human title for a meeting whose slug is just the opaque Google Meet id:
+ * `Meet · Wed 2:00 PM`. The row meta already carries the full date, so the
+ * title stays short. Deterministic (no locale lookup) so it renders the same
+ * on every machine. `month` is 1-based. Pure — unit-testable.
+ */
+export function formatMeetTitle(
+  year: number,
+  month: number,
+  day: number,
+  hour24: number,
+  minute: number
+): string {
+  const d = new Date(year, month - 1, day, hour24, minute)
+  const weekday = WEEKDAY_ABBR[d.getDay()]
+  const h12 = hour24 % 12 || 12
+  const ampm = hour24 < 12 ? 'AM' : 'PM'
+  return `Meet · ${weekday} ${h12}:${String(minute).padStart(2, '0')} ${ampm}`
+}
+
+/**
+ * Extract the first Markdown H1 (`# `) heading from summary text, trimmed.
+ * Returns null when there's no level-1 heading. Used to auto-title an engine
+ * meeting from its LLM summary when the user hasn't set a title. Only `#`
+ * (H1) counts — deeper headings are section titles, not the document title.
+ * Pure — unit-testable.
+ */
+export function firstMarkdownHeading(text: string): string | null {
+  for (const line of text.split('\n')) {
+    const m = line.match(/^#[ \t]+(.+?)[ \t]*$/)
+    if (m && m[1].trim()) return m[1].trim()
+  }
+  return null
+}
+
+/**
  * Pretty-print an engine-format slug like `20260528_1400_team-sync` →
- * `Team sync · 2026-05-28 14:00`.
+ * `Team sync · 2026-05-28 14:00`. An opaque Meet-id slug instead becomes
+ * `Meet · <Weekday> <h:mm a>`.
  */
 function titleFromEnginePrefix(prefix: string): string {
   // Format: YYYYMMDD_HHmm_<slug>
   const m = prefix.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})_(.+)$/)
   if (!m) return prefix.replace(/[_\-]+/g, ' ')
   const [, yyyy, mm, dd, hh, min, slug] = m
+  if (MEET_ID_SLUG_RE.test(slug)) {
+    return formatMeetTitle(Number(yyyy), Number(mm), Number(dd), Number(hh), Number(min))
+  }
   const niceSlug = slug.replace(/[_\-]+/g, ' ').trim()
   const cap = niceSlug.charAt(0).toUpperCase() + niceSlug.slice(1)
   return `${cap} · ${yyyy}-${mm}-${dd} ${hh}:${min}`
+}
+
+/**
+ * Read the first `# ` heading from an engine meeting's `.md` summary, scanning
+ * only the first 500 bytes. Used to derive a human title after the LLM protocol
+ * lands, when the user hasn't set one. Returns null when the file or a heading
+ * is absent.
+ */
+async function readEngineSummaryHeading(prefix: string): Promise<string | null> {
+  const mdPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.md`)
+  let handle: import('fs').promises.FileHandle
+  try {
+    handle = await fs.open(mdPath, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const buf = Buffer.alloc(500)
+    const { bytesRead } = await handle.read(buf, 0, 500, 0)
+    return firstMarkdownHeading(buf.toString('utf-8', 0, bytesRead))
+  } catch {
+    return null
+  } finally {
+    await handle.close()
+  }
 }
 
 async function safeReadJson<T>(path: string): Promise<T | null> {
@@ -510,7 +582,9 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
     }
 
     // User-set title/tags live in the sidecar (written by renameMeetingTitle /
-    // setMeetingTags). Fall back to the filename-derived title and no tags.
+    // setMeetingTags). Fall back to the LLM summary's first heading when it
+    // exists (a far better default than the raw slug), then to the
+    // filename-derived title. Never overwrites a user-set `meta.title`.
     const meta = await safeReadJson<MetadataFile>(engineMetaPath(prefix))
     // MAX-tier refine in flight: the FAST transcript already landed (this row
     // exists), but the engine is re-writing it. A `<prefix>.refining` marker
@@ -529,9 +603,14 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
     } catch {
       // No marker (or unreadable) — not refining.
     }
+    // User-set title wins; otherwise prefer the LLM summary's first heading,
+    // then the filename-derived (human Meet) title over the raw slug.
+    const autoTitle = meta?.title?.trim()
+      ? meta.title
+      : ((await readEngineSummaryHeading(prefix)) ?? titleFromEnginePrefix(prefix))
     results.push({
       id: `engine:${prefix}`,
-      title: meta?.title?.trim() ? meta.title : titleFromEnginePrefix(prefix),
+      title: autoTitle,
       folderPath: protocolsDir,
       date: stat.mtime.toISOString(),
       durationSeconds,

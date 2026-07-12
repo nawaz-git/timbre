@@ -500,7 +500,9 @@ function checkWatchdog(): void {
     setLivePlaceholder({
       meetingId: currentId,
       startedAt: state.meetSeenAt,
-      title: `Live · ${currentId}`
+      // The opaque Meet id is meaningless in a title — the row's LIVE badge
+      // + "Recording in progress" meta already convey the state.
+      title: 'Meeting in progress'
     })
   }
 
