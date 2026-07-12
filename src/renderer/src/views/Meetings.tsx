@@ -1988,8 +1988,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   onEnded={() => setIsPlaying(false)}
                 />
                 <p className="video-pane__privacy-note">
-                  This is a recording of your entire screen for the meeting. Click any transcript
-                  line to jump the video there.
+                  Video of the meeting window (or full screen, per your Recording settings). Click
+                  any transcript line to jump the video there.
                 </p>
               </div>
             )}

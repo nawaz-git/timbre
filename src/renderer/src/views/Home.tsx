@@ -34,17 +34,17 @@ import type {
 } from '../../../shared/types'
 
 const STATE_LABEL: Record<RecordingState, string> = {
-  idle: 'Idle',
+  idle: 'Paused',
   watching: 'Watching',
   recording: 'Recording',
-  transcribing: 'Transcribing'
+  transcribing: 'Processing'
 }
 
 const HEADLINE: Record<RecordingState, string> = {
-  idle: 'Ready when you are.',
-  watching: 'Listening for meetings.',
-  recording: 'Capturing audio.',
-  transcribing: 'Transcribing audio.'
+  idle: 'Not watching.',
+  watching: 'Watching for meetings.',
+  recording: 'Recording your meeting.',
+  transcribing: 'Processing audio.'
 }
 
 /**
@@ -556,8 +556,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
             </div>
             {!screenPermissionMissing && status.state === 'watching' && (
               <div className="meet-live-card__hint">
-                Timbre is watching — capture will start automatically once Meet
-                begins playing audio.
+                Timbre is watching — recording starts when the meeting opens.
               </div>
             )}
           </div>
