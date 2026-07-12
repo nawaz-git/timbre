@@ -733,6 +733,170 @@
   margin-top: var(--space-1, 4px);
 }
 
+/* ── Home hero — the single status block (replaces status/meet/capture cards) ──
+ *
+ * One block that renders whatever the app-status machine reports: watching,
+ * meet-detected, recording, processing, or paused. `data-kind` carries the
+ * underlying activity so the attention banner (rendered separately) can layer
+ * on top without the hero ever lying about "Recording".
+ */
+.hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+  padding: var(--space-6, 24px);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-xl, 12px);
+  background: var(--surface-base, var(--bg-elev));
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+}
+.hero__state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  font: 600 var(--text-label-size, 11px) / 1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+.hero__state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+.hero__state-icon--attention {
+  color: var(--danger);
+}
+.hero[data-kind='recording'] .hero__state,
+.hero[data-kind='recording'] .hero__state-icon {
+  color: var(--danger);
+}
+.hero__headline {
+  font-size: var(--text-display-size, 28px);
+  line-height: var(--text-display-line-height, 1.15);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+.hero__detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+.hero__hint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-body-size, 13px);
+  line-height: 1.5;
+}
+.hero__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  flex-wrap: wrap;
+  font-size: var(--text-body-size, 13px);
+  color: var(--fg-muted);
+}
+.hero__meet-id {
+  font-weight: 500;
+  color: var(--fg);
+}
+.hero__meet-url {
+  color: var(--fg-subtle);
+  overflow-wrap: anywhere;
+}
+.hero__recording {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  flex-wrap: wrap;
+}
+.hero__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full, 999px);
+  background: var(--danger);
+  animation: home-status-pulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.hero__timer {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: var(--text-body-lg-size, 15px);
+  color: var(--fg);
+}
+.hero__recording-meta {
+  color: var(--fg-muted);
+  font-size: var(--text-body-size, 13px);
+}
+.hero__processing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+.hero__processing-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font-size: var(--text-body-size, 13px);
+  color: var(--fg-muted);
+}
+.hero__processing-title {
+  font-weight: 500;
+  color: var(--fg);
+}
+.hero__processing-stage {
+  color: var(--fg-subtle);
+}
+.hero__actions {
+  display: flex;
+  gap: var(--space-2, 8px);
+  flex-wrap: wrap;
+  margin-top: var(--space-1, 4px);
+}
+
+/* ── Import card — dedicated import affordance + job progress ── */
+.import-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3, 12px);
+  padding: var(--space-5, 20px);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-lg, 10px);
+  background: var(--surface-base, var(--bg-elev));
+}
+.import-card__head {
+  display: flex;
+  flex-direction: column;
+}
+.import-card__title {
+  font-weight: 600;
+  color: var(--fg);
+}
+.import-card__desc {
+  color: var(--fg-muted);
+  font-size: var(--text-body-size, 13px);
+  line-height: 1.5;
+  margin-top: 2px;
+}
+.import-card__banner {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  color: var(--fg-muted);
+  font-size: var(--text-body-size, 13px);
+  line-height: 1.5;
+}
+.import-card__banner--error {
+  color: var(--danger);
+}
+
 /* ---------- Button system ----------
  *
  * Foundation for every button in the app. Variants compose via `.btn` +

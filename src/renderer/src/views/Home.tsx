@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
-  Clock,
   ExternalLink,
   FolderOpen,
   Inbox,
@@ -16,54 +15,74 @@ import {
   Video
 } from 'lucide-react'
 import { useRecordingStatus } from '../state/recording'
+import { useAppStatus } from '../state/appStatus'
 import { useSettings } from '../state/settings'
 import { useTags } from '../state/tags'
-import {
-  usePermissions,
-  useChromeMeet,
-  useCaptureWatchdog,
-  useLiveCapture
-} from '../state/permissions'
-import { useHelperPermissions, allGranted } from '../state/onboarding'
+import { usePermissions, useChromeMeet, useCaptureWatchdog } from '../state/permissions'
 import { formatDate, formatDuration } from '../state/format'
 import type {
+  ActivityKind,
+  AppStatus,
   BackendEvent,
   MeetingSummary,
-  RecordingState,
+  ProcessingStage,
   SpeakerMatch
 } from '../../../shared/types'
 
-const STATE_LABEL: Record<RecordingState, string> = {
-  idle: 'Paused',
+/** State label shown next to the hero icon, keyed by the underlying activity. */
+const STATE_LABEL: Record<ActivityKind, string> = {
+  paused: 'Paused',
   watching: 'Watching',
+  'meet-detected': 'Meeting detected',
   recording: 'Recording',
-  transcribing: 'Processing'
+  processing: 'Processing'
 }
 
-const HEADLINE: Record<RecordingState, string> = {
-  idle: 'Not watching.',
-  watching: 'Watching for meetings.',
-  recording: 'Recording your meeting.',
-  transcribing: 'Processing audio.'
+/** Human stage labels for a processing meeting (matches the meeting detail). */
+const STAGE_LABEL: Record<ProcessingStage, string> = {
+  transcribing: 'Transcribing speech',
+  diarizing: 'Identifying speakers',
+  summarizing: 'Writing summary',
+  unknown: 'Working…'
 }
 
-/**
- * The status glyph next to the state label. We swap the existing colored
- * dot for a lucide icon — it carries more semantic weight at the same size
- * and reads better against the all-monochrome status card. The Loader2
- * `animate-spin` class is replaced here with the inline `home-status-icon--spin`
- * class so we don't rely on Tailwind utility names.
- */
-function StatusIcon({ state }: { state: RecordingState }): JSX.Element {
-  if (state === 'recording') return <Mic size={16} aria-hidden="true" />
-  if (state === 'watching') return <Radio size={16} aria-hidden="true" />
-  if (state === 'transcribing')
-    return <Loader2 size={16} aria-hidden="true" className="home-status-icon--spin" />
-  return <MicOff size={16} aria-hidden="true" />
+/** One sentence per kind. */
+function headlineFor(status: AppStatus): string {
+  switch (status.activityKind) {
+    case 'watching':
+      return 'Watching for meetings.'
+    case 'meet-detected':
+      return 'Meet open — waiting for capture.'
+    case 'recording':
+      return 'Recording your meeting.'
+    case 'processing': {
+      const n = status.processingCount ?? 1
+      return `Processing ${n === 1 ? 'your meeting' : `${n} meetings`}.`
+    }
+    case 'paused':
+      return 'Not watching.'
+  }
 }
 
-/** mm:ss since the live-capture card became active. Used by the timer chip. */
-function formatLiveDuration(startedAt: number | null): string {
+/** The hero state icon — danger triangle when something needs attention. */
+function HeroIcon({ kind, attention }: { kind: ActivityKind; attention: boolean }): JSX.Element {
+  if (attention) return <AlertTriangle size={16} aria-hidden="true" />
+  switch (kind) {
+    case 'recording':
+      return <Mic size={16} aria-hidden="true" />
+    case 'processing':
+      return <Loader2 size={16} aria-hidden="true" className="home-status-icon--spin" />
+    case 'meet-detected':
+      return <Video size={16} aria-hidden="true" />
+    case 'watching':
+      return <Radio size={16} aria-hidden="true" />
+    case 'paused':
+      return <MicOff size={16} aria-hidden="true" />
+  }
+}
+
+/** mm:ss elapsed since an epoch-ms start (ticks via the hero's 1s re-render). */
+function formatElapsedMMSS(startedAt: number | undefined): string {
   if (!startedAt) return '0:00'
   const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
   const m = Math.floor(sec / 60)
@@ -71,13 +90,18 @@ function formatLiveDuration(startedAt: number | null): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-/** "Started 7:13 PM" type label — uses the user's locale via toLocaleTimeString. */
-function formatStartTime(startedAt: number | null): string {
+/** "2:00 PM" clock label from an epoch-ms start. */
+function formatClockTime(startedAt: number | undefined): string {
   if (!startedAt) return 'just now'
-  return new Date(startedAt).toLocaleTimeString([], {
-    hour: 'numeric',
-    minute: '2-digit'
-  })
+  return new Date(startedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+
+/** Coarse "3 min" elapsed for processing rows. */
+function formatMinutesElapsed(startedAt: number): string {
+  const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+  if (sec < 60) return 'under a minute'
+  const min = Math.floor(sec / 60)
+  return `${min} min`
 }
 
 interface JobBanner {
@@ -91,70 +115,49 @@ interface JobBanner {
 
 interface HomeViewProps {
   onOpenMeeting: (id: string) => void
+  /** Switch to the Meetings view (hero "Open Meetings" / "View in Meetings"). */
+  onViewAll: () => void
 }
 
-export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
+export function HomeView({ onOpenMeeting, onViewAll }: HomeViewProps): JSX.Element {
   const { settings } = useSettings()
   const { byId: tagById } = useTags()
-  const { status, start, stop } = useRecordingStatus()
+  // The single source of truth for what Timbre is doing. Recording is shown
+  // only when the main process's capture heartbeat confirms audio on disk.
+  const status = useAppStatus()
+  // These hooks remain ONLY for actions + attention detail, never for the
+  // headline status (that is `status` above).
+  const { start, stop } = useRecordingStatus()
   const { status: permState, openPane } = usePermissions()
-  // Screen Recording is held by the bundled ENGINE (ai.nawaz.mintr-engine),
-  // not by Mintr itself — so the banner must read the engine's live verdict
-  // (same source as Settings → Setup & Permissions), NOT Electron's
-  // getMediaAccessStatus, which reports Mintr's own (wrong) principal and is
-  // permanently "denied" even when the engine is fully granted.
-  const { snapshot: helperPerms } = useHelperPermissions()
   const chromeMeet = useChromeMeet()
   const watchdog = useCaptureWatchdog()
-  const liveCapture = useLiveCapture(chromeMeet.tab?.meetingId ?? null)
+
   const [restartingHelper, setRestartingHelper] = useState(false)
   const [restartResult, setRestartResult] = useState<string | null>(null)
-  // TICKET-003: yellow transitional "Verifying capture (30s)…" banner
-  // that takes the red banner's place immediately after a successful
-  // Restart engine click. Cleared when the engine writes a file, the
-  // user leaves the Meet, or 30s elapses without activity.
-  const [verifyingCapture, setVerifyingCapture] = useState<{ startedAt: number } | null>(
-    null
-  )
+  // Transient "Verifying capture…" banner shown after a successful Restart
+  // engine, while we wait to see if the freshly-respawned engine captures.
+  const [verifyingCapture, setVerifyingCapture] = useState<{ startedAt: number } | null>(null)
 
-  // mm:ss timer for the live capture card. We derive it from
-  // liveCapture.startedAt and re-render once per second to keep it
-  // ticking. The 1s interval also lets the card animate the pulsing
-  // dot in sync with the timer text.
+  // Re-render once a second while recording/processing so elapsed values tick
+  // (the status push only fires on structural changes, not every second).
   const [, forceTick] = useState(0)
   useEffect(() => {
-    if (!liveCapture.active) return
+    const active = status.activityKind === 'recording' || status.activityKind === 'processing'
+    if (!active) return
     const id = setInterval(() => forceTick((n) => n + 1), 1000)
     return () => clearInterval(id)
-  }, [liveCapture.active])
+  }, [status.activityKind])
 
-  // TICKET-003: auto-clear the yellow "Verifying capture (30s)…"
-  // banner. Three exits:
-  //   (a) 30s elapses — let the watchdog re-fire organically if the
-  //       restart didn't actually fix capture (single setTimeout,
-  //       cleared in cleanup).
-  //   (b) the Chrome Meet goes away (`chromeMeet.tab === null`) —
-  //       there's nothing left to verify against.
-  //   (c) the engine writes a file (`liveCapture.active === true`) —
-  //       capture is confirmed working, banner mission accomplished.
+  // Close the verifying window after 30s. Clearing state inside the timeout
+  // callback (not synchronously in the effect body) keeps this off the
+  // set-state-in-effect path; the other exits — capture confirmed, Meet gone —
+  // are handled by the derived `showVerifying` below.
   useEffect(() => {
     if (!verifyingCapture) return
-    if (!chromeMeet.tab) {
-      setVerifyingCapture(null)
-      return
-    }
-    if (liveCapture.active) {
-      setVerifyingCapture(null)
-      return
-    }
-    const remaining = 30_000 - (Date.now() - verifyingCapture.startedAt)
-    if (remaining <= 0) {
-      setVerifyingCapture(null)
-      return
-    }
+    const remaining = Math.max(0, 30_000 - (Date.now() - verifyingCapture.startedAt))
     const id = setTimeout(() => setVerifyingCapture(null), remaining)
     return () => clearTimeout(id)
-  }, [verifyingCapture, chromeMeet.tab, liveCapture.active])
+  }, [verifyingCapture])
 
   const handleRestartHelper = useCallback(async () => {
     setRestartingHelper(true)
@@ -162,24 +165,17 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
     try {
       const result = await window.api.system.restartHelper()
       if (result.ok) {
-        // TICKET-003: on success, drop the inline result text and
-        // hand off to the new yellow verifying banner. The main-side
-        // watchdog reset will already have pushed a cleared signal,
-        // so the red banner disappears on the same render cycle.
         setVerifyingCapture({ startedAt: Date.now() })
       } else {
-        setRestartResult(
-          `Engine restart failed: ${result.message ?? 'unknown error'}`
-        )
+        setRestartResult(`Engine restart failed: ${result.message ?? 'unknown error'}`)
       }
     } catch (err) {
-      setRestartResult(
-        `Engine restart failed: ${err instanceof Error ? err.message : String(err)}`
-      )
+      setRestartResult(`Engine restart failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setRestartingHelper(false)
     }
   }, [])
+
   const [banner, setBanner] = useState<JobBanner | null>(null)
   const [recent, setRecent] = useState<MeetingSummary[]>([])
   const [recentLoading, setRecentLoading] = useState(true)
@@ -199,10 +195,6 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
     void loadRecent()
   }, [loadRecent])
 
-  // v0.13+: subscribe to the main process's push channel that fires
-  // whenever new files land in liveRecordingsRoot OR the user's import
-  // folder. Without this the user had to manually leave + re-enter the
-  // Home tab to see a freshly-captured meeting.
   useEffect(() => {
     const unsub = window.api.system.onMeetingsChanged(() => {
       void loadRecent()
@@ -252,11 +244,6 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
     return unsub
   }, [loadRecent])
 
-  const onToggleWatch = useCallback(async () => {
-    if (status.state === 'idle') await start()
-    else await stop()
-  }, [status.state, start, stop])
-
   const onImport = useCallback(async () => {
     setBanner(null)
     const result = await window.api.file.import()
@@ -283,412 +270,187 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
   const progressPercent =
     banner && (banner.phase === 'transcribing' || banner.phase === 'done')
       ? banner.progress
-      : status.progressPercent
+      : undefined
+  const showProgress = progressPercent !== undefined && banner !== null && banner.phase !== 'error'
 
-  const showProgress =
-    progressPercent !== undefined &&
-    (status.state === 'transcribing' ||
-      (banner !== null && banner.phase !== 'done' && banner.phase !== 'error'))
+  const recognised = useMemo(() => banner?.matches?.filter((m) => m.enrolled) ?? [], [banner])
 
-  const recognised = useMemo(
-    () => banner?.matches?.filter((m) => m.enrolled) ?? [],
-    [banner]
-  )
-
-  const isWatching = status.state !== 'idle'
-
-  // Screen Recording is the one permission whose absence silently breaks
-  // window-title-based Meet detection. Microphone failure is loud (the
-  // engine surfaces it) so it doesn't need the same prominent banner.
-  // We read the ENGINE's live verdict (helperPerms): only treat as missing
-  // when it explicitly reports 'denied'/'not-determined'. 'unknown' (engine
-  // verdict not yet read) is NOT treated as missing, so the banner doesn't
-  // flash on startup before the first probe resolves.
-  const screenPermissionMissing =
-    helperPerms.screenRecording === 'denied' ||
-    helperPerms.screenRecording === 'not-determined'
-
-  // Automation ("control Google Chrome") is the APP's own grant
-  // (ai.nawaz.meeting-transcriber), tracked separately from the engine verdict.
-  // Its absence silently breaks Google Meet detection for background tabs — the
-  // exact "ran but didn't capture" failure. Only 'denied' is actionable: macOS
-  // won't re-prompt once denied, so the user must re-enable it in System
-  // Settings → Privacy → Automation. 'not-determined' resolves itself via the
-  // auto-prompt on the first Chrome probe, so we don't nag there.
-  const automationMissing = permState.automationChrome === 'denied'
-
-  // The red "Engine helper isn't capturing" banner is a PERMISSION-diagnosis
-  // banner (its copy tells the user to toggle a TCC entry on). When the engine
-  // self-reports every permission as granted, that advice is wrong and
-  // misleading — the watchdog only fired on file-write TIMING, not an actual
-  // permission gap. Suppress it in that case so we never send the user to
-  // re-grant permissions that are already fine.
-  const engineAllGranted = allGranted(helperPerms)
+  const kind = status.activityKind
+  const isWatchingActivity = kind === 'watching' || kind === 'meet-detected'
+  const meetTab =
+    status.meetTab ??
+    (chromeMeet.tab ? { meetingId: chromeMeet.tab.meetingId, url: chromeMeet.tab.url } : null)
+  // Derived: the transient "Verifying capture…" banner shows until capture is
+  // confirmed (recording) or the Meet goes away; the 30s cap is enforced by the
+  // timeout that clears `verifyingCapture`.
+  const showVerifying = verifyingCapture !== null && chromeMeet.tab !== null && kind !== 'recording'
 
   return (
     <div className="home">
-      {screenPermissionMissing && (
-        <div className="permission-banner" role="alert">
-          <span className="permission-banner__icon" aria-hidden="true">
-            <AlertTriangle size={16} strokeWidth={2} />
-          </span>
-          <div className="permission-banner__body">
-            <div className="permission-banner__title">
-              Screen Recording permission needed
-            </div>
-            <div className="permission-banner__desc">
-              Timbre reads the active window title to detect when you join a Google
-              Meet or other call. Without this permission, meetings start without
-              being captured. The screen pixels are never recorded — only the
-              window title.
-            </div>
-          </div>
-          <button
-            className="btn btn--primary btn--small"
-            onClick={() => void openPane('screen-recording')}
-          >
-            <ExternalLink size={14} aria-hidden="true" />
-            <span>Open System Settings</span>
-          </button>
-        </div>
-      )}
-
-      {automationMissing && (
-        <div className="permission-banner" role="alert">
-          <span className="permission-banner__icon" aria-hidden="true">
-            <AlertTriangle size={16} strokeWidth={2} />
-          </span>
-          <div className="permission-banner__body">
-            <div className="permission-banner__title">Allow Timbre to control Chrome</div>
-            <div className="permission-banner__desc">
-              Timbre detects Google Meet calls in any Chrome tab by reading the tab
-              title via Automation. Without this, meetings in background tabs start
-              without being captured. Re-enable Timbre under System Settings →
-              Privacy &amp; Security → Automation → Google Chrome.
-            </div>
-          </div>
-          <button
-            className="btn btn--primary btn--small"
-            onClick={() => void openPane('automation')}
-          >
-            <ExternalLink size={14} aria-hidden="true" />
-            <span>Open Automation Settings</span>
-          </button>
-        </div>
-      )}
-
-      {/*
-        Helper-permission banner (v0.13+). Mintr bundles a separate Swift
-        helper app, Timbre Engine, which has its OWN TCC bundle id
-        (`ai.nawaz.mintr-engine`). Granting any TCC permission to Mintr
-        does NOT grant it to the engine. The capture watchdog fires when
-        Chrome reports a live Meet but the engine hasn't written any
-        files — that's the smoking-gun pattern for "engine needs its own
-        permission". TICKET-002 adds a `hint` field classifying WHICH
-        permission is most likely missing (via a unified-log grep on the
-        main side); we switch on it here to name the right TCC entry
-        explicitly so the user can find it in the list.
-
-        For `accessibility`: macOS does NOT auto-prompt — the user must
-        manually drag Timbre Engine onto the Accessibility list,
-        which is why this needs its own dedicated copy.
-        For `microphone` / `screenRecording`: explicit copy too.
-        For `unknown` (and undefined, e.g. while we're still classifying):
-        fall back to the original Screen Recording copy since that was
-        the original watchdog assumption.
-      */}
-      {watchdog.helperPermissionLikely && !engineAllGranted && (() => {
-        const hint = watchdog.hint
-        // Per-hint banner content. `accessibility` is the canonical
-        // case TICKET-002 was built for (the engine's PermissionHealthCheck
-        // fails specifically on Accessibility). The other hints share
-        // the same structure but name a different TCC service.
-        let title: string
-        let body: JSX.Element
-        let primaryLabel: string
-        let primaryPane: 'screen-recording' | 'microphone' | 'accessibility'
-        if (hint === 'accessibility') {
-          title = 'Timbre Engine needs Accessibility permission'
-          primaryLabel = 'Open Accessibility'
-          primaryPane = 'accessibility'
-          body = (
-            <>
-              macOS doesn&apos;t prompt for this automatically. Click{' '}
-              <em>Open Accessibility</em>, then drag{' '}
-              <code className="inline-code">Timbre Engine</code> from the
-              Finder window onto the Accessibility list. Then click{' '}
-              <em>Restart engine</em> — macOS only picks up newly-granted
-              permissions when the process restarts.
-            </>
-          )
-        } else if (hint === 'microphone') {
-          title = 'Timbre Engine needs Microphone access'
-          primaryLabel = 'Open Microphone'
-          primaryPane = 'microphone'
-          body = (
-            <>
-              The bundled capture engine couldn&apos;t open the system
-              microphone. Click <em>Open Microphone</em>, toggle{' '}
-              <code className="inline-code">Timbre Engine</code> on, then
-              click <em>Restart engine</em> below.
-            </>
-          )
-        } else if (hint === 'screenRecording') {
-          title = 'Timbre Engine needs Screen Recording'
-          primaryLabel = 'Open Screen Recording'
-          primaryPane = 'screen-recording'
-          body = (
-            <>
-              The engine reads the active window title to detect Meet
-              calls. Click <em>Open Screen Recording</em>, toggle{' '}
-              <code className="inline-code">Timbre Engine</code> on, then
-              click <em>Restart engine</em>.
-            </>
-          )
-        } else {
-          // 'unknown' or undefined (still classifying). Fall back to the
-          // pre-T002 generic copy, biased toward Screen Recording since
-          // that's the historical watchdog assumption.
-          title = "Engine helper isn't capturing this meeting"
-          primaryLabel = 'Open Screen Recording'
-          primaryPane = 'screen-recording'
-          body = (
-            <>
-              Timbre detected your Meet, but the bundled capture engine
-              (<code className="inline-code">Timbre Engine</code>) hasn&apos;t
-              recorded any audio yet. The engine has its own permission
-              entries in System Settings, separate from Timbre&apos;s.
-              <br />
-              <strong>Two-step fix:</strong> (1) Look for{' '}
-              <code className="inline-code">Timbre Engine</code> in the
-              Screen Recording list and toggle it on. (2) Click{' '}
-              <em>Restart engine</em> below — macOS doesn&apos;t refresh
-              permission for a running process, so a granted permission only
-              takes effect after the engine restarts.
-            </>
-          )
-        }
-        return (
-          <div className="permission-banner permission-banner--danger" role="alert">
-            <span className="permission-banner__icon" aria-hidden="true">
-              <AlertTriangle size={16} strokeWidth={2} />
-            </span>
-            <div className="permission-banner__body">
-              <div className="permission-banner__title">{title}</div>
-              <div className="permission-banner__desc">{body}</div>
-              {restartResult && (
-                <div className="permission-banner__result">{restartResult}</div>
-              )}
-            </div>
-            <div className="permission-banner__actions">
-              <button
-                className="btn btn--primary btn--small"
-                onClick={() => void openPane(primaryPane)}
-              >
-                <ExternalLink size={14} aria-hidden="true" />
-                <span>{primaryLabel}</span>
-              </button>
-              <button
-                className="btn btn--small"
-                onClick={() => void window.api.system.revealHelper()}
-                title="Reveal Timbre Engine in Finder so you can drag it onto the privacy pane"
-              >
-                <FolderOpen size={14} aria-hidden="true" />
-                <span>Reveal engine in Finder</span>
-              </button>
-              <button
-                className="btn btn--small"
-                onClick={() => void handleRestartHelper()}
-                disabled={restartingHelper}
-              >
-                <RefreshCcw
-                  size={14}
-                  aria-hidden="true"
-                  className={restartingHelper ? 'home-status-icon--spin' : undefined}
-                />
-                <span>{restartingHelper ? 'Restarting…' : 'Restart engine'}</span>
-              </button>
-            </div>
-          </div>
-        )
-      })()}
-
-      {/*
-        TICKET-003: transitional yellow banner shown after a successful
-        Restart engine click. The red banner has just been cleared by
-        the main-side watchdog reset; this one takes its slot for up
-        to 30s while we wait to see if the freshly-respawned engine
-        manages to write a file. We gate on `!watchdog.helperPermissionLikely`
-        defensively — if the watchdog re-fires inside the 30s window
-        (engine still broken) the red banner reclaims the slot.
-      */}
-      {verifyingCapture && !watchdog.helperPermissionLikely && (
-        <div
-          className="permission-banner permission-banner--verifying"
-          role="status"
-        >
-          <span className="permission-banner__icon" aria-hidden="true">
-            <Loader2 size={16} className="home-status-icon--spin" />
-          </span>
-          <div className="permission-banner__body">
-            <div className="permission-banner__title">
-              Verifying capture (30s)…
-            </div>
-            <div className="permission-banner__desc">
-              Timbre Engine restarted. Waiting to see if it can capture
-              your meeting.
-            </div>
-          </div>
-        </div>
-      )}
-
-      {chromeMeet.tab && !liveCapture.active && (
-        <div className="meet-live-card" role="status">
-          <span className="meet-live-card__dot" aria-hidden="true" />
-          <div className="meet-live-card__body">
-            <div className="meet-live-card__title">
-              <Video size={14} aria-hidden="true" /> Google Meet detected in Chrome
-            </div>
-            <div className="meet-live-card__meta">
-              <span className="meet-live-card__id">{chromeMeet.tab.meetingId}</span>
-              <span aria-hidden="true">·</span>
-              <span className="meet-live-card__url">{chromeMeet.tab.url}</span>
-            </div>
-            {!screenPermissionMissing && status.state === 'watching' && (
-              <div className="meet-live-card__hint">
-                Timbre is watching — recording starts when the meeting opens.
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/*
-        Live-capture card (v0.14+). Distinct from the "Meet detected"
-        card above: this one appears once the bundled engine has
-        actually started writing files (confirmed via fs.watch on
-        liveRecordingsRoot). It shows the meeting title (sourced from
-        the Chrome probe when available), a 0:00 mm:ss elapsed counter
-        that ticks every second, and an honest hint that the full
-        transcript appears here when the meeting ends. Closes the loop
-        on "the right side of the Home screen is empty during a meeting".
-      */}
-      {liveCapture.active && (
-        <div className="capture-live-card" role="status">
-          <div className="capture-live-card__header">
-            <span className="capture-live-card__dot" aria-hidden="true" />
-            <span className="capture-live-card__label">Recording</span>
-            <span className="capture-live-card__timer">
-              <Clock size={12} aria-hidden="true" />
-              {formatLiveDuration(liveCapture.startedAt)}
-            </span>
-          </div>
-          <div className="capture-live-card__title">
-            {liveCapture.meetingId
-              ? `Google Meet · ${liveCapture.meetingId}`
-              : 'Live meeting'}
-          </div>
-          <div className="capture-live-card__started">
-            Started {formatStartTime(liveCapture.startedAt)} ·{' '}
-            <span className="capture-live-card__path-hint">
-              audio + transcript saving locally
-            </span>
-          </div>
-          <div className="capture-live-card__transcript-placeholder">
-            <Loader2
-              size={14}
-              aria-hidden="true"
-              className="home-status-icon--spin"
-            />
-            <span>
-              The engine writes the full transcript when the meeting ends — it
-              will appear in the Meetings tab and update here automatically.
-            </span>
-          </div>
-        </div>
-      )}
-
-      <div className="status-card">
-        <div className="status-indicator">
+      <section className="hero" data-kind={kind} role="status" aria-live="polite">
+        <div className="hero__state">
           <span
-            className={'home-status-icon home-status-icon--' + status.state}
+            className={
+              'hero__state-icon' + (status.attention ? ' hero__state-icon--attention' : '')
+            }
             aria-hidden="true"
           >
-            <StatusIcon state={status.state} />
+            <HeroIcon kind={kind} attention={!!status.attention} />
           </span>
-          <span>{STATE_LABEL[status.state]}</span>
+          <span>{STATE_LABEL[kind]}</span>
         </div>
-        <div className="status-headline">{HEADLINE[status.state]}</div>
+        <div className="hero__headline">{headlineFor(status)}</div>
 
-        {/*
-          Only surface the title + elapsed timer once an actual meeting is in
-          flight (recording / transcribing). While merely idle-"watching", the
-          backend reports a "Live meeting watch" session with a running elapsed
-          counter — but a perpetually-counting timer when nothing is happening
-          is noise, so we suppress it. The "Listening for meetings." headline
-          above still communicates the watch state without a ticking clock.
-        */}
-        {status.title && status.state !== 'watching' && (
-          <div className="status-detail">
-            <strong style={{ color: 'var(--fg)', fontWeight: 500 }}>{status.title}</strong>
-            {typeof status.elapsedSeconds === 'number' && (
-              <> · {formatDuration(status.elapsedSeconds)}</>
-            )}
-          </div>
-        )}
+        <div className="hero__detail">
+          {kind === 'watching' && (
+            <p className="hero__hint">
+              Join a Google Meet in Chrome and recording starts automatically.
+            </p>
+          )}
 
-        {showProgress && (
-          <div className="progress-bar" aria-label={`Transcription ${progressPercent}%`}>
-            <div
-              className="progress-bar__fill"
-              style={{ width: `${Math.min(100, Math.max(0, progressPercent ?? 0))}%` }}
-            />
-          </div>
-        )}
+          {kind === 'meet-detected' && (
+            <>
+              {meetTab && (
+                <div className="hero__meta">
+                  <span className="hero__meet-id">{meetTab.meetingId}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="hero__meet-url">{meetTab.url}</span>
+                </div>
+              )}
+              <p className="hero__hint">Recording starts when the meeting begins.</p>
+            </>
+          )}
 
-        <div className="actions-row">
-          <button
-            className={isWatching ? 'btn btn--danger' : 'btn btn--primary'}
-            onClick={() => {
-              void onToggleWatch()
-            }}
-          >
-            <Radio size={16} aria-hidden="true" />
-            <span>{isWatching ? 'Stop Watching' : 'Start Watching'}</span>
-          </button>
-          <button
-            className="btn"
-            onClick={() => {
-              void onImport()
-            }}
-          >
-            <Upload size={16} aria-hidden="true" />
-            <span>Import audio file…</span>
-          </button>
+          {kind === 'recording' && (
+            <>
+              <div className="hero__recording">
+                <span className="hero__dot" aria-hidden="true" />
+                <span className="hero__timer" aria-hidden="true">
+                  {formatElapsedMMSS(status.recordingStartedAt)}
+                </span>
+                <span className="hero__recording-meta">
+                  Started {formatClockTime(status.recordingStartedAt)} · saving audio locally
+                </span>
+              </div>
+              <p className="hero__hint">Transcript arrives after the meeting ends.</p>
+            </>
+          )}
+
+          {kind === 'processing' && (
+            <div className="hero__processing">
+              {(status.processing ?? []).map((p) => (
+                <div key={p.id} className="hero__processing-row">
+                  <Loader2 size={12} aria-hidden="true" className="home-status-icon--spin" />
+                  <span className="hero__processing-title">{p.title}</span>
+                  <span className="hero__processing-stage">
+                    {STAGE_LABEL[p.stage]} · {formatMinutesElapsed(p.startedAt)} elapsed
+                  </span>
+                </div>
+              ))}
+              {(status.processing ?? []).length === 0 && (
+                <p className="hero__hint">Working on your transcript…</p>
+              )}
+            </div>
+          )}
+
+          {kind === 'paused' && (
+            <p className="hero__hint">Meetings you join won&apos;t be recorded while paused.</p>
+          )}
         </div>
+
+        <div className="hero__actions">
+          {isWatchingActivity && (
+            <>
+              <button className="btn" onClick={() => void stop()}>
+                <Radio size={16} aria-hidden="true" />
+                <span>Pause watching</span>
+              </button>
+              <button className="btn" onClick={() => void onImport()}>
+                <Upload size={16} aria-hidden="true" />
+                <span>Import audio file…</span>
+              </button>
+            </>
+          )}
+          {kind === 'recording' && (
+            <>
+              <button className="btn btn--danger" onClick={() => void stop()}>
+                <span>Stop recording…</span>
+              </button>
+              <button className="btn" onClick={onViewAll}>
+                <span>Open Meetings</span>
+              </button>
+            </>
+          )}
+          {kind === 'processing' && (
+            <button
+              className="btn"
+              onClick={() => {
+                const first = status.processing?.[0]
+                if (first) onOpenMeeting(first.id)
+                else onViewAll()
+              }}
+            >
+              <span>View in Meetings</span>
+            </button>
+          )}
+          {kind === 'paused' && (
+            <button className="btn btn--primary" onClick={() => void start()}>
+              <Radio size={16} aria-hidden="true" />
+              <span>Start watching</span>
+            </button>
+          )}
+        </div>
+      </section>
+
+      <AttentionSlot
+        status={status}
+        watchdog={watchdog}
+        automationDenied={permState.automationChrome === 'denied'}
+        verifying={showVerifying}
+        restarting={restartingHelper}
+        restartResult={restartResult}
+        onOpenPane={openPane}
+        onRestart={handleRestartHelper}
+        onOpenMeeting={onOpenMeeting}
+      />
+
+      <section className="import-card">
+        <div className="import-card__head">
+          <div className="import-card__title">Import an audio file</div>
+          <div className="import-card__desc">
+            Transcribe a recording you already have — audio never leaves your Mac.
+          </div>
+        </div>
+        <button className="btn" onClick={() => void onImport()}>
+          <Upload size={16} aria-hidden="true" />
+          <span>Import audio file…</span>
+        </button>
 
         {banner && (
           <div
-            className="status-detail"
-            style={{
-              marginTop: 16,
-              color: banner.phase === 'error' ? 'var(--danger, #ef4444)' : undefined
-            }}
+            className={
+              'import-card__banner' +
+              (banner.phase === 'error' ? ' import-card__banner--error' : '')
+            }
           >
             {banner.message ??
               `Job ${banner.jobId.slice(0, 8)} — ${banner.phase}${
                 banner.progress !== undefined ? ` (${banner.progress}%)` : ''
               }`}
+            {showProgress && (
+              <div className="progress-bar" aria-label={`Transcription ${progressPercent}%`}>
+                <div
+                  className="progress-bar__fill"
+                  style={{ width: `${Math.min(100, Math.max(0, progressPercent ?? 0))}%` }}
+                />
+              </div>
+            )}
           </div>
         )}
 
         {recognised.length > 0 && (
           <div className="recognised-banner" role="status">
-            <UserCheck
-              size={14}
-              aria-hidden="true"
-              className="recognised-banner__icon"
-            />
+            <UserCheck size={14} aria-hidden="true" className="recognised-banner__icon" />
             <div className="recognised-banner__body">
               <span className="recognised-banner__label">Recognised:</span>{' '}
               <span className="recognised-banner__names">
@@ -699,7 +461,7 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
             </div>
           </div>
         )}
-      </div>
+      </section>
 
       <div className="recent-meetings">
         <h3 className="recent-meetings__heading">Recent meetings</h3>
@@ -790,16 +552,8 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
                       const t = tagById(id)
                       if (!t) return null
                       return (
-                        <span
-                          key={id}
-                          className="recent-card__tag"
-                          style={{ background: t.color }}
-                        >
-                          <TagIcon
-                            size={10}
-                            aria-hidden="true"
-                            className="recent-card__tag-icon"
-                          />
+                        <span key={id} className="recent-card__tag" style={{ background: t.color }}>
+                          <TagIcon size={10} aria-hidden="true" className="recent-card__tag-icon" />
                           <span className="recent-card__tag-name">{t.name}</span>
                         </span>
                       )
@@ -810,6 +564,268 @@ export function HomeView({ onOpenMeeting }: HomeViewProps): JSX.Element {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Attention slot ───────────────────────────────────────────────────────
+
+interface AttentionSlotProps {
+  status: AppStatus
+  watchdog: ReturnType<typeof useCaptureWatchdog>
+  automationDenied: boolean
+  verifying: boolean
+  restarting: boolean
+  restartResult: string | null
+  onOpenPane: (pane: 'screen-recording' | 'microphone' | 'automation' | 'accessibility') => void
+  onRestart: () => void
+  onOpenMeeting: (id: string) => void
+}
+
+/**
+ * Renders EXACTLY ONE banner, in resolved priority order: the main-process
+ * attention (permission / engine-missing / capture-failed / processing-stuck),
+ * then automation (the app's own Chrome grant, tracked separately), then the
+ * transient "Verifying capture…" state. All framed with the shared
+ * permission-banner markup.
+ */
+function AttentionSlot({
+  status,
+  watchdog,
+  automationDenied,
+  verifying,
+  restarting,
+  restartResult,
+  onOpenPane,
+  onRestart,
+  onOpenMeeting
+}: AttentionSlotProps): JSX.Element | null {
+  const code = status.attention?.code
+
+  if (code === 'permission') {
+    return (
+      <div className="permission-banner" role="alert">
+        <span className="permission-banner__icon" aria-hidden="true">
+          <AlertTriangle size={16} strokeWidth={2} />
+        </span>
+        <div className="permission-banner__body">
+          <div className="permission-banner__title">Screen Recording permission needed</div>
+          <div className="permission-banner__desc">
+            Timbre reads the active window title to detect when you join a Google Meet or other
+            call. Without this permission, meetings start without being captured. The screen pixels
+            are never recorded — only the window title.
+          </div>
+        </div>
+        <button
+          className="btn btn--primary btn--small"
+          onClick={() => onOpenPane('screen-recording')}
+        >
+          <ExternalLink size={14} aria-hidden="true" />
+          <span>Open System Settings</span>
+        </button>
+      </div>
+    )
+  }
+
+  if (code === 'engine-missing') {
+    return (
+      <div className="permission-banner permission-banner--danger" role="alert">
+        <span className="permission-banner__icon" aria-hidden="true">
+          <AlertTriangle size={16} strokeWidth={2} />
+        </span>
+        <div className="permission-banner__body">
+          <div className="permission-banner__title">Recording engine unavailable</div>
+          <div className="permission-banner__desc">
+            The bundled recording engine couldn&apos;t be found, so meetings can&apos;t be captured.
+            Reinstall Timbre to restore it.
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (code === 'capture-failed') {
+    return (
+      <CaptureFailedBanner
+        hint={watchdog.hint}
+        restarting={restarting}
+        restartResult={restartResult}
+        onOpenPane={onOpenPane}
+        onRestart={onRestart}
+      />
+    )
+  }
+
+  if (code === 'processing-stuck') {
+    const meetingId = status.attention?.meetingId
+    return (
+      <div className="permission-banner permission-banner--danger" role="alert">
+        <span className="permission-banner__icon" aria-hidden="true">
+          <AlertTriangle size={16} strokeWidth={2} />
+        </span>
+        <div className="permission-banner__body">
+          <div className="permission-banner__title">Processing didn&apos;t finish</div>
+          <div className="permission-banner__desc">
+            A recording is safe on disk but its transcript never arrived. Open the meeting to
+            process it now with the built-in pipeline.
+          </div>
+        </div>
+        {meetingId && (
+          <button className="btn btn--primary btn--small" onClick={() => onOpenMeeting(meetingId)}>
+            <span>Open meeting</span>
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  if (automationDenied) {
+    return (
+      <div className="permission-banner" role="alert">
+        <span className="permission-banner__icon" aria-hidden="true">
+          <AlertTriangle size={16} strokeWidth={2} />
+        </span>
+        <div className="permission-banner__body">
+          <div className="permission-banner__title">Allow Timbre to control Chrome</div>
+          <div className="permission-banner__desc">
+            Timbre detects Google Meet calls in any Chrome tab by reading the tab title via
+            Automation. Without this, meetings in background tabs start without being captured.
+            Re-enable Timbre under System Settings → Privacy &amp; Security → Automation → Google
+            Chrome.
+          </div>
+        </div>
+        <button className="btn btn--primary btn--small" onClick={() => onOpenPane('automation')}>
+          <ExternalLink size={14} aria-hidden="true" />
+          <span>Open Automation Settings</span>
+        </button>
+      </div>
+    )
+  }
+
+  if (verifying) {
+    return (
+      <div className="permission-banner permission-banner--verifying" role="status">
+        <span className="permission-banner__icon" aria-hidden="true">
+          <Loader2 size={16} className="home-status-icon--spin" />
+        </span>
+        <div className="permission-banner__body">
+          <div className="permission-banner__title">Verifying capture (30s)…</div>
+          <div className="permission-banner__desc">
+            Timbre Engine restarted. Waiting to see if it can capture your meeting.
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return null
+}
+
+/**
+ * The capture-failed banner. Reuses the per-hint copy naming the specific TCC
+ * service most likely missing (accessibility / microphone / screen recording),
+ * with a generic fallback + a Restart engine action (the correct recovery when
+ * the engine died with permissions already granted).
+ */
+function CaptureFailedBanner({
+  hint,
+  restarting,
+  restartResult,
+  onOpenPane,
+  onRestart
+}: {
+  hint: ReturnType<typeof useCaptureWatchdog>['hint']
+  restarting: boolean
+  restartResult: string | null
+  onOpenPane: (pane: 'screen-recording' | 'microphone' | 'automation' | 'accessibility') => void
+  onRestart: () => void
+}): JSX.Element {
+  let title: string
+  let body: JSX.Element
+  let primaryLabel: string
+  let primaryPane: 'screen-recording' | 'microphone' | 'accessibility'
+  if (hint === 'accessibility') {
+    title = 'Timbre Engine needs Accessibility permission'
+    primaryLabel = 'Open Accessibility'
+    primaryPane = 'accessibility'
+    body = (
+      <>
+        macOS doesn&apos;t prompt for this automatically. Click <em>Open Accessibility</em>, then
+        drag <code className="inline-code">Timbre Engine</code> from the Finder window onto the
+        Accessibility list. Then click <em>Restart engine</em> — macOS only picks up newly-granted
+        permissions when the process restarts.
+      </>
+    )
+  } else if (hint === 'microphone') {
+    title = 'Timbre Engine needs Microphone access'
+    primaryLabel = 'Open Microphone'
+    primaryPane = 'microphone'
+    body = (
+      <>
+        The bundled capture engine couldn&apos;t open the system microphone. Click{' '}
+        <em>Open Microphone</em>, toggle <code className="inline-code">Timbre Engine</code> on, then
+        click <em>Restart engine</em> below.
+      </>
+    )
+  } else if (hint === 'screenRecording') {
+    title = 'Timbre Engine needs Screen Recording'
+    primaryLabel = 'Open Screen Recording'
+    primaryPane = 'screen-recording'
+    body = (
+      <>
+        The engine reads the active window title to detect Meet calls. Click{' '}
+        <em>Open Screen Recording</em>, toggle <code className="inline-code">Timbre Engine</code>{' '}
+        on, then click <em>Restart engine</em>.
+      </>
+    )
+  } else {
+    title = "Engine isn't capturing this meeting"
+    primaryLabel = 'Open Screen Recording'
+    primaryPane = 'screen-recording'
+    body = (
+      <>
+        Timbre detected your Meet, but the bundled capture engine (
+        <code className="inline-code">Timbre Engine</code>) hasn&apos;t recorded any audio yet.
+        <br />
+        <strong>Two-step fix:</strong> (1) Make sure{' '}
+        <code className="inline-code">Timbre Engine</code> is enabled under Screen Recording. (2)
+        Click <em>Restart engine</em> — macOS doesn&apos;t refresh permission for a running process,
+        so a fix only takes effect after the engine restarts.
+      </>
+    )
+  }
+  return (
+    <div className="permission-banner permission-banner--danger" role="alert">
+      <span className="permission-banner__icon" aria-hidden="true">
+        <AlertTriangle size={16} strokeWidth={2} />
+      </span>
+      <div className="permission-banner__body">
+        <div className="permission-banner__title">{title}</div>
+        <div className="permission-banner__desc">{body}</div>
+        {restartResult && <div className="permission-banner__result">{restartResult}</div>}
+      </div>
+      <div className="permission-banner__actions">
+        <button className="btn btn--primary btn--small" onClick={() => onOpenPane(primaryPane)}>
+          <ExternalLink size={14} aria-hidden="true" />
+          <span>{primaryLabel}</span>
+        </button>
+        <button
+          className="btn btn--small"
+          onClick={() => void window.api.system.revealHelper()}
+          title="Reveal Timbre Engine in Finder so you can drag it onto the privacy pane"
+        >
+          <FolderOpen size={14} aria-hidden="true" />
+          <span>Reveal engine in Finder</span>
+        </button>
+        <button className="btn btn--small" onClick={onRestart} disabled={restarting}>
+          <RefreshCcw
+            size={14}
+            aria-hidden="true"
+            className={restarting ? 'home-status-icon--spin' : undefined}
+          />
+          <span>{restarting ? 'Restarting…' : 'Restart engine'}</span>
+        </button>
       </div>
     </div>
   )

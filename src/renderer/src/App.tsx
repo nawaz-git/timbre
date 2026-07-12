@@ -155,9 +155,7 @@ function AppShell(): JSX.Element {
               <button
                 key={item.key}
                 type="button"
-                className={
-                  'sidebar__nav-item' + (active ? ' sidebar__nav-item--active' : '')
-                }
+                className={'sidebar__nav-item' + (active ? ' sidebar__nav-item--active' : '')}
                 onClick={() => setView(item.key)}
                 title={collapsed ? `${item.label} (${item.shortcut})` : undefined}
                 aria-label={item.label}
@@ -190,7 +188,9 @@ function AppShell(): JSX.Element {
           </div>
         </header>
         <div className="content__body">
-          {view === 'home' && <HomeView onOpenMeeting={openMeeting} />}
+          {view === 'home' && (
+            <HomeView onOpenMeeting={openMeeting} onViewAll={() => setView('meetings')} />
+          )}
           {view === 'meetings' && (
             <MeetingsView
               initialMeetingId={initialMeetingId}
