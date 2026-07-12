@@ -19,7 +19,13 @@ import { setRecordingActiveProvider, startChromeProbe, stopChromeProbe } from '.
 import { writeEngineConfig } from './engineConfig'
 import { onStatusChange, startWatching } from './recording'
 import { isRecordingActive, startCaptureWatchdog, stopCaptureWatchdog } from './captureWatchdog'
-import { isEngineAlive, readEngineHeartbeat, startLiveRecorder, stopEngineGracefully } from './backend'
+import {
+  disableEngineLaunch,
+  isEngineAlive,
+  readEngineHeartbeat,
+  startLiveRecorder,
+  stopEngineGracefully
+} from './backend'
 import {
   getRecordingHeartbeat,
   startEngineSupervisor,
@@ -382,6 +388,9 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  // Suppress engine launches FIRST so a supervisor tick already awaiting a restart
+  // can't spawn a fresh (orphaned) engine after we've decided to quit.
+  disableEngineLaunch()
   stopChromeProbe()
   stopCaptureWatchdog()
   stopEngineSupervisor()
