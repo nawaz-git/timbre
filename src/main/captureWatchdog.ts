@@ -305,6 +305,17 @@ const readyNotifiedPrefixes = new Set<string>()
 const readyNotificationTimers = new Map<string, NodeJS.Timeout>()
 
 /**
+ * The most recent prefix that fired a "Transcript ready" notification this
+ * session. Powers the tray's "Open latest meeting" item so it can deep-link to
+ * the freshest finished meeting without re-scanning the folder.
+ */
+let lastReadyPrefix: string | null = null
+
+export function getLastReadyPrefix(): string | null {
+  return lastReadyPrefix
+}
+
+/**
  * Announce that recording has started. Driven by `captureSignal.ts` on a
  * verified WAV `active` transition (not raw file churn), so it never fires for
  * a stray transcript/metadata write. Debounced so a burst of events still
@@ -380,6 +391,7 @@ function scheduleReadyNotification(filename: string): void {
       readyNotificationTimers.delete(prefix)
       if (readyNotifiedPrefixes.has(prefix)) return
       readyNotifiedPrefixes.add(prefix)
+      lastReadyPrefix = prefix
       try {
         const title = prettyMeetingName(filename)
         const n = new Notification({
