@@ -72,6 +72,14 @@ const ENGINE_HEALTH_LOG = join(ENGINE_IPC_DIR, 'permission_health.log')
 const LEGACY_TMP_VERDICT = '/tmp/mt-permission.log'
 /** A verdict JSON older than this is treated as stale and ignored. */
 const VERDICT_JSON_MAX_AGE_MS = 10 * 60_000
+/**
+ * A health log whose last write (mtime) is older than this is treated as stale
+ * and ignored, mirroring the JSON's gate. Without it the retained
+ * `permission_health.log` — which has no internal timestamp — would win over
+ * live tccd forever, self-latching a stale verdict (stuck-denied during
+ * onboarding, or stale-granted masking a dead/revoked engine).
+ */
+const VERDICT_LOG_MAX_AGE_MS = 10 * 60_000
 /** Per-call timeout for each `log show` invocation. Mirrors captureWatchdog. */
 const LOG_SHOW_TIMEOUT_MS = 2500
 /** How long verifyEngine polls the engine log for "Watch mode started". */
@@ -266,18 +274,40 @@ export function parseVerdictLog(raw: string): VerdictFromFile {
 }
 
 /**
+ * Whether a health-log file last written at `mtimeMs` is still fresh enough to
+ * trust over live tccd. Pure — mirrors parseVerdictJson's staleness gate so a
+ * dead/idle engine's retained log can't self-latch a stale verdict.
+ */
+export function isVerdictLogFresh(
+  mtimeMs: number,
+  nowMs: number,
+  maxAgeMs = VERDICT_LOG_MAX_AGE_MS
+): boolean {
+  return nowMs - mtimeMs <= maxAgeMs
+}
+
+/**
  * Read the engine's health log — the new Application Support path first, then
  * the legacy `/tmp` path (one-release transition). Returns the first source
- * that named at least one service; all-null when neither exists.
+ * that is FRESH (per its mtime) and named at least one service; all-null when
+ * neither exists or both are stale. Skipping a stale log lets the caller fall
+ * through to live tccd instead of latching a verdict the engine last wrote
+ * long ago.
  */
 async function readVerdictLog(): Promise<VerdictFromFile> {
+  const nowMs = Date.now()
   for (const path of [ENGINE_HEALTH_LOG, LEGACY_TMP_VERDICT]) {
     let raw: string
+    let mtimeMs: number
     try {
+      // stat before parse: a log whose last write predates the staleness gate
+      // can't out-rank live tccd (the engine may be dead or its grant revoked).
+      mtimeMs = (await fsp.stat(path)).mtimeMs
       raw = await fsp.readFile(path, 'utf-8')
     } catch {
       continue
     }
+    if (!isVerdictLogFresh(mtimeMs, nowMs)) continue
     const parsed = parseVerdictLog(raw)
     if (parsed.screenRecording || parsed.microphone || parsed.accessibility) {
       return parsed

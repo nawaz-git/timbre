@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { parseVerdictJson, parseVerdictLog, resolveGrant } from './onboarding'
+import { isVerdictLogFresh, parseVerdictJson, parseVerdictLog, resolveGrant } from './onboarding'
 
 const NOW = 2_000_000_000_000
+const TEN_MIN = 10 * 60_000
 
 describe('parseVerdictJson', () => {
   it('parses a fresh verdict and collapses broken → denied', () => {
@@ -60,6 +61,21 @@ describe('resolveGrant precedence', () => {
     expect(resolveGrant(stale?.verdict.screenRecording ?? null, 'denied', 'not-determined')).toBe(
       'denied'
     )
+  })
+})
+
+describe('isVerdictLogFresh', () => {
+  it('trusts a log written within the staleness window', () => {
+    expect(isVerdictLogFresh(NOW, NOW)).toBe(true)
+    expect(isVerdictLogFresh(NOW - TEN_MIN, NOW)).toBe(true)
+    expect(isVerdictLogFresh(NOW - (TEN_MIN - 1), NOW)).toBe(true)
+  })
+
+  it('rejects a log older than the window so live tccd wins', () => {
+    // A dead/idle engine's retained health log must NOT out-rank live tccd once
+    // it ages out — otherwise a stale verdict self-latches in both directions.
+    expect(isVerdictLogFresh(NOW - (TEN_MIN + 1), NOW)).toBe(false)
+    expect(isVerdictLogFresh(NOW - 20 * 60_000, NOW)).toBe(false)
   })
 })
 
