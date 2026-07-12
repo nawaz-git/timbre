@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { promises as fs } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { deriveEngineStatus, listEngineFailedMeetings, retryFailedMeeting } from './meetings'
+import {
+  deriveEngineStatus,
+  isEngineSidecarOf,
+  listEngineFailedMeetings,
+  retryFailedMeeting
+} from './meetings'
 
 // meetings.ts transitively imports electron via ./backend + ./captureWatchdog;
 // the vitest `electron` alias handles that (no per-test mock needed).
@@ -157,5 +162,55 @@ describe('retryFailedMeeting', () => {
     )
     expect(result.ok).toBe(false)
     expect(called).toBe(false)
+  })
+})
+
+describe('isEngineSidecarOf', () => {
+  const prefix = '20260712_0930_meet'
+
+  it('matches every plain suffix in the closed set', () => {
+    for (const suffix of [
+      '_mix.wav',
+      '_app.wav',
+      '_mic.wav',
+      '_screen.mp4',
+      '_16k.wav',
+      '_app_16k.wav',
+      '_mic_16k.wav',
+      '_segments.json',
+      '_naming.json'
+    ]) {
+      expect(isEngineSidecarOf(prefix, `${prefix}${suffix}`)).toBe(true)
+    }
+  })
+
+  it('matches suffixes carrying an 8-hex job short-id infix', () => {
+    const id = 'ab12cd34'
+    expect(isEngineSidecarOf(prefix, `${prefix}_${id}_mix.wav`)).toBe(true)
+    expect(isEngineSidecarOf(prefix, `${prefix}_${id}_app_16k.wav`)).toBe(true)
+    expect(isEngineSidecarOf(prefix, `${prefix}_${id}_segments.json`)).toBe(true)
+    expect(isEngineSidecarOf(prefix, `${prefix}_${id}_naming.json`)).toBe(true)
+  })
+
+  it('never claims a sibling whose prefix merely starts with this one', () => {
+    // The exact collision this guards: `A` strictly prefixes sibling `A_2`.
+    const a = `${prefix}__abc`
+    expect(isEngineSidecarOf(a, `${a}_2_mix.wav`)).toBe(false) // `_2` is not 8 hex
+    expect(isEngineSidecarOf(prefix, `${prefix}ing_mix.wav`)).toBe(false) // meet -> meeting
+    expect(isEngineSidecarOf(prefix, `${prefix}_sync_mix.wav`)).toBe(false) // meet -> meet_sync
+  })
+
+  it('rejects empty remainders, protocol exts, and files outside the closed set', () => {
+    expect(isEngineSidecarOf(prefix, prefix)).toBe(false) // exact match, no suffix
+    expect(isEngineSidecarOf(prefix, `${prefix}.txt`)).toBe(false) // protocols ext, not a recordings sidecar
+    expect(isEngineSidecarOf(prefix, `${prefix}_meta.json`)).toBe(false) // record-only sidecar, not in the set
+    expect(isEngineSidecarOf(prefix, `${prefix}_mix.wav.bak`)).toBe(false) // trailing junk
+    expect(isEngineSidecarOf(prefix, `${prefix}_MIX.wav`)).toBe(false) // case-sensitive
+  })
+
+  it('rejects a wrong-length or non-hex short-id infix', () => {
+    expect(isEngineSidecarOf(prefix, `${prefix}_ab12cd3_mix.wav`)).toBe(false) // 7 hex
+    expect(isEngineSidecarOf(prefix, `${prefix}_ab12cd345_mix.wav`)).toBe(false) // 9 hex
+    expect(isEngineSidecarOf(prefix, `${prefix}_ab12cd3g_mix.wav`)).toBe(false) // non-hex g
   })
 })

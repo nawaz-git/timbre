@@ -231,6 +231,38 @@ interface EngineErrorSidecar {
 }
 
 /**
+ * Remainder grammar for an engine recordings-dir sidecar: an optional 8-hex
+ * job short-id infix followed by exactly one suffix from the engine's CLOSED
+ * set. Anchored `^…$` so nothing extra can trail.
+ *
+ * Suffixes (verified against the engine writers):
+ *   _mix.wav / _app.wav / _mic.wav          — RecordingFileSuffix
+ *   _screen.mp4                             — RecordingFileSuffix.screen
+ *   _16k.wav / _app_16k.wav / _mic_16k.wav  — PipelineQueue 16 kHz artefacts
+ *   _segments.json / _naming.json           — PipelineQueue persisted artefacts
+ * The `(_[0-9a-f]{8})` mirrors PipelineJob.shortID
+ * (`uuidString.prefix(8).lowercased()`). No suffix token begins with an 8-hex
+ * run, so the optional infix is unambiguous.
+ */
+const ENGINE_SIDECAR_REMAINDER =
+  /^(_[0-9a-f]{8})?(_(mix|app|mic)\.wav|_screen\.mp4|_(16k|app_16k|mic_16k)\.wav|_segments\.json|_naming\.json)$/
+
+/**
+ * True when `filename` is an engine-written recordings sidecar belonging to
+ * EXACTLY this meeting `prefix`, not a sibling whose prefix merely starts with
+ * it. The recordings dir is flat and shared across meetings, so a bare
+ * `filename.startsWith(prefix)` over-matches: prefix `A` strictly prefixes a
+ * sibling prefixed `A_2`, and would then let discovery claim — or a delete
+ * remove — the sibling's media. Requiring the remainder after the prefix to be
+ * a legal sidecar suffix closes that hole.
+ */
+export function isEngineSidecarOf(prefix: string, filename: string): boolean {
+  if (!filename.startsWith(prefix)) return false
+  const remainder = filename.slice(prefix.length)
+  return remainder.length > 0 && ENGINE_SIDECAR_REMAINDER.test(remainder)
+}
+
+/**
  * v0.17+: engine-format sidecar discovery.
  *
  * The bundled Swift engine writes its output across TWO subfolders:
@@ -264,7 +296,10 @@ async function findEngineSidecars(
   let micPath: string | null = null
   let videoPath: string | null = null
   for (const e of entries) {
+    // Cheap prefix pre-filter, then the exact-suffix guard so a sibling whose
+    // prefix merely starts with ours is never claimed as our sidecar.
     if (!e.startsWith(prefix)) continue
+    if (!isEngineSidecarOf(prefix, e)) continue
     if (e.endsWith('_segments.json')) {
       segmentsPath = join(recordingsDir, e)
     } else if (e.endsWith('_mix.wav')) {
@@ -1797,7 +1832,9 @@ export async function deleteMeeting(
       const files = await fs.readdir(recordingsDir)
       const recRemoved = await Promise.all(
         files
-          .filter((f) => f.startsWith(prefix))
+          // Exact-suffix guard: never let a delete glob-match a sibling meeting
+          // whose prefix merely starts with this one (e.g. `A` vs `A_2`).
+          .filter((f) => f.startsWith(prefix) && isEngineSidecarOf(prefix, f))
           .map((f) => trashIfExists(join(recordingsDir, f)))
       )
       removedPermanently.push(...recRemoved)
