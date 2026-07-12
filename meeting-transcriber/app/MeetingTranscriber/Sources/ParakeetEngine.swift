@@ -69,6 +69,15 @@ final class ParakeetEngine: TranscribingEngine, StreamingTranscribingEngine, Wor
                 downloadProgress = 1.0
                 let manager = AsrManager(config: .default)
                 try await manager.loadModels(models)
+                // A concurrent unloadModel() cancels this task while loadModels
+                // is in flight. Bail before the assign+.loaded tail so the
+                // finished load can't resurrect the model unloadModel released.
+                guard !Task.isCancelled else {
+                    modelState = .unloaded
+                    downloadProgress = 0
+                    loadingTask = nil
+                    return
+                }
                 asrManager = manager
                 modelState = .loaded
 

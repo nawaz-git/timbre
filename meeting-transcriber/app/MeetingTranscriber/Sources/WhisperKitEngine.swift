@@ -65,12 +65,23 @@ final class WhisperKitEngine: TranscribingEngine, StreamingTranscribingEngine, W
                 // Step 2: Init with local model folder (skips download)
                 modelState = .loading
                 downloadProgress = 1.0
-                pipe = try await WhisperKit(
+                let loadedPipe = try await WhisperKit(
                     WhisperKitConfig(
                         model: modelVariant,
                         modelFolder: modelFolder.path(),
                     ),
                 )
+                // A concurrent unloadModel() cancels this task while the (not
+                // cancellation-aware) WhisperKit initializer is in flight. Bail
+                // before the assign+.loaded tail so the finished load can't
+                // resurrect the model unloadModel just released.
+                guard !Task.isCancelled else {
+                    modelState = .unloaded
+                    downloadProgress = 0
+                    loadingTask = nil
+                    return
+                }
+                pipe = loadedPipe
                 modelState = .loaded
             } catch {
                 logger.error("WhisperKit model load failed: \(error.localizedDescription, privacy: .public)")
