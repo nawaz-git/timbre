@@ -55,7 +55,10 @@ function defaultSettings(): Settings {
     // Default ASR language: auto-detect (empty). No more forced German.
     asrLanguage: '',
     // MAX-tier LLM speaker repair off by default — opt-in, provider-gated.
-    llmRepair: false
+    llmRepair: false,
+    // Register as a login item by default — a background recorder is only
+    // useful if it comes back after a reboot.
+    launchAtLogin: true
     // onboardingCompletedAt is intentionally absent from defaults —
     // `undefined` is the "wizard not yet completed" sentinel (TICKET-IPC-002).
   }
@@ -87,6 +90,9 @@ export async function readSettings(): Promise<Settings> {
   const autoStartWatchingRaw = store.get<boolean>('autoStartWatching')
   const autoStartWatching =
     typeof autoStartWatchingRaw === 'boolean' ? autoStartWatchingRaw : defaults.autoStartWatching
+  const launchAtLoginRaw = store.get<boolean>('launchAtLogin')
+  const launchAtLogin =
+    typeof launchAtLoginRaw === 'boolean' ? launchAtLoginRaw : defaults.launchAtLogin
   const screenCaptureScope = coerceScope(store.get<ScreenCaptureScope>('screenCaptureScope'))
   const disableAppAudioTapRaw = store.get<boolean>('disableAppAudioTap')
   const disableAppAudioTap =
@@ -110,6 +116,7 @@ export async function readSettings(): Promise<Settings> {
     processingMode,
     asrLanguage,
     llmRepair,
+    launchAtLogin,
     onboardingCompletedAt
   }
 }
@@ -126,6 +133,9 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   }
   if (patch.autoStartWatching !== undefined) {
     store.set('autoStartWatching', Boolean(patch.autoStartWatching))
+  }
+  if (patch.launchAtLogin !== undefined) {
+    store.set('launchAtLogin', Boolean(patch.launchAtLogin))
   }
   if (patch.screenCaptureScope !== undefined) {
     store.set('screenCaptureScope', coerceScope(patch.screenCaptureScope))

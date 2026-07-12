@@ -99,6 +99,13 @@ export interface Settings {
    */
   llmRepair: boolean
   /**
+   * Register Timbre as a macOS login item so it relaunches after a reboot.
+   * Default true — a recorder that isn't running can't capture the meeting
+   * you just joined. Applied via `app.setLoginItemSettings` on save and
+   * reconciled once at startup. No-op in dev (only meaningful when packaged).
+   */
+  launchAtLogin: boolean
+  /**
    * Wall-clock ms epoch when the user finished (or skipped) the onboarding
    * wizard. `undefined` => the wizard has not been completed and App.tsx
    * mounts it instead of the normal shell. Set via `onboarding:complete`,
