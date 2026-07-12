@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Check, Tag as TagIcon } from 'lucide-react'
 import type { TagDef } from '../../../shared/types'
+import { useRovingFocus } from './useRovingFocus'
 
 interface TagPickerProps {
   /** All globally defined tags. */
@@ -36,6 +37,10 @@ export function TagPicker(props: TagPickerProps): JSX.Element {
   const { allTags, activeTagIds, anchorEl, onToggle, onClose } = props
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const activeSet = new Set(activeTagIds)
+
+  // Arrow/Home/End rove through the tag options; focus opens on the first
+  // option and returns to the anchor on close.
+  useRovingFocus(wrapRef, '.tag-picker__item', anchorEl)
 
   // Popover position in viewport coords. We anchor top-right of the
   // popover to bottom-right of the icon so the popover grows away from

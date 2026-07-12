@@ -1,5 +1,6 @@
 import type React from 'react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useRovingFocus } from './useRovingFocus'
 
 export interface RowMenuItem {
   key: string
@@ -25,6 +26,10 @@ interface RowMenuProps {
 export function RowMenu({ anchorEl, items, onClose }: RowMenuProps): JSX.Element {
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const [pos, setPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 })
+
+  // Arrow/Home/End rove through the menuitems; focus opens on the first
+  // item and returns to the kebab on close.
+  useRovingFocus(wrapRef, '.row-menu__item', anchorEl)
 
   useLayoutEffect(() => {
     function measure(): void {
