@@ -42,8 +42,39 @@ struct Transcribe: AsyncParsableCommand {
         abstract: "Run transcription + diarization on an audio file.",
     )
 
-    @Option(name: .long, help: "Path to the input audio (or video) file.")
-    var input: String
+    @Option(name: .long, help: "Path to the input audio (or video) file. Mutually exclusive with --input-app/--input-mic.")
+    var input: String?
+
+    @Option(
+        name: .long,
+        help: "Dual-source import: path to the app/remote-audio track. Requires --input-mic; excludes --input.",
+    )
+    var inputApp: String?
+
+    @Option(
+        name: .long,
+        help: "Dual-source import: path to the microphone/local track. Requires --input-app; excludes --input.",
+    )
+    var inputMic: String?
+
+    @Option(
+        name: .long,
+        help: "Dual-source: seconds to shift the mic track onto the app timeline (default 0).",
+    )
+    var micDelay: Double = 0
+
+    @Option(
+        name: .long,
+        // swiftlint:disable:next line_length
+        help: "Dual-source: display name for the local mic speaker (default 'Me'). Pass an empty string to diarize the mic track instead (shared-room mode).",
+    )
+    var micName: String = "Me"
+
+    @Option(
+        name: .long,
+        help: "Processing tier: fast (default) or max. max is reserved for the accuracy-refinement passes.",
+    )
+    var mode: String = ProcessingMode.fast.rawValue
 
     @Option(name: .long, help: "Path to a folder where outputs will be written. Created if missing.")
     var outputDir: String
@@ -99,11 +130,24 @@ struct Transcribe: AsyncParsableCommand {
     var matchMargin: Float = GlobalSpeakerDB.defaultMatchMargin
 
     func run() async throws {
-        let inputURL = URL(fileURLWithPath: PathHelpers.expandTilde(input))
         let outputURL = URL(fileURLWithPath: PathHelpers.expandTilde(outputDir))
 
         do {
-            try await runPipeline(inputURL: inputURL, outputURL: outputURL)
+            if let inputApp, let inputMic {
+                try await runDualTrackPipeline(
+                    appURL: URL(fileURLWithPath: PathHelpers.expandTilde(inputApp)),
+                    micURL: URL(fileURLWithPath: PathHelpers.expandTilde(inputMic)),
+                    outputURL: outputURL,
+                )
+            } else if let input {
+                try await runPipeline(
+                    inputURL: URL(fileURLWithPath: PathHelpers.expandTilde(input)),
+                    outputURL: outputURL,
+                )
+            } else {
+                // validate() already rejects this; belt-and-braces for direct callers.
+                throw CLIError.noInput
+            }
         } catch {
             Events.error(error.localizedDescription)
             Log.err(error.localizedDescription)
@@ -152,7 +196,7 @@ struct Transcribe: AsyncParsableCommand {
     /// the user opted out; an empty array means the file was missing or
     /// malformed (matcher still runs, finds no candidates, emits an empty
     /// `matched_speakers` event so the UI knows matching was attempted).
-    private func loadEnrolledSpeakers() -> [StoredSpeakerEntry]? { // swiftlint:disable:this discouraged_optional_collection
+    func loadEnrolledSpeakers() -> [StoredSpeakerEntry]? { // swiftlint:disable:this discouraged_optional_collection
         guard let globalDbPath = globalDb else { return nil }
         let url = URL(fileURLWithPath: PathHelpers.expandTilde(globalDbPath))
         let entries = GlobalSpeakerDB.load(from: url)
@@ -188,7 +232,7 @@ struct Transcribe: AsyncParsableCommand {
     /// Stage 2: load ASR + diarizer models. Sequential because both can hit
     /// HuggingFace on first run; parallel would double peak memory during
     /// CoreML compilation on smaller hardware.
-    private func loadModels(engineChoice: Engine) async throws -> (any Transcribing, DiarizerWrapper) {
+    func loadModels(engineChoice: Engine) async throws -> (any Transcribing, DiarizerWrapper) {
         Events.loadingModels()
         let transcriber: any Transcribing
         switch engineChoice {
@@ -343,7 +387,7 @@ struct Transcribe: AsyncParsableCommand {
     ///   * `matchResults` is the structured per-label outcome used by the
     ///     `matched_speakers` event. nil when matching wasn't requested at
     ///     all (so we don't emit a misleading empty event).
-    private func matchEnrolledSpeakers(
+    func matchEnrolledSpeakers(
         diarization: DiarizationOutput,
         enrolled: [StoredSpeakerEntry]?, // swiftlint:disable:this discouraged_optional_collection
     ) -> (
@@ -370,7 +414,7 @@ struct Transcribe: AsyncParsableCommand {
     /// One-line summary on stderr so a human watching the run sees the
     /// match outcome alongside the JSONL stream. Skipped when no enrolled
     /// DB was supplied (no decisions to report).
-    private func logMatchSummary(_ results: [GlobalSpeakerDB.MatchResult]) {
+    func logMatchSummary(_ results: [GlobalSpeakerDB.MatchResult]) {
         if results.isEmpty {
             Log.info("Global DB matching: no detected speakers to match")
             return
@@ -385,12 +429,12 @@ struct Transcribe: AsyncParsableCommand {
 
     // MARK: - Output writers
 
-    private func writeTranscriptText(_ segments: [TimedSegment], to url: URL) throws {
+    func writeTranscriptText(_ segments: [TimedSegment], to url: URL) throws {
         let body = segments.map(\.transcriptLine).joined(separator: "\n") + "\n"
         try body.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private func writeTranscriptJSON(
+    func writeTranscriptJSON(
         _ segments: [TimedSegment],
         speakerCount: Int,
         duration: TimeInterval,
@@ -425,7 +469,7 @@ struct Transcribe: AsyncParsableCommand {
     /// The centroid still comes from THIS meeting's diarization, not the
     /// merged global centroid — global-DB writes happen exclusively from
     /// the Electron parent, so we never mix the two anchors implicitly.
-    private func persistSpeakerDB(
+    func persistSpeakerDB(
         embeddings: [String: [Float]],
         speakingTimes: [String: TimeInterval],
         nameOverrides: [String: String],
@@ -494,74 +538,5 @@ struct ListSpeakers: ParsableCommand {
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
         }
-    }
-}
-
-enum CLIError: Swift.Error, LocalizedError {
-    case inputNotFound(String)
-    case invalidEngine(String)
-
-    var errorDescription: String? {
-        switch self {
-        case let .inputNotFound(path):
-            "Input file not found: \(path)"
-
-        case let .invalidEngine(value):
-            "Unknown engine '\(value)'. Use 'whisperkit' or 'parakeet'."
-        }
-    }
-}
-
-/// Coalesces progress callbacks so identical-fraction calls don't spam
-/// stdout. Reference type so the `@Sendable` progress closure can mutate
-/// shared state across the WhisperKit task pool. NSLock keeps the
-/// read-modify-write tight; the closure is hot (called many times per
-/// transcription) but lock contention is trivial vs. CoreML inference.
-final class ProgressBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lastEmitted: Double = -1
-
-    /// Emit when the value moved by >= 1 percentage point, or when we
-    /// reach the terminal 1.0 (so the JSONL consumer always sees a final
-    /// 100 % event).
-    func shouldEmit(_ value: Double) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if value >= 1.0, lastEmitted < 1.0 {
-            lastEmitted = value
-            return true
-        }
-        if value - lastEmitted >= 0.01 {
-            lastEmitted = value
-            return true
-        }
-        return false
-    }
-}
-
-/// Small helpers shared between subcommands. Extracted here because both
-/// `Transcribe` and `ListSpeakers` need path expansion, and `Transcribe`
-/// also needs the duration formatter that used to live as a private method
-/// on the original flat command.
-enum PathHelpers {
-    /// Expand a leading `~/` to the current user's home directory. Swift's
-    /// `URL(fileURLWithPath:)` doesn't expand tildes; doing it here keeps
-    /// the CLI usable from shells that don't expand quoted paths.
-    static func expandTilde(_ path: String) -> String {
-        guard path.hasPrefix("~") else { return path }
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if path == "~" { return home }
-        if path.hasPrefix("~/") {
-            return home + String(path.dropFirst(1))
-        }
-        return path
-    }
-
-    static func formatDuration(_ seconds: TimeInterval) -> String {
-        let s = max(0, Int(seconds.rounded()))
-        if s >= 60 {
-            return String(format: "%dm %02ds", s / 60, s % 60)
-        }
-        return String(format: "%ds", s)
     }
 }
