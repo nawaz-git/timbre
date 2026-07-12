@@ -32,16 +32,7 @@ final class AppState { // swiftlint:disable:this type_body_length
     let settings: AppSettings
     let whisperKit: WhisperKitEngine
     let parakeetEngine: ParakeetEngine
-    // Only created on macOS 15+ where Qwen3-ASR is available.
-    private let _qwen3Engine: AnyObject?
     private let notifier: any AppNotifying
-
-    /// Typed accessor (only callable under @available(macOS 15, *) checks).
-    @available(macOS 15, *)
-    var qwen3Engine: Qwen3AsrEngine {
-        // swiftlint:disable:next force_cast
-        _qwen3Engine as! Qwen3AsrEngine
-    }
 
     // MARK: - State
 
@@ -113,18 +104,12 @@ final class AppState { // swiftlint:disable:this type_body_length
         settings: AppSettings = AppSettings(),
         whisperKit: WhisperKitEngine? = nil,
         parakeetEngine: ParakeetEngine? = nil,
-        qwen3Engine: AnyObject? = nil,
         notifier: any AppNotifying = SilentNotifier(),
         updateChecker: UpdateChecker? = nil,
     ) {
         self.settings = settings
         self.whisperKit = whisperKit ?? WhisperKitEngine()
         self.parakeetEngine = parakeetEngine ?? ParakeetEngine()
-        if #available(macOS 15, *) {
-            self._qwen3Engine = (qwen3Engine as? Qwen3AsrEngine) ?? Qwen3AsrEngine()
-        } else {
-            self._qwen3Engine = nil
-        }
         self.notifier = notifier
         self.updateChecker = updateChecker ?? UpdateChecker()
         self.pipelineQueue = PipelineQueue()
@@ -292,13 +277,6 @@ final class AppState { // swiftlint:disable:this type_body_length
         switch settings.transcriptionEngine {
         case .parakeet:
             parakeetEngine
-
-        case .qwen3:
-            if #available(macOS 15, *) {
-                qwen3Engine
-            } else {
-                whisperKit // Fallback (should not happen -- UI prevents selection)
-            }
 
         case .whisperKit:
             whisperKit
@@ -1074,12 +1052,6 @@ final class AppState { // swiftlint:disable:this type_body_length
             if parakeetEngine.customVocabularyPath != nextVocab { parakeetEngine.customVocabularyPath = nextVocab }
             let nextLang = settings.parakeetLanguageOrNil
             if parakeetEngine.language != nextLang { parakeetEngine.language = nextLang }
-
-        case .qwen3:
-            if #available(macOS 15, *) {
-                let next = settings.qwen3LanguageOrNil
-                if qwen3Engine.language != next { qwen3Engine.language = next }
-            }
         }
     }
 
@@ -1092,7 +1064,6 @@ final class AppState { // swiftlint:disable:this type_body_length
             _ = settings.whisperLanguage
             _ = settings.customVocabularyPath
             _ = settings.parakeetLanguage
-            _ = settings.qwen3Language
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }

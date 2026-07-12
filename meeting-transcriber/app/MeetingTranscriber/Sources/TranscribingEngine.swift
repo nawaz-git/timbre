@@ -16,10 +16,10 @@ protocol TranscribingEngine: AnyObject {
 /// 16 kHz mono samples in memory — the API the live-transcription
 /// pipeline feeds with VAD-bounded chunks straight off the audio tap.
 ///
-/// Engines that can't do in-memory transcription (currently Qwen3, whose
-/// FluidAudio backend is chunk-batch-only) simply don't conform. The
-/// caller's `as? StreamingTranscribingEngine` cast is the static
-/// equivalent of `TranscriptionEngineSetting.supportsLiveTranscription`.
+/// Engines that can't do in-memory transcription (e.g. a chunk-batch-only
+/// backend) simply don't conform. The caller's `as? StreamingTranscribingEngine`
+/// cast is the static equivalent of
+/// `TranscriptionEngineSetting.supportsLiveTranscription`.
 @MainActor
 protocol StreamingTranscribingEngine: TranscribingEngine {
     func transcribeSamples(_ samples: [Float]) async throws -> String

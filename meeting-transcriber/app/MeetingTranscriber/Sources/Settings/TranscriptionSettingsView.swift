@@ -6,7 +6,6 @@ struct TranscriptionSettingsView: View {
     @Bindable var settings: AppSettings
     var whisperKitEngine: WhisperKitEngine
     var parakeetEngine: ParakeetEngine
-    var qwen3Engine: (any TranscribingEngine)?
 
     private static let whisperKitModels: [(variant: String, label: String)] = [
         ("openai_whisper-large-v3-v20240930_turbo", "Large V3 Turbo (recommended)"),
@@ -64,15 +63,6 @@ struct TranscriptionSettingsView: View {
                     .help("Text file with one term per line (e.g. company names, product names)")
                 }
 
-                if settings.transcriptionEngine == .qwen3 {
-                    Picker("Language", selection: $settings.qwen3Language) {
-                        Text("Auto-detect").tag("")
-                        ForEach(PickerLanguages.qwen3, id: \.code) { lang in
-                            Text(lang.label).tag(lang.code)
-                        }
-                    }
-                }
-
                 engineStatusView
             }
             .accessibilityIdentifier("transcriptionSection")
@@ -113,7 +103,6 @@ struct TranscriptionSettingsView: View {
     private var activeEngine: any TranscribingEngine {
         switch settings.transcriptionEngine {
         case .parakeet: parakeetEngine
-        case .qwen3: qwen3Engine ?? whisperKitEngine
         case .whisperKit: whisperKitEngine
         }
     }
@@ -146,10 +135,6 @@ struct TranscriptionSettingsView: View {
             Button("Load Model") {
                 if settings.transcriptionEngine == .whisperKit {
                     whisperKitEngine.modelVariant = settings.whisperKitModel
-                }
-                if #available(macOS 15, *), settings.transcriptionEngine == .qwen3,
-                   let qe = qwen3Engine as? Qwen3AsrEngine {
-                    qe.language = settings.qwen3LanguageOrNil
                 }
                 Task { await engine.loadModel() }
             }

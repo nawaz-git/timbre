@@ -3,8 +3,7 @@ import XCTest
 
 /// Boolean-gate tests for the live-transcription wiring:
 ///   * `TranscriptionEngineSetting.supportsLiveTranscription` — which engines
-///     should expose the live toggle (Parakeet + WhisperKit yes, Qwen3 no
-///     until its chunked API grows a streaming hook).
+///     should expose the live toggle (Parakeet + WhisperKit both yes).
 ///   * `AppState.shouldShowLiveCaptions` — covers the no-watchLoop branches
 ///     of the AND-gate. Cases where `watchLoop?.state == .recording` would
 ///     need a real driven WatchLoop and are deferred to live-E2E.
@@ -46,28 +45,11 @@ final class LiveTranscriptionGatingTests: XCTestCase {
         XCTAssertTrue(TranscriptionEngineSetting.whisperKit.supportsLiveTranscription)
     }
 
-    func testQwen3DoesNotSupportLive() {
-        XCTAssertFalse(TranscriptionEngineSetting.qwen3.supportsLiveTranscription)
-    }
-
     // MARK: - shouldShowLiveCaptions (watchLoop nil branch)
 
     func testShouldShowFalseWhenToggleOff() {
         settings.transcriptionEngine = .parakeet
         settings.liveTranscriptionEnabled = false
-        let state = AppState(settings: settings)
-        XCTAssertFalse(state.shouldShowLiveCaptions)
-    }
-
-    func testShouldShowFalseWhenToggleOnButEngineUnsupported() {
-        guard #available(macOS 15, *) else {
-            // Qwen3 is the only currently-unsupported engine, and it
-            // requires macOS 15. Skip otherwise — coverage still hit via
-            // the boolean enum tests above.
-            return
-        }
-        settings.transcriptionEngine = .qwen3
-        settings.liveTranscriptionEnabled = true
         let state = AppState(settings: settings)
         XCTAssertFalse(state.shouldShowLiveCaptions)
     }
