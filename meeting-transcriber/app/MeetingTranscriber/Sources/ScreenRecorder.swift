@@ -113,6 +113,12 @@ actor ScreenRecorder {
     /// (display sleep/lock, content-filter change, queue backpressure).
     private var lastFrameWallClock = Date()
     private var restartAttempts = 0
+    /// Single-flight guard for `restartStream()`. The watchdog tick and the
+    /// `didStopWithError` delegate can both drive a restart, and each suspends at
+    /// the backoff sleep / bounded stopCapture / resolveStream — so without this the
+    /// actor interleaves two rebuilds into two live SCStreams (one orphaned, both
+    /// appending frames). Mirrors `MicCaptureHandler.isRestarting`.
+    private var isRestarting = false
     private var watchdogTask: Task<Void, Never>?
     /// Cached window-visibility verdict + when it was computed. The watchdog
     /// consults this at most once per `windowStateCacheSeconds`, so a stalled
@@ -470,6 +476,20 @@ actor ScreenRecorder {
     /// touches the audio path (the CATap is independent), preserving the
     /// audio-isolation guarantee.
     private func restartStream() async {
+        // Single-flight: watchdogTick and the didStopWithError delegate can each
+        // reach here, and both suspend below (backoff sleep / bounded stopCapture /
+        // resolveStream), so the actor would otherwise interleave two rebuilds into
+        // two live streams. The guard + set run with no await between them, so a
+        // second concurrent restart is coalesced out (mirrors MicCaptureHandler).
+        guard !isRestarting else {
+            PermissionHealthCheck.debugLog(
+                "[ScreenRecorder] restart already in flight — skipping re-entrant restart",
+            )
+            return
+        }
+        isRestarting = true
+        defer { isRestarting = false }
+
         // Exponential backoff (1/2/4/8/16 s) keyed to the consecutive-attempt
         // count so we don't hot-loop against a display that is still
         // unavailable (sleep/lock). `restartAttempts` was already incremented
