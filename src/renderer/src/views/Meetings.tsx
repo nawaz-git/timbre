@@ -1856,7 +1856,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 <button
                   className="btn"
                   onClick={() => {
-                    void window.api.meetings.open(selectedMeeting.folderPath)
+                    void window.api.meetings.open(selectedMeeting.id)
                   }}
                 >
                   Show in Finder
