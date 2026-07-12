@@ -1897,6 +1897,22 @@
   min-height: 0;
 }
 
+/* Raw protocol fallback shown when a transcript has no diarized segments. */
+.transcript-raw {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding-right: var(--space-1, 4px);
+  font-family: var(--font-mono);
+  font-size: var(--text-body-size, 13px);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  user-select: text;
+}
+
 .segment-row {
   display: grid;
   grid-template-columns: 56px auto 1fr;
