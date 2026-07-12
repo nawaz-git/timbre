@@ -1051,7 +1051,7 @@ async function findEngineReanalysisFiles(
 
 /**
  * Copy an mt-batch run's outputs onto the engine meeting's sidecars. The engine
- * `_segments.json` is the bare segment array (G0 contract), which is exactly
+ * `_segments.json` is the bare segment array, which is exactly
  * mt-batch's `transcript.json.segments`; the protocol `.txt` is mt-batch's
  * `transcript.txt` verbatim (its `[HH:MM:SS] Speaker: text` lines already match
  * the renderer's fallback parser). Prior versions are backed up as `.bak`.
