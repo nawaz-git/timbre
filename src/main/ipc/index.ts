@@ -495,20 +495,22 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC.meetingsRetryFailed,
     async (_event, meetingId: string): Promise<{ ok: boolean; jobId?: string; error?: string }> => {
+      requireValidMeetingId(meetingId)
       const settings = await readSettings()
       const numSpeakers = numSpeakersToArg(settings.numSpeakers)
-      return retryFailedMeeting(
-        meetingId,
-        settings.outputFolder,
-        async (mixPath, outputFolder) => {
+      // Serialize the sidecar read + validate + kickoff against other mutations
+      // of this meeting. The lock is released the moment retryFailedMeeting
+      // returns at kickoff — it is NOT held across the (minutes-long) detached
+      // import, which would starve rename/tag/delete.
+      return withMeetingLock(meetingId, () =>
+        retryFailedMeeting(meetingId, settings.outputFolder, async (mixPath, outputFolder) => {
           const jobId = randomUUID()
-          // Fire-and-forget the batch (same pattern as backend:spawn): the
-          // renderer refreshes off the folder-watcher event when it lands.
-          importFile(mixPath, outputFolder, jobId, numSpeakers).catch((err: Error) => {
-            console.error('[meetings:retryFailed] import failed', err.message)
-          })
-          return { jobId }
-        }
+          // Kick off the batch detached (same pattern as backend:spawn) and hand
+          // back both the jobId (now) and a completion promise the retry uses to
+          // clear the error sidecar on success / keep it on failure.
+          const completion = importFile(mixPath, outputFolder, jobId, numSpeakers).then(() => {})
+          return { jobId, completion }
+        })
       )
     }
   )

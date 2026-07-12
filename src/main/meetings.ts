@@ -1854,20 +1854,39 @@ export async function deleteMeeting(
 }
 
 /**
+ * Engine prefixes with a retry import currently in flight. Guards against a
+ * double-click (or a same-second second click) kicking off two concurrent
+ * imports of the same source — which would spawn two batches into one folder.
+ * An entry is added when a retry is accepted and removed when its detached
+ * import settles (or when kickoff itself throws).
+ */
+const retriesInFlight = new Set<string>()
+
+/**
  * Retry a failed engine meeting by re-importing its recorded source audio.
  * Reads the `.error.json` sidecar for the mix path; if the audio still exists
  * on disk it re-runs the standard import pipeline (via the injected `runImport`,
- * which owns the mt-batch spawn) and deletes the sidecar so the failed row
- * disappears — a fresh imported row lands via the folder watcher. If the source
- * is gone, returns a clean error and touches nothing.
+ * which owns the mt-batch spawn).
+ *
+ * The error sidecar is cleared ONLY when the re-import actually SUCCEEDS — the
+ * Electron import path writes no `.error.json` of its own, so dropping the
+ * sidecar at kickoff (as before) would strand a re-failed meeting invisibly:
+ * the failed row gone, "No error details found" on any further retry, and no
+ * recovery. On failure the sidecar (and the failed row + retry action it backs)
+ * survives. A module-level in-flight guard rejects a duplicate retry while one
+ * is already running.
  *
  * `runImport` is injected so the retry logic is unit-testable without spawning
- * mt-batch; production passes a thin wrapper around `importFile`.
+ * mt-batch; production passes a thin wrapper around `importFile` that returns
+ * the jobId immediately plus a `completion` promise for the batch outcome.
  */
 export async function retryFailedMeeting(
   meetingId: string,
   outputFolder: string,
-  runImport: (mixPath: string, outputFolder: string) => Promise<{ jobId: string }>,
+  runImport: (
+    mixPath: string,
+    outputFolder: string
+  ) => Promise<{ jobId: string; completion: Promise<void> }>,
   root: string = ENGINE_DEFAULT_ROOT
 ): Promise<{ ok: boolean; jobId?: string; error?: string }> {
   if (!meetingId.startsWith('engine:')) {
@@ -1876,6 +1895,9 @@ export async function retryFailedMeeting(
   const prefix = meetingId.slice('engine:'.length)
   if (!/^[A-Za-z0-9_-]+$/.test(prefix)) {
     return { ok: false, error: `Invalid engine prefix: ${prefix}` }
+  }
+  if (retriesInFlight.has(prefix)) {
+    return { ok: false, error: 'This meeting is already being retried.' }
   }
   const sidecarPath = join(root, 'protocols', `${prefix}.error.json`)
   const sidecar = await safeReadJson<EngineErrorSidecar>(sidecarPath)
@@ -1886,12 +1908,29 @@ export async function retryFailedMeeting(
   if (!mixPath || !(await pathExists(mixPath))) {
     return { ok: false, error: 'Source audio no longer exists.' }
   }
-  const { jobId } = await runImport(mixPath, outputFolder)
-  // The import kicked off — drop the sidecar so the failed row clears. A fresh
-  // imported row lands via the folder watcher when the batch finishes; if the
-  // batch itself fails, `importFile` surfaces that error on its own path.
-  await fs.rm(sidecarPath, { force: true })
-  return { ok: true, jobId }
+
+  retriesInFlight.add(prefix)
+  try {
+    const { jobId, completion } = await runImport(mixPath, outputFolder)
+    // Detached: clear the sidecar (so the failed row disappears and a fresh
+    // imported row lands via the folder watcher) ONLY once the import succeeds.
+    // Keep it on failure so the meeting stays recoverable.
+    void completion
+      .then(() => fs.rm(sidecarPath, { force: true }))
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[retryFailedMeeting] re-import failed for ${prefix}; keeping sidecar`, msg)
+      })
+      .finally(() => {
+        retriesInFlight.delete(prefix)
+      })
+    return { ok: true, jobId }
+  } catch (err) {
+    // Kickoff itself threw (e.g. the batch failed to spawn) — release the guard
+    // so a later retry is possible, and leave the sidecar untouched.
+    retriesInFlight.delete(prefix)
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 /**
