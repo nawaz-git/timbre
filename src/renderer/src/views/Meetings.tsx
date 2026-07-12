@@ -959,6 +959,24 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     }
   }, [deletePending, selectedId, refresh, toast])
 
+  const onRetryMeeting = useCallback(
+    async (m: MeetingSummary) => {
+      try {
+        const result = await window.api.meetings.retryFailed(m.id)
+        if (!result.ok) {
+          toast(result.error ?? 'Retry failed.', { kind: 'error' })
+          return
+        }
+        toast('Retrying transcription…', { kind: 'info' })
+        await refresh()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        toast(`Retry failed: ${msg}`, { kind: 'error' })
+      }
+    },
+    [refresh, toast]
+  )
+
   const onPickSpeaker = useCallback(
     async (clusterName: string, newName: string) => {
       if (!selectedId) return
@@ -1374,6 +1392,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           return `Processing · ${PROCESSING_STAGE_LABEL[proc.stage]} · ${formatProcessingElapsed(proc.startedAt)} elapsed`
         })()}
       </div>
+    ) : m.status === 'failed' ? (
+      <div className="meetings__row-meta meetings__row-meta--failed">
+        {m.errorMessage ?? 'Processing failed.'}
+      </div>
     ) : (
       <div className="meetings__row-meta">
         <span>{formatDateRelative(m.date)}</span>
@@ -1422,7 +1444,8 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           (m.id === selectedId ? ' meetings__row--active' : '') +
           (isEditing ? ' meetings__row--editing' : '') +
           (m.isLive ? ' meetings__row--live' : '') +
-          (m.status === 'processing' ? ' meetings__row--processing' : '')
+          (m.status === 'processing' ? ' meetings__row--processing' : '') +
+          (m.status === 'failed' ? ' meetings__row--failed' : '')
         }
       >
         {isEditing ? (
@@ -1498,6 +1521,16 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     <span>Refining</span>
                   </span>
                 )}
+                {m.status === 'failed' && (
+                  <span
+                    className="failed-pill"
+                    aria-label="Failed"
+                    title={m.errorMessage ?? 'Processing failed'}
+                  >
+                    <AlertTriangle size={11} strokeWidth={2} aria-hidden="true" />
+                    <span>Failed</span>
+                  </span>
+                )}
               </div>
             </div>
             {metaBlock}
@@ -1543,6 +1576,20 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     setRowMenuAnchor(null)
                   }}
                   items={[
+                    ...(m.status === 'failed'
+                      ? [
+                          {
+                            key: 'retry',
+                            label: 'Retry transcription',
+                            icon: <RefreshCw size={13} strokeWidth={2} aria-hidden="true" />,
+                            onSelect: () => {
+                              setRowMenuForId(null)
+                              setRowMenuAnchor(null)
+                              void onRetryMeeting(m)
+                            }
+                          }
+                        ]
+                      : []),
                     {
                       key: 'rename',
                       label: 'Edit title',
@@ -2286,7 +2333,24 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   })()}
                 {!transcriptLoading &&
                   segments.length === 0 &&
+                  selectedMeeting.status === 'failed' && (
+                    <div className="meetings__detail-failed" role="status">
+                      <AlertTriangle size={16} aria-hidden="true" />
+                      <span>{selectedMeeting.errorMessage ?? 'Processing failed.'}</span>
+                      <button
+                        type="button"
+                        className="btn btn--small"
+                        onClick={() => void onRetryMeeting(selectedMeeting)}
+                      >
+                        <RefreshCw size={13} strokeWidth={2} aria-hidden="true" />
+                        Retry transcription
+                      </button>
+                    </div>
+                  )}
+                {!transcriptLoading &&
+                  segments.length === 0 &&
                   selectedMeeting.status !== 'processing' &&
+                  selectedMeeting.status !== 'failed' &&
                   (transcript?.transcript?.trim() ? (
                     // Diarized segments are absent, but a raw transcript exists
                     // (e.g. the engine wrote a protocol without a segments
