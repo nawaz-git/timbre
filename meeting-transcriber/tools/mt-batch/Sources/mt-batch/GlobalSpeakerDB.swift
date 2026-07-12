@@ -93,7 +93,12 @@ enum GlobalSpeakerDB {
             let scored = usable
                 .filter { !claimedNames.contains($0.name) }
                 .compactMap { speaker -> (name: String, similarity: Float)? in
-                    guard let storedCentroid = speaker.centroid else { return nil }
+                    // Legacy / short-utterance entries may have no persisted
+                    // centroid yet; fall back to the FIFO-sample mean so they
+                    // can still match, mirroring the live app matcher (which
+                    // scores against the recent samples too).
+                    guard let storedCentroid = speaker.centroid ?? SpeakerDB.meanEmbedding(speaker.embeddings)
+                    else { return nil }
                     let sim = cosineSimilarity(centroid, storedCentroid)
                     return (speaker.name, sim)
                 }
