@@ -190,4 +190,78 @@ final class WordTimelineTests: XCTestCase {
         )
         XCTAssertEqual(out.map(\.speaker), ["Alice", "Bob"])
     }
+
+    // MARK: - Whole-segment fallback + per-segment hybrid (no word-path data loss)
+
+    private func seg(_ start: TimeInterval, _ end: TimeInterval, _ text: String, _ speaker: String = "") -> TimestampedSegment {
+        TimestampedSegment(start: start, end: end, text: text, speaker: speaker)
+    }
+
+    func testAssignWholeSegmentsMaxOverlapAndNearestFallback() {
+        let segs = [seg(0, 2, "a"), seg(2, 4, "b"), seg(10, 11, "c")]
+        let diar = [SpeakerSegment(start: 0, end: 3, speaker: "SPEAKER_0"),
+                    SpeakerSegment(start: 3, end: 5, speaker: "SPEAKER_1")]
+        let out = WordTimeline.assignWholeSegments(
+            segments: segs, diarization: diar,
+            turnSpeakerMap: ["SPEAKER_0": "Alice", "SPEAKER_1": "Bob"],
+        )
+        // a overlaps SPEAKER_0 fully; b overlaps SPEAKER_0 more than SPEAKER_1;
+        // c overlaps nothing → nearest turn (SPEAKER_1 ends at 5, gap 5) wins.
+        XCTAssertEqual(out.map(\.speaker), ["Alice", "Alice", "Bob"])
+        XCTAssertEqual(out.map(\.text), ["a", "b", "c"])
+    }
+
+    func testSegmentsWithoutWordCoverageDetectsGaps() {
+        let segs = [seg(0, 2, "covered"), seg(2, 4, "gap"), seg(4, 6, "covered2")]
+        let words = [word(0.5, 1.0), word(4.5, 5.0)] // midpoints land in seg 0 and seg 2
+        let uncovered = WordTimeline.segmentsWithoutWordCoverage(segs, words: words)
+        XCTAssertEqual(uncovered.map(\.text), ["gap"])
+    }
+
+    func testAttributeHybridRecoversWordlessSegmentText() {
+        // The engine emitted words for the first and third segment but failed
+        // DTW on the middle one — its text must survive via whole-segment
+        // assignment instead of vanishing from the word-only rebuild.
+        let segs = [seg(0, 2, "hello"), seg(2, 4, "dropped middle"), seg(4, 6, "world")]
+        let words = [word(0.5, 1.5, "hello"), word(4.5, 5.5, "world")]
+        let diar = [SpeakerSegment(start: 0, end: 6, speaker: "SPEAKER_0")]
+        let out = WordTimeline.attributeHybrid(segments: segs, words: words, diarization: diar)
+        let joined = out.map(\.text).joined(separator: " ")
+        XCTAssertTrue(joined.contains("dropped middle"), "word-less segment text preserved")
+        XCTAssertTrue(joined.contains("hello"))
+        XCTAssertTrue(joined.contains("world"))
+    }
+
+    func testAttributeHybridEmptyWordsEqualsWholeSegmentPath() {
+        // An empty (non-nil) word list must degenerate to the whole-segment
+        // path, NOT produce an empty transcript (the data-loss regression).
+        let segs = [seg(0, 2, "one"), seg(2, 4, "two")]
+        let diar = [SpeakerSegment(start: 0, end: 2, speaker: "SPEAKER_0"),
+                    SpeakerSegment(start: 2, end: 4, speaker: "SPEAKER_1")]
+        let hybrid = WordTimeline.attributeHybrid(segments: segs, words: [], diarization: diar)
+        let whole = WordTimeline.assignWholeSegments(segments: segs, diarization: diar)
+        XCTAssertEqual(hybrid.map(\.text), whole.map(\.text))
+        XCTAssertEqual(hybrid.map(\.text), ["one", "two"])
+        XCTAssertEqual(hybrid.map(\.speaker), ["SPEAKER_0", "SPEAKER_1"])
+    }
+
+    func testAttributeHybridFullCoverageMatchesWordPath() {
+        // With full word coverage the hybrid must equal the pure word path.
+        let segs = [seg(0, 5, "hi there"), seg(5, 10, "bye now")]
+        let words = [word(0.5, 1.0, "hi"), word(1.0, 1.5, "there"), word(6, 6.5, "bye"), word(6.5, 7, "now")]
+        let diar = [SpeakerSegment(start: 0, end: 5, speaker: "A"), SpeakerSegment(start: 5, end: 10, speaker: "B")]
+        let hybrid = WordTimeline.attributeHybrid(segments: segs, words: words, diarization: diar)
+        let pure = WordTimeline.attribute(words: words, diarization: diar)
+        XCTAssertEqual(hybrid, pure)
+    }
+
+    func testAttributeToSpeakerRecoversWordlessMicSegment() {
+        let segs = [seg(0, 2, "spoken"), seg(2, 4, "silent DTW fail")]
+        let words = [word(0.5, 1.5, "spoken", source: .mic)]
+        let out = WordTimeline.attributeToSpeaker(segments: segs, words: words, speaker: "Me")
+        XCTAssertTrue(out.allSatisfy { $0.speaker == "Me" })
+        let joined = out.map(\.text).joined(separator: " ")
+        XCTAssertTrue(joined.contains("spoken"))
+        XCTAssertTrue(joined.contains("silent DTW fail"), "word-less mic segment text preserved")
+    }
 }

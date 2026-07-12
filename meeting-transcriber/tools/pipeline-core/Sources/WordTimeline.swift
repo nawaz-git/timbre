@@ -365,4 +365,109 @@ public enum WordTimeline {
         let attributed = assign(words: words, turns: turns)
         return utterances(from: attributed, maxPause: maxPause)
     }
+
+    // MARK: - Whole-segment fallback + per-segment hybrid
+
+    /// Assign one speaker to each whole ASR segment by maximum temporal overlap
+    /// with the diarization turns, falling back to the nearest turn by time gap
+    /// when a segment overlaps none. This is the pre-word-timeline strategy,
+    /// retained for segments the engine could not emit per-word timings for. A
+    /// pure port of the app's former `DiarizationProcess.assignSpeakers`.
+    ///
+    /// `turnSpeakerMap` renames raw diarization labels (e.g. `"SPEAKER_0"`) to
+    /// display/enrolled names, matching `attribute`.
+    public static func assignWholeSegments(
+        segments: [TimestampedSegment],
+        diarization: [SpeakerSegment],
+        turnSpeakerMap: [String: String] = [:],
+    ) -> [TimestampedSegment] {
+        func display(_ raw: String) -> String { turnSpeakerMap[raw] ?? raw }
+        return segments.map { seg in
+            var speaker = seg.speaker
+            var bestOverlap: TimeInterval = 0
+            for turn in diarization {
+                let overlap = max(0, min(seg.end, turn.end) - max(seg.start, turn.start))
+                if overlap > bestOverlap {
+                    bestOverlap = overlap
+                    speaker = display(turn.speaker)
+                }
+            }
+            if bestOverlap == 0 {
+                var nearestGap: TimeInterval = .infinity
+                for turn in diarization {
+                    let g: TimeInterval = seg.end <= turn.start
+                        ? turn.start - seg.end
+                        : (seg.start >= turn.end ? seg.start - turn.end : 0)
+                    if g < nearestGap {
+                        nearestGap = g
+                        speaker = display(turn.speaker)
+                    }
+                }
+            }
+            if speaker.isEmpty { speaker = "UNKNOWN" }
+            return TimestampedSegment(start: seg.start, end: seg.end, text: seg.text, speaker: speaker)
+        }
+    }
+
+    /// ASR segments the word path cannot reconstruct: those with no word whose
+    /// midpoint falls inside them (the engine emitted no per-word timing for
+    /// them — a WhisperKit per-window DTW failure or a Parakeet nil-timings
+    /// edge). With no words at all, every segment is uncovered.
+    public static func segmentsWithoutWordCoverage(
+        _ segments: [TimestampedSegment],
+        words: [Word],
+    ) -> [TimestampedSegment] {
+        guard !words.isEmpty else { return segments }
+        return segments.filter { seg in
+            !words.contains { seg.start <= $0.midpoint && $0.midpoint < seg.end }
+        }
+    }
+
+    /// Per-segment hybrid attribution — the safe superset of the word path.
+    ///
+    /// Segments the engine gave word timings for are attributed at word
+    /// granularity (`attribute`); segments *without* word coverage fall back to
+    /// whole-segment assignment (`assignWholeSegments`) so their text is never
+    /// dropped. The two sets are merged by start time. With no words this is
+    /// exactly the whole-segment path; with full word coverage, exactly the
+    /// word path. The result is left un-merged (word utterances + whole
+    /// segments, sorted) — callers apply
+    /// `TranscriptSegments.mergeConsecutiveSpeakers`, matching `attribute`.
+    public static func attributeHybrid(
+        segments: [TimestampedSegment],
+        words: [Word],
+        diarization: [SpeakerSegment],
+        turnSpeakerMap: [String: String] = [:],
+        maxPause: TimeInterval = defaultMaxPause,
+    ) -> [TimestampedSegment] {
+        let wordUtterances = attribute(
+            words: words, diarization: diarization,
+            turnSpeakerMap: turnSpeakerMap, maxPause: maxPause,
+        )
+        let uncovered = assignWholeSegments(
+            segments: segmentsWithoutWordCoverage(segments, words: words),
+            diarization: diarization, turnSpeakerMap: turnSpeakerMap,
+        )
+        return (wordUtterances + uncovered).sorted { $0.start < $1.start }
+    }
+
+    /// Hybrid attribution to a single known speaker — the dual-source mic track
+    /// when the mic is one local speaker (not diarized). Word-timed segments get
+    /// their words assigned to `speaker`; word-less segments keep their text
+    /// under `speaker`. Left un-merged (callers merge), like `attributeHybrid`.
+    public static func attributeToSpeaker(
+        segments: [TimestampedSegment],
+        words: [Word],
+        speaker: String,
+        maxPause: TimeInterval = defaultMaxPause,
+    ) -> [TimestampedSegment] {
+        let wordUtterances = utterances(
+            from: words.map { AttributedWord(word: $0, speaker: speaker) },
+            maxPause: maxPause,
+        )
+        let uncovered = segmentsWithoutWordCoverage(segments, words: words).map {
+            TimestampedSegment(start: $0.start, end: $0.end, text: $0.text, speaker: speaker)
+        }
+        return (wordUtterances + uncovered).sorted { $0.start < $1.start }
+    }
 }
