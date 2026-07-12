@@ -1,4 +1,5 @@
 import Foundation
+import MTPipelineCore
 import WhisperKit
 
 /// Common interface for transcription engine implementations (WhisperKit, Parakeet, …).

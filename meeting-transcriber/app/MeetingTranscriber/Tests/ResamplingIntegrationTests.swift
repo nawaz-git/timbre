@@ -1,5 +1,6 @@
 import AVFoundation
 @testable import MeetingTranscriber
+import MTPipelineCore
 import XCTest
 
 final class ResamplingIntegrationTests: XCTestCase { // swiftlint:disable:this balanced_xctest_lifecycle

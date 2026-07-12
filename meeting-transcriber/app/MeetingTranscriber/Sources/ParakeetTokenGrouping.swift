@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MTPipelineCore
 
 /// Pure token-grouping logic for Parakeet ASR output.
 ///
@@ -46,41 +47,17 @@ enum ParakeetTokenGrouping {
         return TimestampedSegment(start: timings.first!.startTime, end: timings.last!.endTime, text: text)
     }
 
-    /// Detokenize SentencePiece token timings into word-level
+    /// Detokenize FluidAudio Parakeet `TokenTiming`s into word-level
     /// `WordTimeline.Word`s for word-level speaker attribution.
     ///
-    /// FluidAudio's Parakeet tokenizer marks a word boundary with a leading
-    /// space or `▁` (U+2581) on the first sub-token of the word; continuation
-    /// sub-tokens carry neither. Each word spans from the start time of its
-    /// first sub-token to the end time of its last, and takes the mean of the
-    /// sub-token confidences as its probability. Pure so it unit-tests without
-    /// a model.
+    /// Thin adapter: maps FluidAudio's token type onto the engine-agnostic
+    /// `WordTimeline.SubwordToken` and delegates the SentencePiece
+    /// detokenization (leading space / `▁` = word start, mean sub-token
+    /// confidence) to the shared `WordTimeline.words` in `MTPipelineCore`.
     static func groupIntoWords(_ timings: [TokenTiming], source: WordTimeline.Track) -> [WordTimeline.Word] {
-        var words: [WordTimeline.Word] = []
-        var tokens: [String] = []
-        var start: TimeInterval = 0
-        var end: TimeInterval = 0
-        var confidences: [Float] = []
-
-        func flush() {
-            defer { tokens = []; confidences = [] }
-            let text = tokens.joined()
-                .replacingOccurrences(of: "\u{2581}", with: " ")
-                .trimmingCharacters(in: CharacterSet.whitespaces)
-            guard !text.isEmpty else { return }
-            let probability = confidences.isEmpty ? nil : confidences.reduce(0, +) / Float(confidences.count)
-            words.append(WordTimeline.Word(start: start, end: end, text: text, probability: probability, source: source))
+        let tokens = timings.map {
+            WordTimeline.SubwordToken(token: $0.token, start: $0.startTime, end: $0.endTime, confidence: $0.confidence)
         }
-
-        for timing in timings {
-            let startsWord = timing.token.hasPrefix(" ") || timing.token.hasPrefix("\u{2581}")
-            if startsWord, !tokens.isEmpty { flush() }
-            if tokens.isEmpty { start = timing.startTime }
-            tokens.append(timing.token)
-            end = timing.endTime
-            confidences.append(timing.confidence)
-        }
-        flush()
-        return words
+        return WordTimeline.words(fromTokens: tokens, source: source)
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 @testable import MeetingTranscriber
+import MTPipelineCore
 import WhisperKit
 import XCTest
 

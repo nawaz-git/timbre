@@ -1,4 +1,5 @@
 @testable import MeetingTranscriber
+import MTPipelineCore
 import XCTest
 
 final class FluidVADTests: XCTestCase {

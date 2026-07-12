@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MTPipelineCore
 import os.log
 
 private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "FluidVAD")

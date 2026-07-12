@@ -1,4 +1,5 @@
 @testable import MeetingTranscriber
+import MTPipelineCore
 import XCTest
 
 /// Pure-logic tests for cross-track echo/bleed de-duplication. Duplicates

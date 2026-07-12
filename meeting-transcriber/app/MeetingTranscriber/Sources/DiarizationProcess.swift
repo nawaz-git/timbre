@@ -1,13 +1,14 @@
 import FluidAudio
 import Foundation
+import MTPipelineCore
 
 /// Result from diarization.
 struct DiarizationResult {
-    struct Segment {
-        let start: TimeInterval
-        let end: TimeInterval
-        let speaker: String
-    }
+    /// A speaker interval. Aliased to the shared `SpeakerSegment` so the
+    /// word-attribution core in `MTPipelineCore` consumes these directly and
+    /// every `DiarizationResult.Segment(start:end:speaker:)` call site keeps
+    /// compiling unchanged.
+    typealias Segment = SpeakerSegment
 
     let segments: [Segment]
     let speakingTimes: [String: TimeInterval]
@@ -158,33 +159,15 @@ enum DiarizationProcess {
 
     /// Maximum silence gap (seconds) before breaking a same-speaker block.
     /// Pauses longer than this start a new paragraph even for the same speaker.
-    static let mergeGapThreshold: TimeInterval = 2.0
+    static let mergeGapThreshold: TimeInterval = TranscriptSegments.mergeGapThreshold
 
     /// Merge consecutive segments from the same speaker into single blocks.
-    /// Preserves the start timestamp of the first segment and end timestamp of the last.
-    /// Text is joined with spaces. A silence gap > `mergeGapThreshold` forces a break.
+    /// Delegates to the shared `TranscriptSegments` rule so the app and
+    /// mt-batch merge identically.
     static func mergeConsecutiveSpeakers(
         _ segments: [TimestampedSegment],
     ) -> [TimestampedSegment] {
-        guard var current = segments.first else { return [] }
-
-        var merged: [TimestampedSegment] = []
-        for seg in segments.dropFirst() {
-            let silenceGap = seg.start - current.end
-            if seg.speaker == current.speaker, silenceGap <= mergeGapThreshold {
-                current = TimestampedSegment(
-                    start: current.start,
-                    end: seg.end,
-                    text: "\(current.text) \(seg.text)",
-                    speaker: current.speaker,
-                )
-            } else {
-                merged.append(current)
-                current = seg
-            }
-        }
-        merged.append(current)
-        return merged
+        TranscriptSegments.mergeConsecutiveSpeakers(segments)
     }
 
     /// Assign speakers using separate diarizations for app and mic tracks.
