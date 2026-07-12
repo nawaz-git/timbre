@@ -1336,6 +1336,12 @@
   margin-bottom: var(--space-3, 12px);
 }
 
+/* Disk-usage line sits tight under the Meetings library row it describes,
+   overriding the section body's inter-row gap so it reads as attached. */
+.settings-storage-usage {
+  margin-top: calc(-1 * var(--space-3, 12px));
+}
+
 .settings-row__value {
   display: flex;
   align-items: center;

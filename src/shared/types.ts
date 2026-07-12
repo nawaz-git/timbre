@@ -106,6 +106,14 @@ export interface Settings {
    */
   launchAtLogin: boolean
   /**
+   * Displayed root for live recordings. `undefined` => the engine's fixed
+   * default (`~/Downloads/MeetingTranscriber`); a value is only ever written
+   * once the engine can be pointed at a different root (see
+   * `bridgeSupports.outputRoot`). Kept optional so the transparency UI works
+   * before the move-library capability exists.
+   */
+  recordingsFolder?: string
+  /**
    * Wall-clock ms epoch when the user finished (or skipped) the onboarding
    * wizard. `undefined` => the wizard has not been completed and App.tsx
    * mounts it instead of the normal shell. Set via `onboarding:complete`,
@@ -311,6 +319,18 @@ export interface MeetingSummary {
  */
 export const LIVE_PLACEHOLDER_DEFAULT_MS = 10_000
 
+/**
+ * On-disk footprint of the live-recordings library (recordings + protocols),
+ * surfaced in Settings → Storage so the size of local capture is never a
+ * surprise. Computed by a `du`-style walk in the main process, cached briefly.
+ */
+export interface StorageUsage {
+  /** Total bytes across the library root. */
+  bytes: number
+  /** Distinct recorded meetings found in the library. */
+  meetings: number
+}
+
 /** One full-text transcript search hit — a meeting id plus a match snippet. */
 export interface TranscriptSearchHit {
   /** Meeting id (`engine:<prefix>` or `imported:<folder>`). */
@@ -442,6 +462,8 @@ export const IPC = {
   meetingsSearchTranscripts: 'meetings:searchTranscripts',
   /** Reveal a file in Finder (`shell.showItemInFolder`) — e.g. an exported file. */
   meetingsReveal: 'meetings:reveal',
+  /** Disk footprint of the live-recordings library → StorageUsage (10s cache). */
+  storageUsage: 'storage:usage',
   tagsList: 'tags:list',
   tagsAdd: 'tags:add',
   tagsUpdate: 'tags:update',

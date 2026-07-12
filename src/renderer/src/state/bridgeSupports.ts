@@ -16,5 +16,13 @@ export const bridgeSupports = {
    * identical output. Keep this `false` until that consumption lands; then
    * the Processing → Transcription quality control becomes visible.
    */
-  processingMode: false
+  processingMode: false,
+  /**
+   * The engine can write live recordings to a user-chosen root
+   * (`engine_config.json.outputRoot`). Until then the library lives at the
+   * fixed `~/Downloads/MeetingTranscriber`, so Settings ships only the
+   * transparency pieces (path + usage) and hides the "Move recordings…"
+   * action. Flip to `true` when the engine honours a root override.
+   */
+  outputRoot: false
 } as const

@@ -19,6 +19,7 @@ import type {
   PrivacyPane,
   RecordingStatus,
   Settings,
+  StorageUsage,
   TagDef,
   TranscriptSearchHit
 } from '../../shared/types'
@@ -30,6 +31,7 @@ import { showMainWindow } from '../tray'
 import { deleteSpeakerFromGlobalDB, listEnrolledSpeakers, numSpeakersToArg } from '../backend'
 import {
   addSpeakerToMeeting,
+  computeStorageUsage,
   deleteMeeting,
   exportMeeting,
   findEngineAudioForPrefix,
@@ -392,6 +394,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.meetingsReveal, async (_event, filePath: string): Promise<void> => {
     // Highlight a specific file in Finder (e.g. a just-exported transcript).
     shell.showItemInFolder(filePath)
+  })
+
+  ipcMain.handle(IPC.storageUsage, async (): Promise<StorageUsage> => {
+    // Disk footprint of the live-recordings library. Best-effort + 10s-cached
+    // in meetings.ts, so a stat storm never blocks the Storage settings pane.
+    return computeStorageUsage()
   })
 
   // ── system:* — tray + permissions surface ─────────────────────────────

@@ -1,5 +1,6 @@
 import { shell } from 'electron'
 import { promises as fs } from 'fs'
+import type { Dirent } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import type {
@@ -7,6 +8,7 @@ import type {
   MeetingTranscript,
   NumSpeakersHint,
   SpeakerRecord,
+  StorageUsage,
   TranscriptSearchHit
 } from '../shared/types'
 import {
@@ -1152,6 +1154,94 @@ export async function engineDefaultRootExists(): Promise<boolean> {
 }
 
 export const liveRecordingsRoot = ENGINE_DEFAULT_ROOT
+
+// ─── Storage usage (Settings → Storage) ────────────────────────────────────
+
+/** 10s cache — a recursive du over the whole library isn't free to repeat. */
+let storageUsageCache: { at: number; value: StorageUsage } | null = null
+const STORAGE_USAGE_TTL_MS = 10_000
+
+/** Recursive byte total under `dir`. Missing/unreadable dirs count as 0. */
+async function duBytes(dir: string): Promise<number> {
+  let entries: Dirent[]
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  let total = 0
+  for (const entry of entries) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      total += await duBytes(full)
+    } else if (entry.isFile()) {
+      try {
+        total += (await fs.stat(full)).size
+      } catch {
+        // Vanished mid-walk (e.g. a file cleaned up between readdir and stat).
+      }
+    }
+  }
+  return total
+}
+
+/**
+ * Strip the known engine-file suffixes to recover a meeting's `<prefix>`.
+ * `recordings/` holds `<prefix>_{mix,app,mic}.wav` + `<prefix>_screen.{mp4,mov}`;
+ * `protocols/` holds `<prefix>.{txt,md}`, `<prefix>.meta.json`,
+ * `<prefix>_segments.json`. Returns null for anything unrecognised.
+ */
+function meetingPrefixFromFile(dir: 'recordings' | 'protocols', name: string): string | null {
+  if (dir === 'recordings') {
+    const wav = name.match(/^(.+?)_(?:mix|app|mic)\.wav$/)
+    if (wav) return wav[1]
+    const vid = name.match(/^(.+?)_screen\.(?:mp4|mov)$/)
+    return vid ? vid[1] : null
+  }
+  const seg = name.match(/^(.+?)_segments\.json$/)
+  if (seg) return seg[1]
+  const meta = name.match(/^(.+?)\.meta\.json$/)
+  if (meta) return meta[1]
+  const doc = name.match(/^(.+?)\.(?:txt|md)$/)
+  return doc ? doc[1] : null
+}
+
+/** Distinct recorded-meeting prefixes across the recordings + protocols dirs. */
+async function collectMeetingPrefixes(root: string): Promise<Set<string>> {
+  const prefixes = new Set<string>()
+  for (const sub of ['recordings', 'protocols'] as const) {
+    let names: string[]
+    try {
+      names = await fs.readdir(join(root, sub))
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      const prefix = meetingPrefixFromFile(sub, name)
+      if (prefix) prefixes.add(prefix)
+    }
+  }
+  return prefixes
+}
+
+/**
+ * Disk footprint of the live-recordings library: total bytes (recursive du)
+ * plus the count of distinct recorded meetings. Best-effort — an absent or
+ * unreadable root reports zero rather than throwing. Cached 10s so repeated
+ * Settings reads don't re-walk the tree.
+ */
+export async function computeStorageUsage(
+  root: string = liveRecordingsRoot
+): Promise<StorageUsage> {
+  const now = Date.now()
+  if (storageUsageCache && now - storageUsageCache.at < STORAGE_USAGE_TTL_MS) {
+    return storageUsageCache.value
+  }
+  const [bytes, prefixes] = await Promise.all([duBytes(root), collectMeetingPrefixes(root)])
+  const value: StorageUsage = { bytes, meetings: prefixes.size }
+  storageUsageCache = { at: now, value }
+  return value
+}
 
 // Re-export so the IPC layer can use it without an extra path import.
 export { basename }

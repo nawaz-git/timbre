@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Folder,
   Gauge,
@@ -21,7 +21,7 @@ import { allGranted, useHelperPermissions, useOnboardingComplete } from '../stat
 import { useTags } from '../state/tags'
 import { bridgeSupports } from '../state/bridgeSupports'
 import { ASR_LANGUAGES } from '../../../shared/types'
-import type { ScreenCaptureScope, TagDef, ThemeMode } from '../../../shared/types'
+import type { ScreenCaptureScope, StorageUsage, TagDef, ThemeMode } from '../../../shared/types'
 
 const THEME_OPTIONS: ThemeMode[] = ['auto', 'light', 'dark']
 const THEME_LABEL: Record<ThemeMode, string> = {
@@ -53,6 +53,17 @@ const PROCESSING_QUALITY_HINT: Record<'fast' | 'max', string> = {
 }
 
 const APP_VERSION = APP_VERSION_PLACEHOLDER
+
+/** Fixed engine default until the engine can be pointed at another root. */
+const DEFAULT_LIVE_ROOT = '~/Downloads/MeetingTranscriber/'
+
+/** Human file size using decimal units, matching macOS Finder. */
+function formatBytes(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`
+  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`
+  if (bytes >= 1e3) return `${Math.round(bytes / 1e3)} KB`
+  return `${bytes} B`
+}
 
 const NEW_TAG_PALETTE = [
   '#9aa0a6',
@@ -123,6 +134,26 @@ export function SettingsView(): JSX.Element {
   // without expanding the section. Same source the checklist inside it reads.
   const { snapshot: permSnapshot } = useHelperPermissions()
   const permsAllGranted = allGranted(permSnapshot)
+  // Disk footprint of the meetings library. `'loading'` shows a Calculating…
+  // skeleton; `'error'` renders an em-dash. Fetched once on mount (main-side
+  // result is 10s-cached, so re-opening Settings won't re-walk the tree).
+  const [storageUsage, setStorageUsage] = useState<StorageUsage | 'loading' | 'error'>('loading')
+
+  useEffect(() => {
+    let mounted = true
+    void window.api.storage
+      .usage()
+      .then((u) => {
+        if (mounted) setStorageUsage(u)
+      })
+      .catch((err) => {
+        console.warn('storage.usage() failed', err)
+        if (mounted) setStorageUsage('error')
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
   const [newTagName, setNewTagName] = useState('')
   const [newTagColor, setNewTagColor] = useState(NEW_TAG_PALETTE[0])
   const [tagError, setTagError] = useState<string | null>(null)
@@ -320,8 +351,39 @@ export function SettingsView(): JSX.Element {
 
       {/* ── Storage ────────────────────────────────────────────────── */}
       <Section icon={<Folder size={16} />} title="Storage">
+        {/* Meetings library leads — the meeting is the unit of everything.
+            A "Move recordings…" action is deferred behind
+            bridgeSupports.outputRoot until the engine can be pointed at a
+            different root; today the library lives at the fixed default, so
+            we ship only the location + a disk-usage line. */}
         <SettingsRow
-          label="Output folder"
+          label="Meetings library"
+          description="Recordings and transcripts stay on this Mac. Screen video makes meetings large — check usage occasionally."
+        >
+          <div className="settings__path" title={settings.recordingsFolder ?? DEFAULT_LIVE_ROOT}>
+            {settings.recordingsFolder ?? DEFAULT_LIVE_ROOT}
+          </div>
+          <button
+            className="btn"
+            onClick={() => {
+              void window.api.settings.openLiveFolder()
+            }}
+          >
+            Open in Finder
+          </button>
+        </SettingsRow>
+        <div className="settings-row__description settings-storage-usage" role="status">
+          {storageUsage === 'loading'
+            ? 'Calculating…'
+            : storageUsage === 'error'
+              ? '–'
+              : `Using ${formatBytes(storageUsage.bytes)} across ${storageUsage.meetings} meeting${
+                  storageUsage.meetings === 1 ? '' : 's'
+                }`}
+        </div>
+
+        <SettingsRow
+          label="Imported transcripts"
           description="Where transcripts from imported audio files are saved."
         >
           <div className="settings__path" title={settings.outputFolder}>
@@ -334,21 +396,6 @@ export function SettingsView(): JSX.Element {
             }}
           >
             Choose…
-          </button>
-        </SettingsRow>
-
-        <SettingsRow
-          label="Live recordings folder"
-          description="The bundled engine writes live recordings here. Both file imports and live recordings show up unified in the Meetings tab."
-        >
-          <div className="settings__path">~/Downloads/MeetingTranscriber/</div>
-          <button
-            className="btn"
-            onClick={() => {
-              void window.api.settings.openLiveFolder()
-            }}
-          >
-            Open in Finder
           </button>
         </SettingsRow>
       </Section>
