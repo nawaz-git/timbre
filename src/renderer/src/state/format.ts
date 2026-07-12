@@ -1,3 +1,17 @@
+import type { ProcessingStage } from '../../../shared/types'
+
+/**
+ * Human, honest-progress labels for a processing meeting's stage. One
+ * shared map so the Home hero and the Meetings list/detail render identical
+ * copy (formerly duplicated verbatim in both views).
+ */
+export const PROCESSING_STAGE_LABEL: Record<ProcessingStage, string> = {
+  transcribing: 'Transcribing speech',
+  diarizing: 'Identifying speakers',
+  summarizing: 'Writing summary',
+  unknown: 'Working…'
+}
+
 /** Format a number of seconds as `mm:ss` or `h:mm:ss`. */
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '0:00'

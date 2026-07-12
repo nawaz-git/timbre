@@ -24,7 +24,12 @@ import {
   Trash2,
   X
 } from 'lucide-react'
-import { formatDate, formatDateRelative, formatDuration } from '../state/format'
+import {
+  formatDate,
+  formatDateRelative,
+  formatDuration,
+  PROCESSING_STAGE_LABEL
+} from '../state/format'
 import {
   filterMeetingsByQuery,
   groupMeetingsByDate,
@@ -47,20 +52,11 @@ import type {
   MeetingSummary,
   MeetingTranscript,
   NumSpeakersHint,
-  ProcessingStage,
   TranscriptSearchHit,
   TranscriptSegment
 } from '../../../shared/types'
 
 type TabKey = 'summary' | 'transcript' | 'speakers' | 'video' | 'export' | 'tags'
-
-/** Human stage labels for a processing meeting (the honest-progress copy). */
-const PROCESSING_STAGE_LABEL: Record<ProcessingStage, string> = {
-  transcribing: 'Transcribing speech',
-  diarizing: 'Identifying speakers',
-  summarizing: 'Writing summary',
-  unknown: 'Working…'
-}
 
 /** Compact elapsed like "3 min" / "1 hr 4 min" from an epoch-ms start. */
 function formatProcessingElapsed(startedAt: number): string {
