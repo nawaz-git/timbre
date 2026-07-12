@@ -118,7 +118,14 @@ const api = {
     searchTranscripts: (query: string): Promise<TranscriptSearchHit[]> =>
       ipcRenderer.invoke(IPC.meetingsSearchTranscripts, query),
     /** Reveal a file in Finder (e.g. an exported transcript). */
-    reveal: (filePath: string): Promise<void> => ipcRenderer.invoke(IPC.meetingsReveal, filePath)
+    reveal: (filePath: string): Promise<void> => ipcRenderer.invoke(IPC.meetingsReveal, filePath),
+    /**
+     * Retry a failed engine meeting — re-imports its recorded source audio and
+     * clears the failure. Resolves `{ ok: false, error }` when the source audio
+     * is gone (nothing is changed in that case).
+     */
+    retryFailed: (meetingId: string): Promise<{ ok: boolean; jobId?: string; error?: string }> =>
+      ipcRenderer.invoke(IPC.meetingsRetryFailed, meetingId)
   },
   speakers: {
     list: (): Promise<EnrolledSpeaker[]> => ipcRenderer.invoke(IPC.speakersList),
