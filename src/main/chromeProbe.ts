@@ -245,6 +245,14 @@ export function stopChromeProbe(): void {
   // isn't skipped by the gate (a stale placeholder could otherwise make the
   // restart wait a full slow interval before its first real probe).
   state.lastProbeAt = 0
+  // Clear the cached snapshot so a paused app can't keep advertising a
+  // phantom Meet tab. Without this the last-seen tab survives the stop and
+  // drives a stale live-placeholder row, a false red "engine not capturing"
+  // banner, and a tray "Meeting detected" label while the user is paused.
+  // Reuse updateSnapshot so renderer windows get the diff-gated push.
+  if (state.snapshot.tab !== null || state.snapshot.available) {
+    updateSnapshot({ available: false, tab: null })
+  }
   // Engine is no longer watching — remove the signal so a stale file can't
   // trigger a recording later.
   void writeActiveMeetingSignal(null)
