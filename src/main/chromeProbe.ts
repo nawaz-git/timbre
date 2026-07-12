@@ -207,6 +207,20 @@ export function getChromeMeetSnapshot(): ChromeMeetSnapshot {
 }
 
 /**
+ * Main-process listeners for meet-snapshot changes. The renderer gets the
+ * `chrome-meet:update` push; in-process consumers (the app-status machine)
+ * subscribe here instead. Fired from `updateSnapshot` only when something
+ * meaningful changed.
+ */
+type ChromeMeetListener = (snapshot: ChromeMeetSnapshot) => void
+const chromeMeetListeners = new Set<ChromeMeetListener>()
+
+export function onChromeMeetChange(fn: ChromeMeetListener): () => void {
+  chromeMeetListeners.add(fn)
+  return () => chromeMeetListeners.delete(fn)
+}
+
+/**
  * Begin polling. Called when the engine moves into `watching` or
  * `recording` state, and stopped when it returns to `idle`. Safe to
  * call multiple times — idempotent.
@@ -408,6 +422,13 @@ function updateSnapshot(next: ChromeMeetSnapshot): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('chrome-meet:update', next)
+    }
+  }
+  for (const fn of chromeMeetListeners) {
+    try {
+      fn(next)
+    } catch (err) {
+      console.error('[chromeProbe] listener threw', err)
     }
   }
 }

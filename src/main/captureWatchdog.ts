@@ -115,6 +115,19 @@ export function getWatchdogSignal(): CaptureWatchdogSignal {
 }
 
 /**
+ * Main-process listeners for watchdog-signal changes. The renderer gets the
+ * `capture-watchdog:update` push; in-process consumers (the app-status machine)
+ * subscribe here instead. Fired from `setSignal`.
+ */
+type WatchdogListener = (signal: CaptureWatchdogSignal) => void
+const watchdogListeners = new Set<WatchdogListener>()
+
+export function onWatchdogSignalChange(fn: WatchdogListener): () => void {
+  watchdogListeners.add(fn)
+  return () => watchdogListeners.delete(fn)
+}
+
+/**
  * Force a fresh evaluation window for the watchdog. Called when the user
  * restarts the helper from the red banner (TICKET-003): we want to clear
  * the stale `helperPermissionLikely` flag so the renderer's red banner
@@ -550,6 +563,13 @@ function setSignal(next: CaptureWatchdogSignal): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('capture-watchdog:update', next)
+    }
+  }
+  for (const fn of watchdogListeners) {
+    try {
+      fn(next)
+    } catch (err) {
+      console.error('[watchdog] listener threw', err)
     }
   }
 }
