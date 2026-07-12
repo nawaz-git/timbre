@@ -46,6 +46,30 @@ class PipelineQueue {
     /// Called when a job completes (success or error) — for notifications
     var onJobStateChange: ((PipelineJob, JobState, JobState) -> Void)?
 
+    /// Called when a MAX-tier refine finishes and has rewritten the outputs —
+    /// carries the quality report for the completion notification (T12 surface).
+    var onRefineComplete: ((PipelineJob, RefineQualityReport) -> Void)?
+
+    // MARK: - MAX-tier refinement
+
+    /// Factory for the background MAX refiner. `nil` = MAX refinement
+    /// unavailable (tests / standalone build with no wiring); AppState injects
+    /// a real `MaxAccuracyPipeline`.
+    let maxRefinerFactory: (() -> any MaxRefining)?
+    /// Reads the requested processing tier — fresh from the Electron bridge in
+    /// production so a mid-session change is honoured on the next completed job.
+    let processingModeProvider: () -> ProcessingMode
+    /// In-flight refine tasks, keyed by job so `cancelJob` can stop one.
+    private var refineTasks: [UUID: Task<Void, Never>] = [:]
+    /// Jobs already routed into a refine, so the refine's own terminal `.done`
+    /// can't re-trigger another refine.
+    private var refiningJobIDs: Set<UUID> = []
+
+    /// Marker-file extension the engine writes next to a meeting's `.txt` while
+    /// a MAX refine is in flight; Timbre reads its presence to show a "Refining"
+    /// status. Removed on completion or cancel.
+    static let refineMarkerExtension = "refining"
+
     // MARK: - Speaker Naming
 
     /// Data for the speaker naming popup.
@@ -214,7 +238,7 @@ class PipelineQueue {
             Task { await generateProtocolForExistingJob(jobID: jobID) }
         } else if let idx = jobs.firstIndex(where: { $0.id == jobID }),
                   jobs[idx].state == .speakerNamingPending {
-            updateJobState(id: jobID, to: .done)
+            markFastComplete(jobID: jobID)
         }
     }
 
@@ -232,7 +256,7 @@ class PipelineQueue {
         )
         if let idx = jobs.firstIndex(where: { $0.id == jobID }),
            jobs[idx].state == .generatingProtocol {
-            updateJobState(id: jobID, to: .done)
+            markFastComplete(jobID: jobID)
         }
     }
 
@@ -263,19 +287,24 @@ class PipelineQueue {
     /// simulate a stalled `replaceItemAt`.
     let snapshotWriter: @Sendable ([PipelineJob], URL) throws -> Void
 
-    /// Simple init for skeleton tests and basic queue usage.
+    /// Simple init for skeleton tests and basic queue usage. `outputDir` is
+    /// optional here (nil for pure queue-mechanics tests) but must be supplied
+    /// to exercise the MAX refine, which reads/writes a meeting's sidecars.
     init(
         logDir: URL? = nil,
+        outputDir: URL? = nil,
         speakerMatcherFactory: @escaping () -> SpeakerMatcher = PipelineQueue.throwawayMatcherFactory(),
         snapshotWriter: @escaping @Sendable ([PipelineJob], URL) throws -> Void = PipelineSnapshot.save,
         completedJobLifetime: TimeInterval = 60,
+        maxRefinerFactory: (() -> any MaxRefining)? = nil,
+        processingModeProvider: @escaping () -> ProcessingMode = { .fast },
     ) {
         self.logDir = logDir ?? AppPaths.ipcDir
         self.engine = nil
         self.diarizationFactory = nil
         self.diarizationFactoryWithMode = nil
         self.protocolGeneratorFactory = nil
-        self.outputDir = nil
+        self.outputDir = outputDir
         self.diarizeEnabled = false
         self.numSpeakers = 0
         self.micLabel = "Me"
@@ -284,6 +313,8 @@ class PipelineQueue {
         self.vadConfig = nil
         self.recognitionStatsLog = nil
         self.completedJobLifetime = completedJobLifetime
+        self.maxRefinerFactory = maxRefinerFactory
+        self.processingModeProvider = processingModeProvider
     }
 
     // MARK: - Known speaker names (issue #155)
@@ -346,6 +377,8 @@ class PipelineQueue {
         vadConfig: VADConfig? = nil,
         recognitionStatsLog: RecognitionStatsLog? = nil,
         completedJobLifetime: TimeInterval = 60,
+        maxRefinerFactory: (() -> any MaxRefining)? = nil,
+        processingModeProvider: @escaping () -> ProcessingMode = { .fast },
     ) {
         self.logDir = logDir ?? AppPaths.ipcDir
         self.engine = engine
@@ -361,10 +394,12 @@ class PipelineQueue {
         self.vadConfig = vadConfig
         self.recognitionStatsLog = recognitionStatsLog
         self.completedJobLifetime = completedJobLifetime
+        self.maxRefinerFactory = maxRefinerFactory
+        self.processingModeProvider = processingModeProvider
     }
 
     var activeJobs: [PipelineJob] {
-        jobs.filter { [.transcribing, .diarizing, .generatingProtocol].contains($0.state) }
+        jobs.filter { [.transcribing, .diarizing, .generatingProtocol, .refining].contains($0.state) }
     }
 
     var pendingJobs: [PipelineJob] {
@@ -439,6 +474,15 @@ class PipelineQueue {
             removeNamingData(jobID: id, slug: slug)
             jobs.remove(at: index)
             saveSnapshot()
+
+        case .refining:
+            // Stop the background MAX upgrade but KEEP the FAST result already
+            // on disk — the meeting stays usable. Cancel the refine task,
+            // remove the marker, and settle the job at `.done`.
+            refineTasks[id]?.cancel()
+            refineTasks[id] = nil
+            removeRefineMarker(jobID: id)
+            updateJobState(id: id, to: .done)
 
         case .done, .error:
             break
@@ -1228,7 +1272,7 @@ class PipelineQueue {
             // notification has to come after the transition above.
             NotificationCenter.default.post(name: .showSpeakerNaming, object: nil)
         } else {
-            updateJobState(id: ctx.jobID, to: .done)
+            markFastComplete(jobID: ctx.jobID)
         }
     }
 
@@ -1268,6 +1312,152 @@ class PipelineQueue {
             addWarning(id: jobID, "Protocol generation failed — transcript saved")
             stopElapsedTimer()
         }
+    }
+
+    // MARK: - MAX-tier refinement
+
+    /// Terminal for a FAST result whose labels are final (naming resolved or
+    /// skipped). When the user picked MAX and a refiner is wired, kick off the
+    /// background upgrade instead of settling at `.done`; otherwise finish
+    /// normally. Every FAST-completion site routes through here. Internal (not
+    /// private) so the refine state machine is unit-testable via a stub refiner.
+    func markFastComplete(jobID: UUID) {
+        guard maxRefinerFactory != nil,
+              processingModeProvider() == .max,
+              !refiningJobIDs.contains(jobID),
+              jobs.first(where: { $0.id == jobID })?.transcriptPath != nil else {
+            updateJobState(id: jobID, to: .done)
+            return
+        }
+        startMaxRefine(jobID: jobID)
+    }
+
+    /// Transition a completed FAST job into the background MAX refine: mark the
+    /// recording processed (so orphan recovery won't re-enqueue if we crash
+    /// mid-refine — the FAST outputs are already on disk), write the marker,
+    /// flip to `.refining`, and spawn the cancellable refine task.
+    private func startMaxRefine(jobID: UUID) {
+        guard let refiner = maxRefinerFactory?(),
+              let idx = jobs.firstIndex(where: { $0.id == jobID }),
+              let transcriptPath = jobs[idx].transcriptPath,
+              let outputDir,
+              let input = buildRefineInput(job: jobs[idx], transcriptPath: transcriptPath, outputDir: outputDir) else {
+            updateJobState(id: jobID, to: .done)
+            return
+        }
+        refiningJobIDs.insert(jobID)
+        markProcessed(mixPath: jobs[idx].mixPath)
+        writeRefineMarker(transcriptPath: transcriptPath)
+        let title = jobs[idx].meetingTitle
+        let namingSlug = jobs[idx].namingSlug
+        updateJobState(id: jobID, to: .refining)
+        logger.info("[\(PipelineJob.shortID(for: jobID), privacy: .public)] max_refine_start")
+        refineTasks[jobID] = Task { [weak self] in
+            await self?.runRefine(
+                jobID: jobID, refiner: refiner, input: input,
+                transcriptPath: transcriptPath, namingSlug: namingSlug,
+                title: title, outputDir: outputDir,
+            )
+        }
+    }
+
+    private func runRefine(
+        jobID: UUID, refiner: any MaxRefining, input: RefineInput,
+        transcriptPath: URL, namingSlug: String?, title: String, outputDir: URL,
+    ) async {
+        let shortID = PipelineJob.shortID(for: jobID)
+        let recordingsDir = outputDir.appendingPathComponent("recordings")
+        let protocolsDir = outputDir.appendingPathComponent("protocols")
+        var report: RefineQualityReport?
+        do {
+            let output = try await refiner.refine(input) { stage, fraction in
+                logger.debug("[\(shortID, privacy: .public)] refine_progress stage=\(stage.rawValue, privacy: .public) \(Int(fraction * 100), privacy: .public)%")
+            }
+            try Task.checkCancellation()
+            // Overwrite the meeting's outputs in place so the meeting id stays
+            // stable (Timbre keys off the `.txt` stem). The FAST versions are
+            // superseded, not duplicated.
+            try? output.transcript.write(to: transcriptPath, atomically: true, encoding: .utf8)
+            if let slug = namingSlug {
+                if let data = try? JSONEncoder().encode(output.segments) {
+                    try? data.write(to: recordingsDir.appendingPathComponent("\(slug)_segments.json"), options: .atomic)
+                }
+                if let qdata = try? JSONEncoder().encode(output.report) {
+                    try? qdata.write(to: recordingsDir.appendingPathComponent("\(slug)_quality.json"), options: .atomic)
+                }
+            }
+            await generateProtocol(jobID: jobID, transcript: output.transcript, title: title, protocolsDir: protocolsDir)
+            report = output.report
+            logger.info("[\(shortID, privacy: .public)] max_refine_done reassignments=\(output.report.utteranceReassignments, privacy: .public)")
+        } catch is CancellationError {
+            logger.info("[\(shortID, privacy: .public)] max_refine_cancelled")
+        } catch {
+            logger.warning("[\(shortID, privacy: .public)] max_refine_failed error=\(error.localizedDescription, privacy: .public) — keeping FAST result")
+        }
+        removeRefineMarker(transcriptPath: transcriptPath)
+        refineTasks[jobID] = nil
+        // Only settle here if cancel didn't already (cancel sets `.done` first).
+        if let job = jobs.first(where: { $0.id == jobID }), job.state == .refining {
+            updateJobState(id: jobID, to: .done)
+            if let report { onRefineComplete?(job, report) }
+        }
+    }
+
+    /// Assemble the refine inputs from a completed job: the durable native-rate
+    /// tracks (named off the transcript stem) and the FAST labelled segments
+    /// (the `<namingSlug>_segments.json` fallback). `nil` when no durable audio
+    /// survives — the refine is skipped and the job finishes FAST.
+    private func buildRefineInput(job: PipelineJob, transcriptPath: URL, outputDir: URL) -> RefineInput? {
+        let recordingsDir = outputDir.appendingPathComponent("recordings")
+        let stem = transcriptPath.deletingPathExtension().lastPathComponent
+        let fm = FileManager.default
+        func durable(_ suffix: String) -> URL? {
+            let url = recordingsDir.appendingPathComponent("\(stem)\(suffix)")
+            return fm.fileExists(atPath: url.path) ? url : nil
+        }
+        let app = durable(RecordingFileSuffix.app)
+        let mic = durable(RecordingFileSuffix.mic)
+        let mix = durable(RecordingFileSuffix.mix)
+        guard app != nil || mix != nil else { return nil }
+
+        var fastSegments: [TimestampedSegment] = []
+        if let slug = job.namingSlug,
+           let data = try? Data(contentsOf: recordingsDir.appendingPathComponent("\(slug)_segments.json")),
+           let segs = try? JSONDecoder().decode([TimestampedSegment].self, from: data) {
+            fastSegments = segs
+        }
+        return RefineInput(
+            title: job.meetingTitle,
+            appPath: app, micPath: mic, mixPath: mix,
+            micDelay: job.micDelay,
+            micLabel: micLabel,
+            numSpeakers: numSpeakers > 0 ? numSpeakers : nil,
+            llmRepairEnabled: EngineConfig.read().llmRepairEnabled,
+            fastSegments: fastSegments,
+        )
+    }
+
+    private func refineMarkerURL(transcriptPath: URL) -> URL {
+        transcriptPath.deletingPathExtension().appendingPathExtension(Self.refineMarkerExtension)
+    }
+
+    private func writeRefineMarker(transcriptPath: URL) {
+        try? Data().write(to: refineMarkerURL(transcriptPath: transcriptPath), options: .atomic)
+    }
+
+    private func removeRefineMarker(transcriptPath: URL) {
+        try? FileManager.default.removeItem(at: refineMarkerURL(transcriptPath: transcriptPath))
+    }
+
+    private func removeRefineMarker(jobID: UUID) {
+        guard let path = jobs.first(where: { $0.id == jobID })?.transcriptPath else { return }
+        removeRefineMarker(transcriptPath: path)
+    }
+
+    /// Test hook: await every in-flight MAX refine task so a test can assert on
+    /// the post-refine state without racing the background upgrade.
+    func awaitRefineTasks() async {
+        for task in refineTasks.values { await task.value }
     }
 
     // MARK: - Late re-apply speaker names
@@ -1325,7 +1515,7 @@ class PipelineQueue {
         rewriteSegmentSpeakers(slug: slug, userMapping: mapping, priorMapping: namingData.mapping)
 
         removeNamingData(jobID: jobID, slug: slug)
-        updateJobState(id: jobID, to: .done)
+        markFastComplete(jobID: jobID)
     }
 
     /// Rewrite the persisted `<slug>_segments.json` so its per-segment speaker
@@ -1671,6 +1861,13 @@ class PipelineQueue {
             switch loaded[i].state {
             case .transcribing, .diarizing, .generatingProtocol:
                 loaded[i].state = .waiting
+
+            case .refining:
+                // The FAST result was already persisted before the refine
+                // started, so a refine interrupted by a crash/quit settles at
+                // `.done` (discarded below). A stale `.refining` marker on disk
+                // self-heals on the Timbre side (stale-status cap).
+                loaded[i].state = .done
 
             default:
                 break

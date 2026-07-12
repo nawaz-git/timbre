@@ -1157,6 +1157,7 @@ final class AppState { // swiftlint:disable:this type_body_length
                 warmStartFb: settings.warmStartFb,
                 minSegmentDurationSeconds: settings.minSegmentDurationSeconds,
                 excludeOverlap: settings.excludeOverlap,
+                exposeChunkEmbeddings: false,
             ),
         )
     }
