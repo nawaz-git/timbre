@@ -685,59 +685,6 @@ final class AppStateTests: XCTestCase { // swiftlint:disable:this type_body_leng
         XCTAssertNotNil(state.pipelineQueue.engine)
     }
 
-    func testActiveTranscriptionEngineReturnsQwen3WhenSet() {
-        guard #available(macOS 15, *) else { return }
-        let settings = AppSettings()
-        settings.transcriptionEngine = .qwen3
-        let state = AppState(settings: settings)
-        XCTAssertTrue(state.activeTranscriptionEngine is Qwen3AsrEngine)
-    }
-
-    func testActiveTranscriptionEngineSwitchesToQwen3AndBack() {
-        guard #available(macOS 15, *) else { return }
-        let settings = AppSettings()
-        settings.transcriptionEngine = .whisperKit
-        let state = AppState(settings: settings)
-        XCTAssertTrue(state.activeTranscriptionEngine is WhisperKitEngine)
-
-        settings.transcriptionEngine = .qwen3
-        XCTAssertTrue(state.activeTranscriptionEngine is Qwen3AsrEngine)
-
-        settings.transcriptionEngine = .parakeet
-        XCTAssertTrue(state.activeTranscriptionEngine is ParakeetEngine)
-    }
-
-    func testMakePipelineQueueUsesQwen3Engine() {
-        guard #available(macOS 15, *) else { return }
-        let settings = AppSettings()
-        settings.transcriptionEngine = .qwen3
-        let state = AppState(settings: settings)
-        XCTAssertNotNil(state.makePipelineQueue().engine, "Qwen3 engine should be set")
-    }
-
-    func testEnsurePipelineQueueWithQwen3() {
-        guard #available(macOS 15, *) else { return }
-        let settings = AppSettings()
-        settings.transcriptionEngine = .qwen3
-        let state = AppState(settings: settings)
-
-        state.ensurePipelineQueue()
-
-        XCTAssertNotNil(state.pipelineQueue.engine)
-    }
-
-    // MARK: - Qwen3 Fallback
-
-    func testActiveTranscriptionEngineQwen3FallbackOnOldOS() {
-        // On macOS < 15, Qwen3 selection should fall back to WhisperKit
-        // This test only meaningfully runs on macOS < 15, but validates the code path exists
-        let settings = AppSettings()
-        settings.transcriptionEngine = .qwen3
-        let state = AppState(settings: settings)
-        // On macOS 15+: Qwen3AsrEngine; on older: WhisperKit (fallback)
-        XCTAssertNotNil(state.activeTranscriptionEngine)
-    }
-
     // MARK: - MakePipelineQueue Settings
 
     func testMakePipelineQueueUsesDiarizeSettingFromSettings() {

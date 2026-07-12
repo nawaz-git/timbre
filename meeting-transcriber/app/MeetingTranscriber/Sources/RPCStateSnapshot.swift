@@ -93,8 +93,6 @@
             let active: TranscriptionEngineSetting
             let whisperKit: WhisperKit
             let parakeet: Parakeet
-            /// `nil` on macOS <15 where `Qwen3AsrEngine` isn't available.
-            let qwen3: Qwen3?
 
             struct WhisperKit: Codable {
                 let modelVariant: String
@@ -106,15 +104,10 @@
                 let customVocabularyPath: String
             }
 
-            struct Qwen3: Codable {
-                let language: String?
-            }
-
             static let empty = Self(
                 active: .whisperKit,
                 whisperKit: .init(modelVariant: "", language: nil),
                 parakeet: .init(customVocabularyPath: ""),
-                qwen3: nil,
             )
         }
 

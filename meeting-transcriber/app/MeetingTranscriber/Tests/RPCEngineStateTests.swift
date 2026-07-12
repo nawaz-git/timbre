@@ -69,20 +69,6 @@
             )
         }
 
-        func test_snapshot_reflectsActiveEngine_qwen3() throws {
-            guard #available(macOS 15, *) else {
-                throw XCTSkip("Qwen3 requires macOS 15+")
-            }
-            settings.transcriptionEngine = .qwen3
-            let state = AppState(settings: settings)
-            state.qwen3Engine.language = "en"
-
-            let snapshot = state.rpcStateSnapshot()
-
-            XCTAssertEqual(snapshot.engines.active, .qwen3)
-            XCTAssertEqual(snapshot.engines.qwen3?.language, "en")
-        }
-
         func test_snapshot_whisperLanguageNil_surfacesAsNil() {
             let state = AppState(settings: settings)
             state.whisperKit.language = nil
