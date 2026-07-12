@@ -58,6 +58,23 @@ final class AppStateTests: XCTestCase { // swiftlint:disable:this type_body_leng
         )
     }
 
+    // MARK: - Idle-unload gate
+
+    func testShouldUnloadIdleModelBlocksWhileRecording() {
+        // The idle fuse must never rip the model out mid-recording — the
+        // `.recording` prewarm loaded it for instant post-meeting transcription.
+        XCTAssertFalse(AppState.shouldUnloadIdleModel(isRecording: true, liveCaptionsEnabled: false))
+        XCTAssertFalse(AppState.shouldUnloadIdleModel(isRecording: true, liveCaptionsEnabled: true))
+    }
+
+    func testShouldUnloadIdleModelBlocksWhileLiveCaptionsOn() {
+        XCTAssertFalse(AppState.shouldUnloadIdleModel(isRecording: false, liveCaptionsEnabled: true))
+    }
+
+    func testShouldUnloadIdleModelAllowedWhenIdle() {
+        XCTAssertTrue(AppState.shouldUnloadIdleModel(isRecording: false, liveCaptionsEnabled: false))
+    }
+
     // MARK: - Default State
 
     func testIsWatchingFalseWhenNoWatchLoop() {
