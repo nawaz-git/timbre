@@ -60,6 +60,24 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, App
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// Current notification-authorization state mapped to the wire vocabulary
+    /// Electron surfaces (`authorized` / `denied` / `notDetermined` /
+    /// `provisional`) so the product can tell the user when engine alerts are
+    /// muted. Wraps the async `notificationSettings()` query. Returns
+    /// `notDetermined` when there's no app bundle (UNUserNotificationCenter is
+    /// unusable then). Static — it reads no instance state.
+    static func notificationAuthStatusString() async -> String {
+        guard Bundle.main.bundleIdentifier != nil else { return "notDetermined" }
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized: return "authorized"
+        case .provisional: return "provisional"
+        case .denied: return "denied"
+        case .notDetermined: return "notDetermined"
+        @unknown default: return "notDetermined"
+        }
+    }
+
     /// Pure function: determines notification content for a state transition.
     /// Returns nil if no notification should be sent.
     static func notificationContent(

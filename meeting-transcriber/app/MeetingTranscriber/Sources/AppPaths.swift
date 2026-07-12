@@ -37,6 +37,16 @@ enum AppPaths {
     /// a dying engine.
     static let engineHeartbeatFile = ipcDir.appendingPathComponent("engine_heartbeat.json")
 
+    /// Engine permission-health debug log. Lives under the user's Application
+    /// Support ipc dir (0600) rather than a fixed world-writable `/tmp` path,
+    /// which was spoofable/symlinkable and grew unbounded.
+    static let permissionHealthLog = ipcDir.appendingPathComponent("permission_health.log")
+
+    /// Structured, staleness-gated permission verdict Electron reads first
+    /// (JSON: screen/mic/ax + notification-auth + updatedAt). Written atomically
+    /// by `AppState.handlePermissionHealth`; lives beside `active_meeting.json`.
+    static let permissionVerdictFile = ipcDir.appendingPathComponent("permission_verdict.json")
+
     /// Recordings directory.
     static let recordingsDir = dataDir.appendingPathComponent("recordings")
 
