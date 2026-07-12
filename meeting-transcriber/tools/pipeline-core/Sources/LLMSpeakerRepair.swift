@@ -316,7 +316,7 @@ public enum LLMSpeakerRepair {
 
     /// Normalize a `spk:N` / `spk N` / ` SPK:1 ` tag body to a canonical
     /// `spk:N`, or `nil` when it isn't a speaker tag.
-    static func normalizeTag(_ raw: String) -> String? {
+    public static func normalizeTag(_ raw: String) -> String? {
         let lower = raw.lowercased().trimmingCharacters(in: .whitespaces)
         guard lower.hasPrefix("spk") else { return nil }
         let digits = lower.drop { !$0.isNumber }.prefix { $0.isNumber }
