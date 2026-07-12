@@ -399,6 +399,11 @@ export const IPC = {
   meetingsAddSpeaker: 'meetings:addSpeaker',
   meetingsRemoveSpeakerLabel: 'meetings:removeSpeakerLabel',
   meetingsReanalyze: 'meetings:reanalyze',
+  /**
+   * Recover a processing/stuck engine meeting by running its recorded audio
+   * through the built-in mt-batch pipeline (same eventing as a file import).
+   */
+  meetingsProcessNow: 'meetings:processNow',
   fileImport: 'file:import',
   backendSpawn: 'backend:spawn',
   pickFolder: 'settings:pickFolder',

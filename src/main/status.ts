@@ -27,6 +27,7 @@
  * per-second broadcast.
  */
 import { BrowserWindow, dialog } from 'electron'
+import { spawnSync } from 'child_process'
 import type {
   ActivityKind,
   AppAttention,
@@ -36,13 +37,15 @@ import type {
   GrantStatus,
   HelperPermissionSnapshot,
   ProcessingItem,
+  ProcessingStage,
   RecordingState
 } from '../shared/types'
 import { getStatus, onStatusChange } from './recording'
 import { getCaptureSignal, onCaptureSignalChange, type CaptureSignal } from './captureSignal'
 import { getChromeMeetSnapshot, onChromeMeetChange } from './chromeProbe'
-import { getWatchdogSignal, onWatchdogSignalChange } from './captureWatchdog'
+import { getWatchdogSignal, onWatchdogSignalChange, onMeetingsChanged } from './captureWatchdog'
 import { resolveLiveRecorderApp } from './backend'
+import { scanProcessingPrefixes, liveRecordingsRoot } from './meetings'
 
 /** All inputs the pure resolver needs — passed in so it's unit-testable. */
 export interface AppStatusInputs {
@@ -158,6 +161,7 @@ const state: {
   engineMissing: boolean
   tick: NodeJS.Timeout | null
   permPoll: NodeJS.Timeout | null
+  procPoll: NodeJS.Timeout | null
   unsubs: Array<() => void>
   lastSignature: string
 } = {
@@ -173,6 +177,7 @@ const state: {
   engineMissing: false,
   tick: null,
   permPoll: null,
+  procPoll: null,
   unsubs: [],
   lastSignature: ''
 }
@@ -206,6 +211,105 @@ export function onAppStatusChange(fn: StatusListener): () => void {
 export function setProcessingEntries(entries: ProcessingItem[]): void {
   state.processing = entries
   recompute()
+}
+
+// ─── Processing lifecycle ─────────────────────────────────────────────────
+
+/** How recently a `<prefix>*` file must have changed to read as "transcribing". */
+const PROCESSING_ACTIVE_MS = 20_000
+/** Floor for the stuck threshold — never flag a meeting as stuck before this. */
+const STUCK_FLOOR_MS = 10 * 60_000
+/** Engine binary paths to look for when deciding if the pipeline is still alive. */
+const ENGINE_PROCESS_PATTERNS = [
+  'MintrEngine.app/Contents/MacOS/MintrEngine',
+  'MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber'
+]
+
+/**
+ * Infer the pipeline stage without the (future) engine status file: segments
+ * present ⇒ diarization done, summary being written; recent file activity ⇒
+ * transcribing; otherwise unknown. PURE.
+ */
+export function inferProcessingStage(
+  hasSegments: boolean,
+  lastChangeMs: number,
+  now: number
+): ProcessingStage {
+  if (hasSegments) return 'summarizing'
+  if (now - lastChangeMs < PROCESSING_ACTIVE_MS) return 'transcribing'
+  return 'unknown'
+}
+
+/**
+ * Decide whether a processing meeting has stalled: nothing has changed for the
+ * whole meeting length (min 10 min) AND the engine process is gone, so nothing
+ * will ever finish it. Requiring the engine to be dead avoids false "stuck" on
+ * a long, legitimately-slow best-quality run. PURE.
+ */
+export function isProcessingStuck(
+  lastChangeMs: number,
+  estDurationSec: number | undefined,
+  now: number,
+  engineAlive: boolean
+): boolean {
+  if (engineAlive) return false
+  const thresholdMs = Math.max(STUCK_FLOOR_MS, (estDurationSec ?? 0) * 1000)
+  return now - lastChangeMs > thresholdMs
+}
+
+/** Is any engine binary currently running? (`pgrep -f` on both known paths.) */
+function isEngineProcessAlive(): boolean {
+  for (const pattern of ENGINE_PROCESS_PATTERNS) {
+    try {
+      const res = spawnSync('/usr/bin/pgrep', ['-f', pattern], {
+        stdio: ['ignore', 'pipe', 'ignore']
+      })
+      if (res.status === 0) return true
+    } catch {
+      // treat probe failure as "unknown" — fall through to the next pattern
+    }
+  }
+  return false
+}
+
+/** Re-scan processing meetings, infer stage + stuck, and feed the machine. */
+async function refreshProcessing(): Promise<void> {
+  let scan: Awaited<ReturnType<typeof scanProcessingPrefixes>>
+  try {
+    scan = await scanProcessingPrefixes(liveRecordingsRoot)
+  } catch (err) {
+    console.warn('[status] scanProcessingPrefixes failed', err)
+    scan = []
+  }
+  const now = Date.now()
+  // Only shell out to pgrep when there's something to judge stuck.
+  const engineAlive = scan.length > 0 ? isEngineProcessAlive() : true
+  const items: ProcessingItem[] = scan.map((e) => {
+    const item: ProcessingItem = {
+      id: `engine:${e.prefix}`,
+      title: e.title,
+      startedAt: e.startedAt,
+      stage: inferProcessingStage(e.hasSegments, e.lastChangeMs, now),
+      stuck: isProcessingStuck(e.lastChangeMs, e.estDurationSec, now, engineAlive)
+    }
+    if (e.estDurationSec !== undefined) item.estDurationSec = e.estDurationSec
+    return item
+  })
+  setProcessingEntries(items)
+}
+
+/**
+ * Start the processing tracker: refresh on every meetings-folder change (catches
+ * a meeting entering the pipeline) plus a 10 s poll while non-empty (ages stage
+ * and stuck over time). Returns an unsubscribe for the folder hook.
+ */
+function startProcessingTracker(): () => void {
+  const unsub = onMeetingsChanged(() => void refreshProcessing())
+  void refreshProcessing()
+  state.procPoll = setInterval(() => {
+    if (state.processing.length > 0) void refreshProcessing()
+  }, 10_000)
+  return unsub
 }
 
 /**
@@ -310,6 +414,7 @@ export function startAppStatus(): void {
   state.unsubs.push(onCaptureSignalChange(() => recompute()))
   state.unsubs.push(onChromeMeetChange(() => recompute()))
   state.unsubs.push(onWatchdogSignalChange(() => recompute()))
+  state.unsubs.push(startProcessingTracker())
   void refreshEngineFacts()
   state.permPoll = setInterval(() => void refreshEngineFacts(), 10_000)
   recompute()
@@ -325,6 +430,10 @@ export function stopAppStatus(): void {
   if (state.permPoll) {
     clearInterval(state.permPoll)
     state.permPoll = null
+  }
+  if (state.procPoll) {
+    clearInterval(state.procPoll)
+    state.procPoll = null
   }
 }
 

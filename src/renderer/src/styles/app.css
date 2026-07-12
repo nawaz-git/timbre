@@ -2928,7 +2928,8 @@
  */
 .meetings__detail-processing {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   gap: var(--space-2, 8px);
   margin-top: var(--space-3, 12px);
   padding: var(--space-3, 12px);
@@ -2937,6 +2938,58 @@
   background: var(--surface-base);
   font: 400 12.5px/1.5 var(--font-sans);
   color: var(--fg-muted);
+}
+
+/* ── Processing lifecycle: honest stage panel + stuck recovery ──── */
+.meetings__detail-processing-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font-weight: 500;
+  color: var(--fg);
+}
+.meetings__detail-processing-sub {
+  color: var(--fg-muted);
+}
+.meetings__detail-processing-note {
+  margin: 0;
+  color: var(--fg-subtle);
+}
+.meetings__detail-stuck {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md, 8px);
+  background: var(--danger-soft);
+  font: 400 12.5px/1.5 var(--font-sans);
+}
+.meetings__detail-stuck-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font-weight: 600;
+  color: var(--danger);
+}
+.meetings__detail-stuck-body {
+  margin: 0;
+  color: var(--fg-muted);
+}
+.meetings__detail-stuck-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-1, 4px);
+}
+.meetings__detail-stuck-note {
+  margin: 0;
+  color: var(--fg-muted);
+}
+.meetings__detail-stuck-error {
+  margin: 0;
+  color: var(--danger);
 }
 
 /* ── Tighten action row when overflow risk ─────────────────── */

@@ -31,6 +31,7 @@ import {
   addSpeakerToMeeting,
   deleteMeeting,
   exportMeeting,
+  findEngineAudioForPrefix,
   previewExportMeeting,
   listMeetings,
   liveRecordingsRoot,
@@ -255,6 +256,30 @@ export function registerIpcHandlers(): void {
           console.error('[meetings:reanalyze] failed', err.message)
         })
       return { jobId, filePath: meetingId, outputDir: settings.outputFolder }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.meetingsProcessNow,
+    async (_event, meetingId: string): Promise<BackendJob> => {
+      // Recover a processing/stuck engine meeting: run its recorded audio
+      // through mt-batch, reusing the exact import path so the existing
+      // backend:event progress + speaker-match wiring lights up. The recovered
+      // transcript lands as a new imported meeting; nothing is deleted.
+      if (!meetingId.startsWith('engine:')) {
+        throw new Error('Only engine recordings can be processed with the built-in pipeline.')
+      }
+      const prefix = meetingId.slice('engine:'.length)
+      const audioPath = await findEngineAudioForPrefix(prefix)
+      if (!audioPath) throw new Error('This meeting has no audio file to process.')
+      const settings = await readSettings()
+      const jobId = randomUUID()
+      const numSpeakers = numSpeakersToArg(settings.numSpeakers)
+      console.log('[meetings:processNow]', { jobId, meetingId, audioPath })
+      importFile(audioPath, settings.outputFolder, jobId, numSpeakers)
+        .then((result) => console.log('[meetings:processNow] done', result))
+        .catch((err: Error) => console.error('[meetings:processNow] failed', err.message))
+      return { jobId, filePath: audioPath, outputDir: settings.outputFolder }
     }
   )
 
