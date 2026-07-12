@@ -17,7 +17,7 @@ public class AudioCaptureSession {
     private let appLiveSink: LiveAudioSink?
     private let micLiveSink: LiveAudioSink?
     /// When false, the session records the microphone only — it creates NO
-    /// CoreAudio process tap or aggregate device (the T13 `disableAppAudioTap`
+    /// CoreAudio process tap or aggregate device (the `disableAppAudioTap`
     /// kill switch). No IOProc runs, so the tap-health watchdog and the
     /// heartbeat's `lastIOCallbackAt` stay dormant.
     private let captureAppAudio: Bool
@@ -78,7 +78,7 @@ public class AudioCaptureSession {
     /// Start capturing app audio (and optionally mic audio).
     public func start() throws {
         // App-audio process tap. Skipped entirely in mic-only mode
-        // (`captureAppAudio == false`, the T13 kill switch): no output file, no
+        // (`captureAppAudio == false`, the kill switch): no output file, no
         // aggregate device, no process tap, no IOProc — the mic below is the
         // sole source. `startedAppCapture` is nil in that mode so the watchdog
         // wiring is skipped too.
