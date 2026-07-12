@@ -129,6 +129,13 @@ struct Transcribe: AsyncParsableCommand {
     )
     var matchMargin: Float = GlobalSpeakerDB.defaultMatchMargin
 
+    @Option(
+        name: .long,
+        // swiftlint:disable:next line_length
+        help: "Debug: path to a word-level ground-truth JSON. Prints WDER/DER/speaker-count against it (also writes metrics.json) without changing the transcript. Drives cluster-threshold sweeps.",
+    )
+    var emitMetrics: String?
+
     func run() async throws {
         let outputURL = URL(fileURLWithPath: PathHelpers.expandTilde(outputDir))
 
@@ -342,6 +349,7 @@ struct Transcribe: AsyncParsableCommand {
             generatedAt: Date(),
             to: outputURL.appendingPathComponent("transcript.json"),
         )
+        emitMetricsIfRequested(labeled: labeled, outputURL: outputURL)
         try persistSpeakerDB(
             embeddings: diarization.embeddings,
             speakingTimes: diarization.speakingTimes,

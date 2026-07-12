@@ -72,6 +72,32 @@ enum Events {
         emit(["event": "matched_speakers", "matches": arr])
     }
 
+    /// Word- and turn-level diarization metrics for a `--emit-metrics` run.
+    /// One machine-readable line the local threshold-sweep driver parses to
+    /// pick the best cluster threshold. Values are rounded to 4 decimals to
+    /// keep the line short without hiding sub-percent movement.
+    static func metrics(
+        fixture: String,
+        wder: Double,
+        der: Double,
+        speakerCountError: Int,
+        refSpeakers: Int,
+        hypSpeakers: Int,
+        clusterThreshold: Double,
+    ) {
+        func r4(_ v: Double) -> Double { (v * 10000).rounded() / 10000 }
+        emit([
+            "event": "metrics",
+            "fixture": fixture,
+            "wder": r4(wder),
+            "der": r4(der),
+            "speakerCountError": speakerCountError,
+            "refSpeakers": refSpeakers,
+            "hypSpeakers": hypSpeakers,
+            "clusterThreshold": r4(clusterThreshold),
+        ])
+    }
+
     static func done(outputDir: String) {
         emit(["event": "done", "outputDir": outputDir])
     }
