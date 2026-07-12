@@ -921,7 +921,11 @@ final class SpeakerMatcherTests: XCTestCase {
         XCTAssertEqual(stored[0].name, "Speaker B")
         XCTAssertEqual(stored[0].useCount, 5)
         XCTAssertEqual(stored[0].centroidSampleCount, 5)
-        XCTAssertEqual(stored[0].lastUsed, now)
+        // The merge keeps the later of the two timestamps (now, not now-100s).
+        // Compare on the Unix-seconds axis with a small tolerance: `lastUsed` is
+        // persisted as an epoch-seconds Double for cross-writer compatibility,
+        // and that round-trip loses sub-microsecond precision at 2026 magnitudes.
+        XCTAssertEqual(stored[0].lastUsed?.timeIntervalSince1970 ?? -1, now.timeIntervalSince1970, accuracy: 0.001)
         // Centroid weighted-average: (dst*1 + src*4) / 5
         // dst.centroid = (0.9, 0.1, 0) count=1; src.centroid = (1, 0, 0) count=4.
         // (0.9*1 + 1*4)/5 = 0.98, (0.1*1)/5 = 0.02
