@@ -1212,6 +1212,19 @@ final class AppState { // swiftlint:disable:this type_body_length
         }
     }
 
+    /// Whether the pipeline's idle-unload fuse may release the transcription
+    /// model. Pure so the gate is unit-testable without driving a real recording:
+    /// false while a recording is in flight (the `.recording` prewarm holds the
+    /// model for instant post-meeting transcription — the idle fuse must not rip
+    /// it out mid-call) or while live captions hold the model on their own path.
+    nonisolated static func shouldUnloadIdleModel(
+        isRecording: Bool,
+        liveCaptionsEnabled: Bool,
+    ) -> Bool {
+        if isRecording { return false }
+        return !liveCaptionsEnabled
+    }
+
     func makePipelineQueue() -> PipelineQueue {
         // Read the Electron bridge FRESH so the pipeline built for this watch
         // session honours Timbre's engine / speaker-count / speaker-DB choices.
@@ -1241,9 +1254,17 @@ final class AppState { // swiftlint:disable:this type_body_length
             // mid-session switch to Max accuracy is honoured on the next meeting.
             maxRefinerFactory: { [self] in makeMaxRefiner(globalSpeakersDBPath: dbPath) },
             processingModeProvider: { EngineConfig.read().processingMode },
-            // Skip idle model unload while live captions are active — that path
-            // holds its own model usage independent of the pipeline queue.
-            shouldUnloadIdleModel: { [settings] in !settings.liveTranscriptionEnabled },
+            // Gate the idle model unload via the pure decision below. The closure
+            // only ever runs on the @MainActor PipelineQueue, so the isolated
+            // watchLoop read is safe.
+            shouldUnloadIdleModel: { [weak self, settings] in
+                MainActor.assumeIsolated {
+                    AppState.shouldUnloadIdleModel(
+                        isRecording: self?.watchLoop?.state == .recording,
+                        liveCaptionsEnabled: settings.liveTranscriptionEnabled,
+                    )
+                }
+            },
         )
         queue.loadSnapshot()
         // Fire-and-forget: dir scan + per-file attr probes run off-main so
