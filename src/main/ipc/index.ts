@@ -50,6 +50,7 @@ import {
   setMeetingTags,
   type ExportPreview
 } from '../meetings'
+import { withMeetingLock } from '../meetingLock'
 import {
   getStatus,
   importFile,
@@ -195,7 +196,9 @@ export function registerIpcHandlers(): void {
       newName: string
     ): Promise<{ enrolled: boolean }> => {
       const settings = await readSettings()
-      return renameSpeakerInMeeting(settings.outputFolder, meetingId, oldName, newName)
+      return withMeetingLock(meetingId, () =>
+        renameSpeakerInMeeting(settings.outputFolder, meetingId, oldName, newName)
+      )
     }
   )
 
@@ -208,7 +211,9 @@ export function registerIpcHandlers(): void {
       newSpeaker: string
     ): Promise<{ speakerCount: number; newSpeaker: string }> => {
       const settings = await readSettings()
-      return reassignSegmentSpeaker(settings.outputFolder, meetingId, segmentIndex, newSpeaker)
+      return withMeetingLock(meetingId, () =>
+        reassignSegmentSpeaker(settings.outputFolder, meetingId, segmentIndex, newSpeaker)
+      )
     }
   )
 
@@ -220,7 +225,9 @@ export function registerIpcHandlers(): void {
       speakerName: string
     ): Promise<{ additionalSpeakers: string[] }> => {
       const settings = await readSettings()
-      return addSpeakerToMeeting(settings.outputFolder, meetingId, speakerName)
+      return withMeetingLock(meetingId, () =>
+        addSpeakerToMeeting(settings.outputFolder, meetingId, speakerName)
+      )
     }
   )
 
@@ -228,7 +235,9 @@ export function registerIpcHandlers(): void {
     IPC.meetingsRemoveSpeakerLabel,
     async (_event, meetingId: string, speakerName: string): Promise<{ speakerCount: number }> => {
       const settings = await readSettings()
-      return removeSpeakerLabelInMeeting(settings.outputFolder, meetingId, speakerName)
+      return withMeetingLock(meetingId, () =>
+        removeSpeakerLabelInMeeting(settings.outputFolder, meetingId, speakerName)
+      )
     }
   )
 
@@ -302,7 +311,9 @@ export function registerIpcHandlers(): void {
     IPC.meetingsRenameTitle,
     async (_event, meetingId: string, newTitle: string): Promise<{ title: string }> => {
       const settings = await readSettings()
-      return renameMeetingTitle(settings.outputFolder, meetingId, newTitle)
+      return withMeetingLock(meetingId, () =>
+        renameMeetingTitle(settings.outputFolder, meetingId, newTitle)
+      )
     }
   )
 
@@ -377,13 +388,15 @@ export function registerIpcHandlers(): void {
     IPC.meetingsSetTags,
     async (_event, meetingId: string, tagIds: string[]): Promise<{ tagIds: string[] }> => {
       const settings = await readSettings()
-      return setMeetingTags(settings.outputFolder, meetingId, tagIds)
+      return withMeetingLock(meetingId, () =>
+        setMeetingTags(settings.outputFolder, meetingId, tagIds)
+      )
     }
   )
 
   ipcMain.handle(IPC.meetingsDelete, async (_event, meetingId: string): Promise<DeleteOutcome> => {
     const settings = await readSettings()
-    return deleteMeeting(settings.outputFolder, meetingId)
+    return withMeetingLock(meetingId, () => deleteMeeting(settings.outputFolder, meetingId))
   })
 
   ipcMain.handle(
