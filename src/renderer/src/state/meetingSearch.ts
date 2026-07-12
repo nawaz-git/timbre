@@ -1,8 +1,8 @@
 /**
  * Pure library-retrieval helpers for the Meetings view: client-side filtering
  * (title + speaker names + tag names) and Today/Yesterday/This week/Earlier
- * date grouping. No React, no IPC — unit-testable, and reused by the
- * knowledge-graph stream. Full-text transcript search is a separate main-side
+ * date grouping. No React, no IPC — unit-testable, and reusable across
+ * views. Full-text transcript search is a separate main-side
  * IPC (`meetings:searchTranscripts`); this module handles the metadata that's
  * already loaded in the list.
  */
@@ -89,8 +89,8 @@ export function filterMeetingsByQuery(
  * True when a speaker label is still an auto-generated placeholder the user
  * hasn't named — `Speaker`, `Speaker 2`, `Speaker_2`, or a raw diarization
  * prefix (`R_…` / `M_…`). Drives the "Who was in this meeting?" naming panel.
- * Exported so the knowledge-graph stream can gate the same panel as a
- * deep-link target. Pure — unit-testable.
+ * Exported so any view can gate the same panel as a deep-link
+ * target. Pure — unit-testable.
  */
 export function isUnnamedSpeaker(name: string): boolean {
   const n = name.trim()

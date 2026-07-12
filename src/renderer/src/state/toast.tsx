@@ -5,8 +5,7 @@ import { ToastViewport } from '../components/Toast'
 /**
  * App-wide toast system. Replaces the ad-hoc `statusBanner` string slot with a
  * typed, auto-dismissing, bottom-centre stack. Mounted once in `App.tsx`; any
- * view calls `useToast().toast(text, opts)`. The knowledge-graph stream reuses
- * this same provider for its own confirmations.
+ * view calls `useToast().toast(text, opts)` to raise its own confirmations.
  */
 export type ToastKind = 'info' | 'success' | 'error'
 
@@ -94,8 +93,8 @@ export function ToastProvider({ children }: { children: ReactNode }): JSX.Elemen
   )
 }
 
-// The provider + its hook live together (one import surface for consumers,
-// incl. the knowledge-graph stream), which the fast-refresh rule dislikes —
+// The provider + its hook live together (one import surface for consumers),
+// which the fast-refresh rule dislikes —
 // same accepted pattern as the other context modules (tags, settings).
 // eslint-disable-next-line react-refresh/only-export-components
 export function useToast(): ToastContextValue {

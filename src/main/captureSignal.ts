@@ -21,8 +21,8 @@
  * hardcoded). The growth / hysteresis / tracking rules live in the dep-free
  * `captureSignalLogic.ts` so they can be unit-tested without the main process.
  *
- * The detector sits behind a `CaptureSignalSource` interface so the engine crew
- * can later drop in a real status-file reader (`ipc/engine_status.json`, "ENG-1")
+ * The detector sits behind a `CaptureSignalSource` interface so a future engine
+ * build can later drop in a real status-file reader (`ipc/engine_status.json`)
  * without touching any consumer: `EngineStatusFileSource` is tried first and the
  * WAV-growth detector is the always-available fallback.
  *
@@ -69,7 +69,7 @@ export interface CaptureSignal {
 
 /**
  * A source of truth for the capture signal. The default is WAV-growth polling;
- * ENG-1 (an engine-written status file) can be added as a higher-priority
+ * an engine-written status file can be added as a higher-priority
  * source without any consumer change — `poll()` returns null to defer to the
  * next source in the chain.
  */
@@ -88,17 +88,17 @@ const INACTIVE: CaptureSignal = {
 
 /** Poll cadence. */
 const POLL_INTERVAL_MS = 2000
-/** Max age of an ENG-1 status file before we ignore it and fall back to WAV growth. */
+/** Max age of an engine status file before we ignore it and fall back to WAV growth. */
 const ENGINE_STATUS_MAX_AGE_MS = 5000
 const ENGINE_STATUS_FILE = join(ENGINE_IPC_DIR, 'engine_status.json')
 
 /**
- * ENG-1 upgrade path: prefer an engine-written status file when it's fresh.
- * The engine crew ships `ipc/engine_status.json` (state/meetingId/startedAt/
+ * Engine status-file seam: prefer an engine-written status file when it's fresh.
+ * The engine ships `ipc/engine_status.json` (state/meetingId/startedAt/
  * stage/pct) as a future capability; until then the file is absent and this
  * source returns null every tick, deferring to WAV growth. Coded defensively —
- * any parse/shape/age problem returns null. This seam is untested until ENG-1
- * lands (no engine writer on this base).
+ * any parse/shape/age problem returns null. This seam is untested until the
+ * engine status file lands (no engine writer on this base).
  */
 class EngineStatusFileSource implements CaptureSignalSource {
   async poll(now: number): Promise<CaptureSignal | null> {

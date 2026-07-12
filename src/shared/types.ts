@@ -275,7 +275,7 @@ export interface MeetingSummary {
    * derived cheaply from data the listers already read (segments sidecar or
    * flat transcript / speakers.json). Powers client-side "search by who was
    * in it" without loading each transcript. Empty when unknown (e.g. a
-   * still-processing meeting). The knowledge-graph stream also consumes this.
+   * still-processing meeting).
    */
   speakerNames: string[]
   /**
