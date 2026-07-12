@@ -26,6 +26,7 @@ import { formatDate, formatDuration } from '../state/format'
 import { useTags } from '../state/tags'
 import { useAppStatus } from '../state/appStatus'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { MarkdownLite } from '../components/MarkdownLite'
 import { PencilIcon } from '../components/PencilIcon'
 import { RowMenu } from '../components/RowMenu'
 import { SpeakerPicker } from '../components/SpeakerPicker'
@@ -40,7 +41,7 @@ import type {
   TranscriptSegment
 } from '../../../shared/types'
 
-type TabKey = 'transcript' | 'speakers' | 'video' | 'export' | 'tags'
+type TabKey = 'summary' | 'transcript' | 'speakers' | 'video' | 'export' | 'tags'
 
 /** Human stage labels for a processing meeting (the honest-progress copy). */
 const PROCESSING_STAGE_LABEL: Record<ProcessingStage, string> = {
@@ -143,6 +144,7 @@ function tryFormatJson(raw: string): string {
 }
 
 const TAB_DEFS: { key: TabKey; label: string }[] = [
+  { key: 'summary', label: 'Summary' },
   { key: 'transcript', label: 'Transcript' },
   { key: 'speakers', label: 'Speakers' },
   { key: 'video', label: 'Video' },
@@ -341,6 +343,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // Transient "Copied" affordance for the Copy-transcript action.
   const [copiedTranscript, setCopiedTranscript] = useState(false)
 
+  // Transient "Copied" affordance for the Copy-summary action (Summary tab).
+  const [copiedSummary, setCopiedSummary] = useState(false)
+
   // Animated tab indicator. We measure the currently-active tab button's
   // offsetLeft + offsetWidth and slide a single underline pseudo-element to
   // its position via a CSS transform. Re-measures on tab change, layout
@@ -386,18 +391,24 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     }
   }, [])
 
-  const loadTranscript = useCallback(async (meetingId: string) => {
-    setTranscriptLoading(true)
-    try {
-      const t = await window.api.meetings.transcript(meetingId)
-      setTranscript(t)
-    } catch (err) {
-      console.error('Failed to read transcript', err)
-      setTranscript({ meetingId, transcript: '', speakers: [] })
-    } finally {
-      setTranscriptLoading(false)
-    }
-  }, [])
+  const loadTranscript = useCallback(
+    async (meetingId: string): Promise<MeetingTranscript | null> => {
+      setTranscriptLoading(true)
+      try {
+        const t = await window.api.meetings.transcript(meetingId)
+        setTranscript(t)
+        return t
+      } catch (err) {
+        console.error('Failed to read transcript', err)
+        const empty: MeetingTranscript = { meetingId, transcript: '', speakers: [] }
+        setTranscript(empty)
+        return empty
+      } finally {
+        setTranscriptLoading(false)
+      }
+    },
+    []
+  )
 
   useEffect(() => {
     void refresh()
@@ -496,7 +507,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         setTranscript(null)
         return
       }
-      await loadTranscript(m.id)
+      // The meeting page leads with the Summary when one exists, else the
+      // Transcript. `setTab('transcript')` above resets instantly; bump to
+      // Summary once we know it's present.
+      const t = await loadTranscript(m.id)
+      if (t?.summaryMarkdown) setTab('summary')
       await loadEnrolled()
     },
     [loadTranscript, loadEnrolled]
@@ -552,8 +567,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // The same filtered list drives BOTH the tab-strip render and the sliding
   // tab-indicator measurement so the underline stays aligned.
   const visibleTabs = useMemo(
-    () => TAB_DEFS.filter((t) => t.key !== 'video' || !!selectedMeeting?.hasVideo),
-    [selectedMeeting]
+    () =>
+      TAB_DEFS.filter((t) => {
+        // Summary tab only when the LLM protocol exists; Video only with a screen recording.
+        if (t.key === 'summary') return !!transcript?.summaryMarkdown
+        if (t.key === 'video') return !!selectedMeeting?.hasVideo
+        return true
+      }),
+    [selectedMeeting, transcript]
   )
 
   const segments: TranscriptSegment[] = useMemo(() => {
@@ -1076,6 +1097,18 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       // Clipboard access denied — rare in the packaged app; nothing to do.
     }
   }, [segments, transcript])
+
+  const onCopySummary = useCallback(async () => {
+    const text = transcript?.summaryMarkdown?.trim()
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedSummary(true)
+      setTimeout(() => setCopiedSummary(false), 1600)
+    } catch {
+      // Clipboard access denied — nothing to do.
+    }
+  }, [transcript])
 
   const onExport = useCallback(
     async (format: ExportFormat) => {
@@ -1936,7 +1969,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     tabBtnRefs.current[i] = el
                   }}
                   role="tab"
+                  id={`meeting-tab-${t.key}`}
                   aria-selected={tab === t.key}
+                  aria-controls={`meeting-tabpanel-${t.key}`}
                   className={'tab-strip__btn' + (tab === t.key ? ' tab-strip__btn--active' : '')}
                   onClick={() => setTab(t.key)}
                 >
@@ -1975,6 +2010,21 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             )}
 
             {/* ── Tab content ───────────────────────────────────────────── */}
+            {tab === 'summary' && transcript?.summaryMarkdown && (
+              <div
+                className="tab-pane summary-pane"
+                role="tabpanel"
+                id="meeting-tabpanel-summary"
+                aria-labelledby="meeting-tab-summary"
+              >
+                <div className="summary-pane__actions">
+                  <button className="btn btn--small" onClick={() => void onCopySummary()}>
+                    {copiedSummary ? 'Copied' : 'Copy summary'}
+                  </button>
+                </div>
+                <MarkdownLite markdown={transcript.summaryMarkdown} />
+              </div>
+            )}
             {tab === 'transcript' && (
               <>
                 {transcriptLoading && <div className="empty">Loading transcript…</div>}
@@ -2138,7 +2188,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             )}
 
             {tab === 'video' && videoSrc && (
-              <div className="tab-pane video-pane">
+              <div
+                className="tab-pane video-pane"
+                role="tabpanel"
+                id="meeting-tabpanel-video"
+                aria-labelledby="meeting-tab-video"
+              >
                 <video
                   ref={videoRef}
                   className="video-pane__player"
@@ -2167,7 +2222,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             )}
 
             {tab === 'speakers' && (
-              <div className="tab-pane">
+              <div
+                className="tab-pane"
+                role="tabpanel"
+                id="meeting-tabpanel-speakers"
+                aria-labelledby="meeting-tab-speakers"
+              >
                 <p className="tab-pane__intro">
                   Speakers detected in this meeting. Click a name to rename it or assign an
                   already-enrolled voice. Enrolled voices are matched automatically in future
@@ -2307,7 +2367,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             )}
 
             {tab === 'export' && (
-              <div className="tab-pane export-preview">
+              <div
+                className="tab-pane export-preview"
+                role="tabpanel"
+                id="meeting-tabpanel-export"
+                aria-labelledby="meeting-tab-export"
+              >
                 {/*
                  * Format selector chips. Live recordings (engine: prefix)
                  * only support txt/md export, so the rest are disabled
@@ -2507,7 +2572,12 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
             )}
 
             {tab === 'tags' && (
-              <div className="tab-pane">
+              <div
+                className="tab-pane"
+                role="tabpanel"
+                id="meeting-tabpanel-tags"
+                aria-labelledby="meeting-tab-tags"
+              >
                 <p className="tab-pane__intro">
                   Apply tags so you can filter meetings by project or type. Manage the tag list in
                   Settings.

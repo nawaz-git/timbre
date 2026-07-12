@@ -340,6 +340,13 @@ export interface MeetingTranscript {
   /** Total duration in seconds (from transcript.json). */
   durationSeconds?: number
   speakers: SpeakerRecord[]
+  /**
+   * The LLM-generated meeting summary (protocol), as Markdown. Present when
+   * the engine wrote `protocols/<prefix>.md` (or an import produced a
+   * `summary.md`). Drives the Summary tab — the meeting page leads with the
+   * summary, then transcript, then media. Absent when no summary exists yet.
+   */
+  summaryMarkdown?: string
 }
 
 export interface BackendJob {

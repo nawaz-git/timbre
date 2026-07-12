@@ -4723,3 +4723,67 @@
   justify-content: flex-end;
   gap: var(--space-2, 8px);
 }
+
+/* ============================================================
+ * Library & meeting page — Phase 2
+ * (Summary tab · library search · naming panel · toasts)
+ * ============================================================ */
+
+/* ── Summary tab — LLM protocol via MarkdownLite ────────────────
+ *
+ * The meeting page leads with the summary. No Markdown dependency —
+ * MarkdownLite emits escaped React nodes, never raw HTML. Readable
+ * measure (68ch) + generous leading; headings map to real h2/h3/h4. */
+.summary-pane__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-2, 8px);
+}
+.markdown-lite {
+  max-width: 68ch;
+  font-size: var(--text-body-lg-size, 14px);
+  line-height: 1.6;
+  color: var(--fg);
+}
+.markdown-lite > *:first-child {
+  margin-top: 0;
+}
+.markdown-lite h2 {
+  font-size: var(--text-h1-size, 17px);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--fg);
+  margin: var(--space-5, 20px) 0 var(--space-2, 8px);
+}
+.markdown-lite h3 {
+  font-size: var(--text-body-lg-size, 14px);
+  font-weight: 600;
+  color: var(--fg);
+  margin: var(--space-4, 16px) 0 var(--space-1, 4px);
+}
+.markdown-lite h4 {
+  font-size: var(--text-body-size, 13px);
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: var(--space-3, 12px) 0 var(--space-1, 4px);
+}
+.markdown-lite p {
+  margin: 0 0 var(--space-3, 12px);
+}
+.markdown-lite ul,
+.markdown-lite ol {
+  margin: 0 0 var(--space-3, 12px);
+  padding-left: var(--space-5, 20px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+}
+.markdown-lite li {
+  padding-left: var(--space-1, 4px);
+}
+.markdown-lite strong {
+  font-weight: 600;
+  color: var(--fg);
+}
