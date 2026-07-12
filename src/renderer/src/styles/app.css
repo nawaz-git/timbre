@@ -1293,6 +1293,11 @@
   flex-shrink: 0;
 }
 
+/* Right-aligned header element (e.g. the Setup & Permissions status chip). */
+.settings-section__accessory {
+  margin-left: auto;
+}
+
 .settings-section__title {
   margin: 0;
   font-size: var(--text-h1-size, 16px);

@@ -17,7 +17,7 @@ import timbreMark from '../assets/timbre-mark.png'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { PermissionChecklist } from '../components/PermissionChecklist'
 import { useSettings } from '../state/settings'
-import { useOnboardingComplete } from '../state/onboarding'
+import { allGranted, useHelperPermissions, useOnboardingComplete } from '../state/onboarding'
 import { useTags } from '../state/tags'
 import { ASR_LANGUAGES } from '../../../shared/types'
 import type { ProcessingMode, ScreenCaptureScope, TagDef, ThemeMode } from '../../../shared/types'
@@ -61,10 +61,13 @@ const NEW_TAG_PALETTE = [
 function Section({
   icon,
   title,
+  accessory,
   children
 }: {
   icon: JSX.Element
   title: string
+  /** Optional right-aligned header element (e.g. a status chip). */
+  accessory?: ReactNode
   children: ReactNode
 }): JSX.Element {
   return (
@@ -74,6 +77,7 @@ function Section({
           {icon}
         </span>
         <h2 className="settings-section__title">{title}</h2>
+        {accessory && <span className="settings-section__accessory">{accessory}</span>}
       </header>
       <div className="settings-section__body">{children}</div>
     </section>
@@ -102,6 +106,10 @@ export function SettingsView(): JSX.Element {
   const { settings, setSettings } = useSettings()
   const { reset: rerunWizard } = useOnboardingComplete()
   const { tags, addTag, updateTag, deleteTag } = useTags()
+  // Drives the Setup & Permissions header chip so its health is scannable
+  // without expanding the section. Same source the checklist inside it reads.
+  const { snapshot: permSnapshot } = useHelperPermissions()
+  const permsAllGranted = allGranted(permSnapshot)
   const [newTagName, setNewTagName] = useState('')
   const [newTagColor, setNewTagColor] = useState(NEW_TAG_PALETTE[0])
   const [tagError, setTagError] = useState<string | null>(null)
@@ -174,28 +182,119 @@ export function SettingsView(): JSX.Element {
 
   return (
     <div className="settings">
-      {/* ── Setup & Permissions (TICKET-UI-003) ────────────────────── */}
-      <Section icon={<ShieldCheck size={16} />} title="Setup & Permissions">
-        <div className="settings-row__description settings-row__description--top">
-          The bundled engine needs these macOS permissions to capture meetings. Grant any that
-          aren&apos;t green, or re-run the guided first-run wizard.
-        </div>
-        <PermissionChecklist mode="settings" />
-        <div className="settings-row__value">
-          <button
-            className="btn"
-            onClick={() => {
-              void rerunWizard()
-            }}
-          >
-            <RotateCcw size={14} aria-hidden="true" />
-            <span>Re-run setup wizard</span>
-          </button>
-        </div>
+      {/* ── Recording ──────────────────────────────────────────────── */}
+      <Section icon={<Monitor size={16} />} title="Recording">
+        <SettingsRow
+          label="Screen capture"
+          description="Record only the meeting's Chrome window, or the entire screen."
+        >
+          <div className="theme-toggle" role="group" aria-label="Screen capture">
+            {SCREEN_SCOPE_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                className={
+                  'theme-toggle__option' +
+                  (settings.screenCaptureScope === opt.value ? ' theme-toggle__option--active' : '')
+                }
+                onClick={() => {
+                  void setSettings({ screenCaptureScope: opt.value })
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Disable app audio capture"
+          description="Record the microphone and screen only, without tapping the browser's audio. Turn this on if capturing meeting audio ever destabilises your browser — your voice is still recorded and transcribed."
+        >
+          <label className="toggle-switch" title="Disable app audio capture">
+            <input
+              type="checkbox"
+              checked={settings.disableAppAudioTap}
+              onChange={(e) => {
+                void setSettings({ disableAppAudioTap: e.target.checked })
+              }}
+            />
+            <span className="toggle-switch__track" aria-hidden="true">
+              <span className="toggle-switch__thumb" />
+            </span>
+            <span className="toggle-switch__label">
+              {settings.disableAppAudioTap ? 'On' : 'Off'}
+            </span>
+          </label>
+        </SettingsRow>
       </Section>
 
-      {/* ── Output ─────────────────────────────────────────────────── */}
-      <Section icon={<Folder size={16} />} title="Output">
+      {/* ── Processing ─────────────────────────────────────────────── */}
+      <Section icon={<Languages size={16} />} title="Processing">
+        <SettingsRow
+          label="Transcription language"
+          description="Auto-detect works for most meetings. Pick a language to lock it in if detection drifts."
+        >
+          <select
+            className="select"
+            value={settings.asrLanguage}
+            onChange={(e) => {
+              void setSettings({ asrLanguage: e.target.value })
+            }}
+            aria-label="Transcription language"
+          >
+            {ASR_LANGUAGES.map((lang) => (
+              <option key={lang.code || 'auto'} value={lang.code}>
+                {lang.label}
+              </option>
+            ))}
+          </select>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Processing quality"
+          description="Fast matches today's speed. Max accuracy runs a slower (20–30 min) refinement pass for the best speaker attribution — the meeting is ready fast either way, then upgraded in the background."
+        >
+          <div className="theme-toggle" role="group" aria-label="Processing quality">
+            {PROCESSING_MODE_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                className={
+                  'theme-toggle__option' +
+                  (settings.processingMode === opt.value ? ' theme-toggle__option--active' : '')
+                }
+                onClick={() => {
+                  void setSettings({ processingMode: opt.value })
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
+          label="LLM speaker repair (Max accuracy)"
+          description="During a Max-accuracy refine, use your configured LLM (Claude CLI or a local model) to fix speaker labels — under a strict validator that only lets it relabel, never change your words. Requires a protocol provider and only runs in Max mode."
+        >
+          <label className="toggle-switch" title="LLM speaker repair">
+            <input
+              type="checkbox"
+              checked={settings.llmRepair}
+              disabled={settings.processingMode !== 'max'}
+              onChange={(e) => {
+                void setSettings({ llmRepair: e.target.checked })
+              }}
+            />
+            <span className="toggle-switch__track" aria-hidden="true">
+              <span className="toggle-switch__thumb" />
+            </span>
+            <span className="toggle-switch__label">{settings.llmRepair ? 'On' : 'Off'}</span>
+          </label>
+        </SettingsRow>
+      </Section>
+
+      {/* ── Storage ────────────────────────────────────────────────── */}
+      <Section icon={<Folder size={16} />} title="Storage">
         <SettingsRow
           label="Output folder"
           description="Where transcripts from imported audio files are saved."
@@ -271,115 +370,39 @@ export function SettingsView(): JSX.Element {
         </SettingsRow>
       </Section>
 
-      {/* ── Recording ──────────────────────────────────────────────── */}
-      <Section icon={<Monitor size={16} />} title="Recording">
-        <SettingsRow
-          label="Screen capture"
-          description="Record only the meeting's Chrome window, or the entire screen."
-        >
-          <div className="theme-toggle" role="group" aria-label="Screen capture">
-            {SCREEN_SCOPE_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                className={
-                  'theme-toggle__option' +
-                  (settings.screenCaptureScope === opt.value ? ' theme-toggle__option--active' : '')
-                }
-                onClick={() => {
-                  void setSettings({ screenCaptureScope: opt.value })
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </SettingsRow>
-
-        <SettingsRow
-          label="Disable app audio capture"
-          description="Record the microphone and screen only, without tapping the browser's audio. Turn this on if capturing meeting audio ever destabilises your browser — your voice is still recorded and transcribed."
-        >
-          <label className="toggle-switch" title="Disable app audio capture">
-            <input
-              type="checkbox"
-              checked={settings.disableAppAudioTap}
-              onChange={(e) => {
-                void setSettings({ disableAppAudioTap: e.target.checked })
-              }}
-            />
-            <span className="toggle-switch__track" aria-hidden="true">
-              <span className="toggle-switch__thumb" />
-            </span>
-            <span className="toggle-switch__label">
-              {settings.disableAppAudioTap ? 'On' : 'Off'}
-            </span>
-          </label>
-        </SettingsRow>
-      </Section>
-
-      {/* ── Transcription ──────────────────────────────────────────── */}
-      <Section icon={<Languages size={16} />} title="Transcription">
-        <SettingsRow
-          label="Processing quality"
-          description="Fast matches today's speed. Max accuracy runs a slower (20–30 min) refinement pass for the best speaker attribution — the meeting is ready fast either way, then upgraded in the background."
-        >
-          <div className="theme-toggle" role="group" aria-label="Processing quality">
-            {PROCESSING_MODE_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                className={
-                  'theme-toggle__option' +
-                  (settings.processingMode === opt.value ? ' theme-toggle__option--active' : '')
-                }
-                onClick={() => {
-                  void setSettings({ processingMode: opt.value })
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </SettingsRow>
-
-        <SettingsRow
-          label="LLM speaker repair (Max accuracy)"
-          description="During a Max-accuracy refine, use your configured LLM (Claude CLI or a local model) to fix speaker labels — under a strict validator that only lets it relabel, never change your words. Requires a protocol provider and only runs in Max mode."
-        >
-          <label className="toggle-switch" title="LLM speaker repair">
-            <input
-              type="checkbox"
-              checked={settings.llmRepair}
-              disabled={settings.processingMode !== 'max'}
-              onChange={(e) => {
-                void setSettings({ llmRepair: e.target.checked })
-              }}
-            />
-            <span className="toggle-switch__track" aria-hidden="true">
-              <span className="toggle-switch__thumb" />
-            </span>
-            <span className="toggle-switch__label">{settings.llmRepair ? 'On' : 'Off'}</span>
-          </label>
-        </SettingsRow>
-
-        <SettingsRow
-          label="Transcription language"
-          description="Auto-detect works for most meetings. Pick a language to lock it in if detection drifts."
-        >
-          <select
-            className="select"
-            value={settings.asrLanguage}
-            onChange={(e) => {
-              void setSettings({ asrLanguage: e.target.value })
-            }}
-            aria-label="Transcription language"
+      {/* ── Setup & Permissions (TICKET-UI-003) ────────────────────── */}
+      {/* Moved DOWN in the IA: setup/repair is a first-run concern, not a
+          daily one. The header chip makes its health scannable without
+          expanding the section. */}
+      <Section
+        icon={<ShieldCheck size={16} />}
+        title="Setup & Permissions"
+        accessory={
+          <span
+            className={`status-chip ${permsAllGranted ? 'status-chip--granted' : 'status-chip--denied'}`}
+            role="status"
           >
-            {ASR_LANGUAGES.map((lang) => (
-              <option key={lang.code || 'auto'} value={lang.code}>
-                {lang.label}
-              </option>
-            ))}
-          </select>
-        </SettingsRow>
+            <span className="status-chip__dot" aria-hidden="true" />
+            {permsAllGranted ? 'All granted' : 'Needs attention'}
+          </span>
+        }
+      >
+        <div className="settings-row__description settings-row__description--top">
+          The bundled engine needs these macOS permissions to capture meetings. Grant any that
+          aren&apos;t green, or re-run the guided first-run wizard.
+        </div>
+        <PermissionChecklist mode="settings" />
+        <div className="settings-row__value">
+          <button
+            className="btn"
+            onClick={() => {
+              void rerunWizard()
+            }}
+          >
+            <RotateCcw size={14} aria-hidden="true" />
+            <span>Re-run setup wizard</span>
+          </button>
+        </div>
       </Section>
 
       {/* ── Appearance ─────────────────────────────────────────────── */}
