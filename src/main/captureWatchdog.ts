@@ -322,6 +322,15 @@ export function getLastReadyPrefix(): string | null {
  * yields one notification.
  */
 export function scheduleCaptureStartedNotification(filename?: string): void {
+  // Recording just (re)started, so cancel any pending "Recording saved" — a
+  // capture heartbeat that dipped and recovered (a brief write stall the
+  // hysteresis didn't fully absorb) must NOT tell the user the meeting was
+  // saved when it's still going. Clear before the debounce return so the stale
+  // timer dies even when we suppress the (re)start banner itself.
+  if (endedNotificationTimer) {
+    clearTimeout(endedNotificationTimer)
+    endedNotificationTimer = null
+  }
   // Debounce — multiple file-change events when a new meeting folder
   // appears should produce ONE notification, not five.
   const now = Date.now()
@@ -346,9 +355,10 @@ export function scheduleCaptureStartedNotification(filename?: string): void {
  * write-burst by firing only after events settle.
  */
 export function scheduleCaptureEndedNotification(): void {
-  // Notification fires only after writes settle (no new event for 3.5s).
-  // The "ended" notification therefore lands ~3s after the user clicks
-  // Leave on the Meet.
+  // Fires only after writes settle (no new event for 3.5s). The heartbeat
+  // itself waits ~6s of non-growth (hysteresis) before it flips inactive, so
+  // the "saved" notification lands ~9s after the user clicks Leave — the cost
+  // of never firing it mid-meeting on a transient stall.
   if (endedNotificationTimer) clearTimeout(endedNotificationTimer)
   endedNotificationTimer = setTimeout(() => {
     endedNotificationTimer = null
