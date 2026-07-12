@@ -582,6 +582,12 @@ class PipelineQueue {
         var appWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
         var micWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
         var mixWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
+        /// Raw per-track ASR segments (dual-source only, native un-shifted
+        /// timeline). Threaded to `DualTrackAttribution` so a segment the engine
+        /// failed to emit word timings for keeps its text (whole-segment
+        /// fallback) instead of vanishing from the word-only rebuild.
+        var appSegments: [TimestampedSegment]? // swiftlint:disable:this discouraged_optional_collection
+        var micSegments: [TimestampedSegment]? // swiftlint:disable:this discouraged_optional_collection
     }
 
     /// Output of the diarization stage: the labeled transcript plus the
@@ -705,6 +711,10 @@ class PipelineQueue {
         var appWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
         var micWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
         var mixWords: [WordTimeline.Word]? // swiftlint:disable:this discouraged_optional_collection
+        // Raw per-track ASR segments (dual-source), retained for the word-less
+        // whole-segment fallback in diarize().
+        var outAppSegments: [TimestampedSegment]? // swiftlint:disable:this discouraged_optional_collection
+        var outMicSegments: [TimestampedSegment]? // swiftlint:disable:this discouraged_optional_collection
         let isDualSource = ctx.appPath != nil && ctx.micPath != nil
         if let appAudioPath = ctx.appPath, let micAudioPath = ctx.micPath {
             // Dual-source: resample both tracks to 16kHz concurrently
@@ -732,6 +742,9 @@ class PipelineQueue {
                 appSegments = try await engine.transcribeSegments(audioPath: app16k)
                 micSegments = try await engine.transcribeSegments(audioPath: mic16k)
             }
+
+            outAppSegments = appSegments
+            outMicSegments = micSegments
 
             // Merge dual-source segments (display transcript + diarization fallback)
             let segments = engine.mergeDualSourceSegments(
@@ -798,6 +811,7 @@ class PipelineQueue {
         return TranscriptionOutput(
             transcript: transcript, cachedSegments: cachedSegments, isDualSource: isDualSource,
             appWords: appWords, micWords: micWords, mixWords: mixWords,
+            appSegments: outAppSegments, micSegments: outMicSegments,
         )
     }
 
@@ -822,6 +836,10 @@ class PipelineQueue {
         let appWords = transcription.appWords
         let micWords = transcription.micWords
         let mixWords = transcription.mixWords
+        // Raw per-track ASR segments — the whole-segment fallback for any
+        // segment the engine couldn't emit word timings for.
+        let appSegments = transcription.appSegments ?? []
+        let micSegments = transcription.micSegments ?? []
 
         guard diarizeEnabled, let diarizationFactory else {
             return DiarizedTranscript(transcript: finalTranscript, labeledSegments: nil)
@@ -1045,6 +1063,7 @@ class PipelineQueue {
                 if let appW = appWords {
                     merged = labelDualTrackWords(
                         appWords: appW, micWords: micWords,
+                        appSegments: appSegments, micSegments: micSegments,
                         appDiar: appDiar, micDiar: micDiar,
                         autoNames: autoNames, ctx: ctx, workDir: workDir,
                     )
@@ -1079,6 +1098,7 @@ class PipelineQueue {
                 if let appW = appWords {
                     merged = labelDualTrackWords(
                         appWords: appW, micWords: micWords,
+                        appSegments: appSegments, micSegments: micSegments,
                         appDiar: appDiar, micDiar: nil,
                         autoNames: autoNames, ctx: ctx, workDir: workDir,
                     )
@@ -1103,9 +1123,13 @@ class PipelineQueue {
                 // Single-source: standard assignment
                 let merged: [TimestampedSegment]
                 if let mixW = mixWords {
+                    // Per-segment hybrid: word-level where the engine emitted
+                    // words, whole-segment fallback for any word-less segment
+                    // (and for an entirely word-less `[]` — no data loss).
                     merged = DiarizationProcess.mergeConsecutiveSpeakers(
-                        WordTimeline.attribute(
-                            words: mixW, diarization: currentDiarization.segments,
+                        WordTimeline.attributeHybrid(
+                            segments: cachedSegments ?? [], words: mixW,
+                            diarization: currentDiarization.segments,
                             turnSpeakerMap: autoNames,
                         ),
                     )
@@ -1149,6 +1173,8 @@ class PipelineQueue {
     private func labelDualTrackWords(
         appWords: [WordTimeline.Word],
         micWords: [WordTimeline.Word]?,
+        appSegments: [TimestampedSegment],
+        micSegments: [TimestampedSegment],
         appDiar: DiarizationResult,
         micDiar: DiarizationResult?,
         autoNames: [String: String],
@@ -1166,6 +1192,8 @@ class PipelineQueue {
             micWords: micWords,
             appTurns: appDiar.segments,
             micTurns: micDiar?.segments,
+            appSegments: appSegments,
+            micSegments: micSegments,
             appNames: DiarizationProcess.unprefixNames(autoNames, prefix: "R_"),
             micNames: DiarizationProcess.unprefixNames(autoNames, prefix: "M_"),
             micLabel: micLabel,
@@ -1244,7 +1272,10 @@ class PipelineQueue {
         // pre-diarization cache. The cache only carries "Remote"/mic-label
         // tags, so the renderer's `_segments.json` view would otherwise show
         // exactly those two speakers regardless of what the diarizer found.
-        if let segments = labeledSegments ?? transcription.cachedSegments {
+        // An EMPTY labeled array is treated as absent so a degenerate diarize
+        // result can never overwrite good cached segments with a blank file.
+        let labeledForPersist = (labeledSegments?.isEmpty == false) ? labeledSegments : nil
+        if let segments = labeledForPersist ?? transcription.cachedSegments {
             let segPath = recordingsDir.appendingPathComponent("\(ctx.slug)_segments.json")
             if let data = try? JSONEncoder().encode(segments) {
                 try? data.write(to: segPath, options: .atomic)
