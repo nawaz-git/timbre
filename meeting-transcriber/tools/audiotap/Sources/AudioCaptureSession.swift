@@ -216,9 +216,9 @@ public class AudioCaptureSession {
     /// Debug-visible, release-safe backstop. If the session is deallocated while
     /// a capture is still live — i.e. `stop()` was never called — a process tap
     /// + aggregate device would leak inside coreaudiod (exactly the lifecycle
-    /// stress this workstream is closing). Trap in debug so the offending path is
-    /// caught in tests/dev, and best-effort stop in every build so production can
-    /// never drop a running tap.
+    /// stress this capture path is hardened against). Trap in debug so the
+    /// offending path is caught in tests/dev, and best-effort stop in every
+    /// build so production can never drop a running tap.
     deinit {
         // `micCapture` is checked too so a leaked mic-only session (kill-switch
         // mode, no `appCapture`) is still caught + stopped rather than dropping
