@@ -766,7 +766,10 @@ async function listEngineProcessingMeetings(root: string): Promise<MeetingSummar
  * fields. Kept separate from `listEngineProcessingMeetings` (which builds
  * `MeetingSummary` rows for the list) so neither has to reshape the other, but
  * they share the same discovery rule. Takes `root` as a parameter so it's
- * testable without the module-level default.
+ * testable without the module-level default. `excludePrefix` drops the meeting
+ * currently being RECORDED (a growing `_mic.wav` with no transcript yet) so it
+ * isn't double-counted as "processing" — recording outranks processing, and the
+ * live meeting only enters this scan once capture actually stops.
  */
 export interface ProcessingScanEntry {
   /** Bare engine prefix (`YYYYMMDD_HHmm_<slug>`). */
@@ -782,7 +785,10 @@ export interface ProcessingScanEntry {
   lastChangeMs: number
 }
 
-export async function scanProcessingPrefixes(root: string): Promise<ProcessingScanEntry[]> {
+export async function scanProcessingPrefixes(
+  root: string,
+  excludePrefix?: string | null
+): Promise<ProcessingScanEntry[]> {
   const recordingsDir = join(root, 'recordings')
   let entries: string[]
   try {
@@ -801,6 +807,9 @@ export async function scanProcessingPrefixes(root: string): Promise<ProcessingSc
   const results: ProcessingScanEntry[] = []
   for (const prefix of prefixes) {
     if (!/^[A-Za-z0-9_-]+$/.test(prefix)) continue
+    // The meeting being recorded right now is not "processing" — skip it so the
+    // status ladder shows recording, not a phantom concurrent transcribe.
+    if (excludePrefix && prefix === excludePrefix) continue
     // A landed transcript means the meeting is READY, not processing.
     if (await pathExists(join(protocolsDir, `${prefix}.txt`))) continue
 
