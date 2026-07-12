@@ -83,7 +83,7 @@ public enum LLMSpeakerRepair {
     }
 
     /// Group consecutive same-speaker words into utterance runs (index lists).
-    static func utteranceRuns(_ words: [WordTimeline.AttributedWord]) -> [[Int]] {
+    public static func utteranceRuns(_ words: [WordTimeline.AttributedWord]) -> [[Int]] {
         var runs: [[Int]] = []
         var current: [Int] = []
         var speaker: String?
