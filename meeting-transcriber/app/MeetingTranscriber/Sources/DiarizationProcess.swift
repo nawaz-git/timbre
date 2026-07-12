@@ -1,3 +1,4 @@
+import FluidAudio
 import Foundation
 
 /// Result from diarization.
@@ -12,6 +13,13 @@ struct DiarizationResult {
     let speakingTimes: [String: TimeInterval]
     let autoNames: [String: String]
     var embeddings: [String: [Float]]? // swiftlint:disable:this discouraged_optional_collection
+    /// Per-chunk speaker embeddings from FluidAudio's offline pipeline, kept
+    /// verbatim (cluster id, time span, 256-d embedding). FluidAudio only
+    /// populates its `DiarizationResult.chunkEmbeddings` when
+    /// `OfflineDiarizerConfig.exposeChunkEmbeddings` is set; nil otherwise
+    /// (e.g. FAST mode, Sortformer path). Passthrough consumed by the
+    /// MAX-tier utterance re-scoring pass.
+    var chunkEmbeddings: [ChunkEmbedding]? = nil // swiftlint:disable:this discouraged_optional_collection
 }
 
 /// Abstraction for diarization, enabling mock injection in tests.
