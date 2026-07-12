@@ -20,6 +20,7 @@ import type {
   PrivacyPane,
   RecordingStatus,
   Settings,
+  StorageUsage,
   TagDef,
   TranscriptSearchHit
 } from '../shared/types'
@@ -120,6 +121,10 @@ const api = {
   speakers: {
     list: (): Promise<EnrolledSpeaker[]> => ipcRenderer.invoke(IPC.speakersList),
     delete: (name: string): Promise<void> => ipcRenderer.invoke(IPC.speakersDelete, name)
+  },
+  storage: {
+    /** Disk footprint of the live-recordings library (10s-cached in main). */
+    usage: (): Promise<StorageUsage> => ipcRenderer.invoke(IPC.storageUsage)
   },
   tags: {
     list: (): Promise<TagDef[]> => ipcRenderer.invoke(IPC.tagsList),

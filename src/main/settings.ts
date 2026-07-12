@@ -101,6 +101,9 @@ export async function readSettings(): Promise<Settings> {
   const asrLanguage = coerceAsrLanguage(store.get<string>('asrLanguage'))
   const llmRepairRaw = store.get<boolean>('llmRepair')
   const llmRepair = typeof llmRepairRaw === 'boolean' ? llmRepairRaw : defaults.llmRepair
+  const recordingsFolderRaw = store.get<string>('recordingsFolder')
+  const recordingsFolder =
+    typeof recordingsFolderRaw === 'string' && recordingsFolderRaw ? recordingsFolderRaw : undefined
   // TICKET-IPC-002: undefined => wizard not completed (no default).
   const onboardingCompletedAtRaw = store.get<number>('onboardingCompletedAt')
   const onboardingCompletedAt =
@@ -117,6 +120,7 @@ export async function readSettings(): Promise<Settings> {
     asrLanguage,
     llmRepair,
     launchAtLogin,
+    recordingsFolder,
     onboardingCompletedAt
   }
 }
@@ -151,6 +155,9 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   }
   if (patch.llmRepair !== undefined) {
     store.set('llmRepair', Boolean(patch.llmRepair))
+  }
+  if (patch.recordingsFolder !== undefined) {
+    store.set('recordingsFolder', patch.recordingsFolder)
   }
   // TICKET-IPC-002: use `in` (not `!== undefined`) so the reset path can
   // explicitly clear completion by passing `onboardingCompletedAt: undefined`.
