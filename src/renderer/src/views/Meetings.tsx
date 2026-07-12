@@ -32,6 +32,7 @@ import {
   highlightParts
 } from '../state/meetingSearch'
 import { useTags } from '../state/tags'
+import { useToast } from '../state/toast'
 import { useAppStatus } from '../state/appStatus'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { MarkdownLite } from '../components/MarkdownLite'
@@ -228,6 +229,7 @@ interface MeetingsViewProps {
 export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const { initialMeetingId, onInitialMeetingConsumed } = props
   const { tags: allTags, byId: tagById } = useTags()
+  const { toast } = useToast()
 
   const [meetings, setMeetings] = useState<MeetingSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -350,8 +352,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const [flashedSpeaker, setFlashedSpeaker] = useState<string | null>(null)
   const flashTimeoutRef = useRef<number | null>(null)
 
-  // Status banner
-  const [statusBanner, setStatusBanner] = useState<string | null>(null)
+  // Re-analyse progress (0–100) shown inline on the Run / Re-analyse button —
+  // the old inline "Re-analysing… N%" banner is retired in favour of this +
+  // toasts, keeping the detail pane to one inline banner at a time.
+  const [reanalyzeProgress, setReanalyzeProgress] = useState<number | null>(null)
 
   // Meeting pending a Move-to-Trash confirmation (drives the ConfirmDialog).
   const [deletePending, setDeletePending] = useState<MeetingSummary | null>(null)
@@ -541,7 +545,6 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   const onSelect = useCallback(
     async (m: MeetingSummary) => {
       setSelectedId(m.id)
-      setStatusBanner(null)
       setReassignQueue([])
       setTitleEditing(false)
       setPickerForCluster(null)
@@ -589,10 +592,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         void refresh()
         if (reanalyzeJobId && ev.jobId === reanalyzeJobId) {
           setReanalyzeJobId(null)
-          setStatusBanner('Re-analysis complete.')
+          setReanalyzeProgress(null)
+          toast('Re-analysis complete.', { kind: 'success' })
           // The cascade just ran — every renamed centroid in the queue has
-          // been re-matched across the meeting via the global DB. The banner
-          // has done its job; clear the entire queue.
+          // been re-matched across the meeting via the global DB; clear it.
           setReassignQueue([])
           // Transcript files on disk changed — drop the export-preview
           // cache so the Export tab refetches against the new contents.
@@ -601,17 +604,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         }
       } else if (ev.event === 'error' && reanalyzeJobId && ev.jobId === reanalyzeJobId) {
         setReanalyzeJobId(null)
-        setStatusBanner(`Re-analysis failed: ${ev.message}`)
-      } else if (
-        ev.event === 'transcribing' &&
-        reanalyzeJobId &&
-        ev.jobId === reanalyzeJobId
-      ) {
-        setStatusBanner(`Re-analysing… ${Math.round(ev.progress * 100)}%`)
+        setReanalyzeProgress(null)
+        toast(`Couldn't re-analyse: ${ev.message}`, { kind: 'error' })
+      } else if (ev.event === 'transcribing' && reanalyzeJobId && ev.jobId === reanalyzeJobId) {
+        setReanalyzeProgress(Math.round(ev.progress * 100))
       }
     })
     return unsub
-  }, [refresh, reanalyzeJobId, selectedId, loadTranscript])
+  }, [refresh, reanalyzeJobId, selectedId, loadTranscript, toast])
 
   const selectedMeeting = useMemo(
     () => meetings.find((m) => m.id === selectedId) ?? null,
@@ -897,7 +897,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       await refresh()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      setStatusBanner(`Rename failed: ${msg}`)
+      toast(`Couldn't rename: ${msg}`, { kind: 'error' })
       setTitleEditing(false)
     }
   }, [selectedMeeting, titleValue, refresh])
@@ -925,9 +925,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       await refresh()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      setStatusBanner(`Rename failed: ${msg}`)
+      toast(`Couldn't rename: ${msg}`, { kind: 'error' })
     }
-  }, [rowEditingId, rowEditingValue, meetings, refresh])
+  }, [rowEditingId, rowEditingValue, meetings, refresh, toast])
 
   const onDeleteMeeting = useCallback((m: MeetingSummary) => {
     // Open the confirmation modal; the actual trash happens on confirm.
@@ -945,14 +945,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         setTranscript(null)
       }
       setDeletePending(null)
-      setStatusBanner('Moved to Trash.')
+      toast('Moved to Trash.', { kind: 'success' })
       await refresh()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       setDeletePending(null)
-      setStatusBanner(`Delete failed: ${msg}`)
+      toast(`Couldn't delete: ${msg}`, { kind: 'error' })
     }
-  }, [deletePending, selectedId, refresh])
+  }, [deletePending, selectedId, refresh, toast])
 
   const onPickSpeaker = useCallback(
     async (clusterName: string, newName: string) => {
@@ -963,10 +963,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           clusterName,
           newName
         )
-        setStatusBanner(
+        toast(
           result.enrolled
             ? `Assigned "${newName}" — enrolled their voice for next time.`
-            : `Renamed to "${newName}".`
+            : `Renamed to "${newName}".`,
+          { kind: 'success' }
         )
         // Append to the cascade queue for this meeting-session. Insertion
         // order preserved; existing names are not duplicated.
@@ -986,10 +987,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         await refresh()
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        setStatusBanner(`Rename failed: ${msg}`)
+        toast(`Couldn't rename: ${msg}`, { kind: 'error' })
       }
     },
-    [selectedId, loadTranscript, loadEnrolled, refresh]
+    [selectedId, loadTranscript, loadEnrolled, refresh, toast]
   )
 
   /**
@@ -1008,10 +1009,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         } else {
           await window.api.meetings.removeSpeakerLabel(selectedId, clusterName)
         }
-        setStatusBanner(
+        toast(
           target
             ? `Merged "${clusterName}" into "${target}".`
-            : `Removed label "${clusterName}".`
+            : `Removed label "${clusterName}".`,
+          { kind: 'success' }
         )
         setPickerForCluster(null)
         setPickerAnchor(null)
@@ -1021,10 +1023,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         await refresh()
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        setStatusBanner(`Delete failed: ${msg}`)
+        toast(`Couldn't delete: ${msg}`, { kind: 'error' })
       }
     },
-    [selectedId, loadTranscript, loadEnrolled, refresh]
+    [selectedId, loadTranscript, loadEnrolled, refresh, toast]
   )
 
   /**
@@ -1037,7 +1039,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       try {
         await window.api.meetings.reassignSegment(selectedId, segmentIndex, newName)
         setPickerForSegment(null)
-        setStatusBanner(`Segment ${segmentIndex + 1} → "${newName}".`)
+        toast(`Segment ${segmentIndex + 1} → "${newName}".`, { kind: 'success' })
         // Per-segment reassign also benefits from a re-analyse: the user's
         // mental model is "I just told the app this voice is Bob, propagate it".
         // Append to the queue so all touched voices show in the cascade banner.
@@ -1050,10 +1052,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         await refresh()
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        setStatusBanner(`Reassign failed: ${msg}`)
+        toast(`Couldn't reassign: ${msg}`, { kind: 'error' })
       }
     },
-    [selectedId, loadTranscript, refresh]
+    [selectedId, loadTranscript, refresh, toast]
   )
 
   /**
@@ -1068,30 +1070,30 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       try {
         await window.api.meetings.addSpeaker(selectedId, name)
         setAddSpeakerOpen(false)
-        setStatusBanner(`Added "${name}" to this meeting.`)
+        toast(`Added "${name}" to this meeting.`, { kind: 'success' })
         await refresh()
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        setStatusBanner(`Add speaker failed: ${msg}`)
+        toast(`Couldn't add speaker: ${msg}`, { kind: 'error' })
       }
     },
-    [selectedId, refresh]
+    [selectedId, refresh, toast]
   )
 
   const onReanalyze = useCallback(async () => {
     if (!selectedId) return
     const hint: number | undefined =
       reanalyzeSpeakers === 'auto' ? undefined : reanalyzeSpeakers
-    setStatusBanner('Re-analysing — keep this window open…')
+    // Progress shows on the Run button itself (no inline banner).
     try {
       const job = await window.api.meetings.reanalyze(selectedId, hint)
       setReanalyzeJobId(job.jobId)
       setReanalyzePending(false)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      setStatusBanner(`Re-analyse failed: ${msg}`)
+      toast(`Couldn't re-analyse: ${msg}`, { kind: 'error' })
     }
-  }, [selectedId, reanalyzeSpeakers])
+  }, [selectedId, reanalyzeSpeakers, toast])
 
   /**
    * Re-process at MAX accuracy: the slower, high-accuracy speaker-attribution
@@ -1124,15 +1126,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     if (!selectedId || !selectedMeeting) return
     const hint: number | undefined =
       selectedMeeting.speakerCount > 0 ? selectedMeeting.speakerCount : undefined
-    setStatusBanner('Re-analysing — keep this window open…')
     try {
       const job = await window.api.meetings.reanalyze(selectedId, hint)
       setReanalyzeJobId(job.jobId)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      setStatusBanner(`Re-analyse failed: ${msg}`)
+      toast(`Couldn't re-analyse: ${msg}`, { kind: 'error' })
     }
-  }, [selectedId, selectedMeeting])
+  }, [selectedId, selectedMeeting, toast])
 
   const onCopyTranscript = useCallback(async () => {
     // Prefer diarized segments as `[mm:ss] Speaker: text`; fall back to the
@@ -1175,15 +1176,22 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           format,
           selectedMeeting.title
         )
-        if (result.savedTo) setStatusBanner(`Saved to ${result.savedTo}`)
+        if (result.savedTo) {
+          const savedTo = result.savedTo
+          toast(`Saved to ${savedTo.split('/').pop() ?? savedTo}`, {
+            kind: 'success',
+            actionLabel: 'Reveal in Finder',
+            onAction: () => void window.api.meetings.reveal(savedTo)
+          })
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        setStatusBanner(`Export failed: ${msg}`)
+        toast(`Couldn't export: ${msg}`, { kind: 'error' })
       } finally {
         setExportBusy(false)
       }
     },
-    [selectedId, selectedMeeting]
+    [selectedId, selectedMeeting, toast]
   )
 
   const onToggleTag = useCallback(
@@ -1197,10 +1205,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         await refresh()
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        setStatusBanner(`Tag update failed: ${msg}`)
+        toast(`Couldn't update tags: ${msg}`, { kind: 'error' })
       }
     },
-    [selectedMeeting, refresh]
+    [selectedMeeting, refresh, toast]
   )
 
   /**
@@ -1221,10 +1229,10 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
         await refresh()
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        setStatusBanner(`Tag update failed: ${msg}`)
+        toast(`Couldn't update tags: ${msg}`, { kind: 'error' })
       }
     },
-    [meetings, refresh]
+    [meetings, refresh, toast]
   )
 
   // ─── Render ───────────────────────────────────────────────────────────
@@ -1334,6 +1342,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
       return next
     })
   }
+
+  // Re-analyse progress rides the button label (the old inline banner is gone).
+  const reanalyzeLabel = (idle: string): string =>
+    reanalyzeJobId === null
+      ? idle
+      : reanalyzeProgress !== null
+        ? `Re-analysing… ${reanalyzeProgress}%`
+        : 'Re-analysing…'
 
   const renderMeetingRow = (m: MeetingSummary, snippet?: string): JSX.Element => {
     const isEditing = rowEditingId === m.id
@@ -1819,7 +1835,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   onClick={() => void onReanalyze()}
                   disabled={reanalyzeJobId !== null}
                 >
-                  Run
+                  {reanalyzeLabel('Run')}
                 </button>
                 <button
                   className="btn"
@@ -2108,7 +2124,7 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                     onClick={() => void onCascadeReanalyze()}
                     disabled={reanalyzeJobId !== null}
                   >
-                    {reanalyzeJobId !== null ? 'Re-analysing…' : 'Re-analyse now'}
+                    {reanalyzeLabel('Re-analyse now')}
                   </button>
                   <button
                     type="button"
@@ -2150,26 +2166,6 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 }}
               />
             </div>
-
-            {statusBanner && (
-              <div
-                className="status-detail"
-                style={{
-                  color:
-                    statusBanner.startsWith('Re-analyse failed') ||
-                    statusBanner.startsWith('Rename failed') ||
-                    statusBanner.startsWith('Export failed') ||
-                    statusBanner.startsWith('Tag update failed') ||
-                    statusBanner.startsWith('Reassign failed') ||
-                    statusBanner.startsWith('Add speaker failed') ||
-                    statusBanner.startsWith('Delete failed')
-                      ? 'var(--danger, #ef4444)'
-                      : undefined
-                }}
-              >
-                {statusBanner}
-              </div>
-            )}
 
             {/* ── Tab content ───────────────────────────────────────────── */}
             {tab === 'summary' && transcript?.summaryMarkdown && (
