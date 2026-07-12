@@ -358,7 +358,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   // user closing/reopening the app. The interval clears itself once no
   // processing meetings remain and on unmount.
   const hasProcessing = useMemo(
-    () => meetings.some((m) => m.status === 'processing'),
+    // Poll while anything is transcribing (processing) OR upgrading (refining)
+    // so the row + open transcript refresh the moment the engine finishes.
+    () => meetings.some((m) => m.status === 'processing' || m.status === 'refining'),
     [meetings]
   )
   useEffect(() => {
@@ -946,6 +948,26 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
   }, [selectedId, reanalyzeSpeakers])
 
   /**
+   * Re-process at MAX accuracy: the slower, high-accuracy speaker-attribution
+   * refinement (consensus diarization + utterance re-scoring + optional LLM
+   * repair). Overwrites the meeting's transcript in place on completion.
+   */
+  const onReanalyzeMax = useCallback(async () => {
+    if (!selectedId) return
+    const hint: number | undefined =
+      reanalyzeSpeakers === 'auto' ? undefined : reanalyzeSpeakers
+    setStatusBanner('Re-processing at max accuracy — this can take several minutes…')
+    try {
+      const job = await window.api.meetings.reanalyze(selectedId, hint, 'max')
+      setReanalyzeJobId(job.jobId)
+      setReanalyzePending(false)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setStatusBanner(`Re-process failed: ${msg}`)
+    }
+  }, [selectedId, reanalyzeSpeakers])
+
+  /**
    * One-click cascade from the banner: re-run mt-batch with the meeting's
    * existing speaker count as the hint so the diarizer keeps the same
    * cluster count, but with the updated global-DB centroid now in play.
@@ -1165,6 +1187,21 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                               className="home-status-icon--spin"
                             />
                             <span>Processing</span>
+                          </span>
+                        )}
+                        {m.status === 'refining' && (
+                          <span
+                            className="processing-pill"
+                            aria-label="Refining"
+                            title="Upgrading speaker attribution (Max accuracy)"
+                          >
+                            <Loader2
+                              size={11}
+                              strokeWidth={2}
+                              aria-hidden="true"
+                              className="home-status-icon--spin"
+                            />
+                            <span>Refining</span>
                           </span>
                         )}
                       </div>
@@ -1431,6 +1468,14 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                   disabled={reanalyzeJobId !== null}
                 >
                   Run
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => void onReanalyzeMax()}
+                  disabled={reanalyzeJobId !== null}
+                  title="Slower, higher-accuracy speaker attribution (several minutes)"
+                >
+                  Max accuracy
                 </button>
                 <button className="btn" onClick={() => setReanalyzePending(false)}>
                   Cancel
