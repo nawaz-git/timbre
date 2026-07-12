@@ -2,6 +2,7 @@
 import AppKit
 import AudioTapLib
 import Foundation
+import MTPipelineCore
 import Observation
 import os.log
 
@@ -1197,6 +1198,10 @@ final class AppState { // swiftlint:disable:this type_body_length
             speakerMatcherFactory: { SpeakerMatcher(dbPath: dbPath) },
             vadConfig: settings.vadEnabled ? VADConfig(threshold: settings.vadThreshold) : nil,
             recognitionStatsLog: RecognitionStatsLog(),
+            // MAX-tier refine: read the tier FRESH per completed job so a
+            // mid-session switch to Max accuracy is honoured on the next meeting.
+            maxRefinerFactory: { [self] in makeMaxRefiner(globalSpeakersDBPath: dbPath) },
+            processingModeProvider: { EngineConfig.read().processingMode },
         )
         queue.loadSnapshot()
         // Fire-and-forget: dir scan + per-file attr probes run off-main so
@@ -1229,6 +1234,87 @@ final class AppState { // swiftlint:disable:this type_body_length
         }
     }
 
+    // MARK: - MAX-tier refiner wiring
+
+    /// Build a `MaxAccuracyPipeline` wired to the concrete engines. AppState is
+    /// `@MainActor` (hence implicitly `Sendable`), so the refiner's `@Sendable`
+    /// model closures capture `self` and hop back to the main actor to reach the
+    /// engines; each hop immediately `await`s the engine's own async work, which
+    /// runs off-main, so the UI isn't blocked during the long refine.
+    func makeMaxRefiner(globalSpeakersDBPath dbPath: URL) -> MaxAccuracyPipeline {
+        return MaxAccuracyPipeline(
+            resample16k: { src, dst in try await AudioMixer.resampleFile(from: src, to: dst) },
+            transcribeWords: { [self] audio, track in try await refineTranscribe(audio: audio, track: track) },
+            diarizeOffline: { [self] audio, numSpeakers, threshold, expose in
+                try await refineDiarize(audio: audio, numSpeakers: numSpeakers, clusterThreshold: threshold, exposeChunkEmbeddings: expose)
+            },
+            detectOverlap: { audio in try await FluidDiarizer(mode: .sortformer).detectOverlapSpans(audioPath: audio) },
+            anchorNames: { centroids in
+                guard !centroids.isEmpty else { return [:] }
+                return SpeakerMatcher(dbPath: dbPath).matchVerbose(embeddings: centroids).mapValues(\.assignedName)
+            },
+            llmComplete: makeMaxLLMComplete(),
+        )
+    }
+
+    /// Build the LLM-completion closure for MAX repair from the current
+    /// provider settings. The concrete provider is constructed *inside* the
+    /// nonisolated `@Sendable` closure from captured Sendable config, so no
+    /// non-Sendable value is sent across the actor boundary. `nil` when no
+    /// provider is configured → the LLM pass is skipped.
+    private func makeMaxLLMComplete() -> (@Sendable (String) async throws -> String)? {
+        let language = settings.protocolLanguage
+        switch settings.protocolProvider {
+        #if !APPSTORE
+            case .claudeCLI:
+                let claudeBin = settings.claudeBin
+                return { prompt in
+                    try await ClaudeCLIProtocolGenerator(claudeBin: claudeBin, language: language).complete(prompt: prompt)
+                }
+        #endif
+
+        case .openAICompatible:
+            let endpoint = settings.openAIEndpoint
+            let model = settings.openAIModel
+            let apiKey = settings.openAIAPIKey
+            return { prompt in
+                let generator = OpenAIProtocolGenerator(
+                    endpoint: URL(string: endpoint) ?? URL(string: "http://localhost:11434/v1/chat/completions")!,
+                    model: model,
+                    language: language,
+                    apiKey: apiKey.isEmpty ? nil : apiKey,
+                )
+                return try await generator.complete(prompt: prompt)
+            }
+
+        case .none:
+            return nil
+        }
+    }
+
+    /// Re-transcribe a durable track for MAX. WhisperKit large-v3-turbo is
+    /// forced for both tracks (plan P0); it auto-loads its model on demand.
+    private func refineTranscribe(audio: URL, track: WordTimeline.Track) async throws -> [WordTimeline.Word] {
+        try await whisperKit.transcribeWords(audioPath: audio, source: track).words
+    }
+
+    /// One offline diarization run at a swept cluster threshold, chunk
+    /// embeddings optionally exposed for the utterance re-scoring pass.
+    private func refineDiarize(
+        audio: URL, numSpeakers: Int?, clusterThreshold: Double, exposeChunkEmbeddings: Bool,
+    ) async throws -> DiarizationResult {
+        let tuning = OfflineDiarizerTuning(
+            clusterThreshold: clusterThreshold,
+            warmStartFa: settings.warmStartFa,
+            warmStartFb: settings.warmStartFb,
+            minSegmentDurationSeconds: settings.minSegmentDurationSeconds,
+            excludeOverlap: settings.excludeOverlap,
+            exposeChunkEmbeddings: exposeChunkEmbeddings,
+        )
+        return try await FluidDiarizer(mode: .offline, tuning: tuning)
+            .run(audioPath: audio, numSpeakers: numSpeakers, meetingTitle: "")
+    }
+
     func configurePipelineCallbacks() {
         pipelineQueue.onJobStateChange = { [notifier] job, _, newState in
             switch newState {
@@ -1244,6 +1330,13 @@ final class AppState { // swiftlint:disable:this type_body_length
             default:
                 break
             }
+        }
+        pipelineQueue.onRefineComplete = { [notifier] job, report in
+            let corrections = report.utteranceReassignments + report.llmLabelsMoved
+            notifier.notify(
+                title: "Speaker attribution upgraded",
+                body: "\(job.meetingTitle): \(report.speakerCount) speakers, \(corrections) corrections",
+            )
         }
     }
 }
