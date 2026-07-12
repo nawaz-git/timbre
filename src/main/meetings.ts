@@ -1500,6 +1500,25 @@ function formatTimestampSRT(seconds: number): string {
   )
 }
 
+/**
+ * Build an SRT subtitle body from diarized segments. Shared by the imported
+ * and engine export paths so both produce byte-identical `.srt` output.
+ */
+function buildSRT(
+  segments: Array<{ speaker: string; start: number; end: number; text: string }>
+): string {
+  const lines: string[] = []
+  segments.forEach((seg, i) => {
+    lines.push(
+      String(i + 1),
+      `${formatTimestampSRT(seg.start)} --> ${formatTimestampSRT(seg.end)}`,
+      `${seg.speaker}: ${seg.text.trim()}`,
+      ''
+    )
+  })
+  return lines.join('\n')
+}
+
 interface ExportPayload {
   /** Suggested filename (with extension). */
   filename: string
@@ -1525,16 +1544,43 @@ export async function exportMeeting(
     if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
       throw new Error(`Invalid engine prefix: ${prefix}`)
     }
+    const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || prefix
     if (format === 'video') {
       const videoPath = await findEngineVideoForPrefix(prefix)
       if (!videoPath) throw new Error('This recording has no screen video.')
       const body = await fs.readFile(videoPath)
-      const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || prefix
       return { filename: `${safeTitle}.mp4`, body, contentType: 'video/mp4' }
     }
-    if (format !== 'txt' && format !== 'md') {
-      throw new Error(`Live-recording meetings only support txt/md/video export, not ${format}.`)
+    if (format === 'audio') {
+      const audioPath = await findEngineAudioForPrefix(prefix)
+      if (!audioPath) throw new Error('This meeting has no audio file.')
+      const body = await fs.readFile(audioPath)
+      return { filename: `${safeTitle}.wav`, body, contentType: 'audio/wav' }
     }
+    if (format === 'json' || format === 'srt') {
+      // Reuse the canonical segment loader so engine json/srt match the shape
+      // the renderer already reads (start/end/speaker/text).
+      const t = await readTranscript(outputFolder, meetingId)
+      const segs = t.segments ?? []
+      if (segs.length === 0) {
+        throw new Error('This meeting has no structured transcript.')
+      }
+      if (format === 'srt') {
+        return {
+          filename: `${safeTitle}.srt`,
+          body: buildSRT(segs),
+          contentType: 'application/x-subrip'
+        }
+      }
+      const speakerCount = new Set(segs.map((s) => s.speaker)).size
+      const jsonBody = JSON.stringify(
+        { segments: segs, duration: t.durationSeconds, speakerCount },
+        null,
+        2
+      )
+      return { filename: `${safeTitle}.json`, body: jsonBody, contentType: 'application/json' }
+    }
+    // txt / md — the engine's protocol file.
     const srcExt = format === 'md' ? 'md' : 'txt'
     const srcPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.${srcExt}`)
     const body = await fs.readFile(srcPath, 'utf-8')
@@ -1589,18 +1635,9 @@ export async function exportMeeting(
   }
 
   // SRT
-  const srtLines: string[] = []
-  segments.forEach((seg, i) => {
-    srtLines.push(
-      String(i + 1),
-      `${formatTimestampSRT(seg.start)} --> ${formatTimestampSRT(seg.end)}`,
-      `${seg.speaker}: ${seg.text.trim()}`,
-      ''
-    )
-  })
   return {
     filename: `${safeTitle}.srt`,
-    body: srtLines.join('\n'),
+    body: buildSRT(segments),
     contentType: 'application/x-subrip'
   }
 }
@@ -1659,7 +1696,23 @@ export async function previewExportMeeting(
     // and then serialise it across IPC — wasteful for preview, since the
     // pane shows only a size/filename card.
     if (meetingId.startsWith('engine:')) {
-      throw new Error('Live-recording meetings do not have audio export available.')
+      // Engine meetings resolve their audio by prefix; mirror the imported
+      // branch (stat only, no body) so the preview shows a size card.
+      const prefix = meetingId.slice('engine:'.length)
+      if (!/^[A-Za-z0-9_-]+$/.test(prefix)) {
+        throw new Error(`Invalid engine prefix: ${prefix}`)
+      }
+      const audioPath = await findEngineAudioForPrefix(prefix)
+      if (!audioPath) throw new Error('This meeting has no audio file.')
+      const stat = await fs.stat(audioPath)
+      const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || prefix
+      return {
+        filename: `${safeTitle}.wav`,
+        body: '',
+        contentType: 'audio/wav',
+        isBinary: true,
+        sizeBytes: stat.size
+      }
     }
     const folderId = meetingId.startsWith('imported:')
       ? meetingId.slice('imported:'.length)
