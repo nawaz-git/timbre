@@ -1,4 +1,5 @@
 import Foundation
+import MTPipelineCore
 
 /// Pure functions that combine ASR transcript segments with diarization
 /// segments into a single speaker-labelled timeline.
@@ -12,9 +13,9 @@ import Foundation
 ///     short pause into single utterance blocks for readability.
 enum Merger {
     /// Maximum pause (seconds) the merge step tolerates between two
-    /// same-speaker segments before starting a new block. Matches
-    /// `DiarizationProcess.mergeGapThreshold`.
-    static let mergeGapThreshold: TimeInterval = 2.0
+    /// same-speaker segments before starting a new block. Sourced from the
+    /// shared `TranscriptSegments` rule so both pipelines paragraph identically.
+    static let mergeGapThreshold: TimeInterval = TranscriptSegments.mergeGapThreshold
 
     /// Assign a speaker label to each transcript segment.
     static func assignSpeakers(
@@ -82,22 +83,10 @@ enum Merger {
 
     /// Merge consecutive segments from the same speaker into single blocks,
     /// joining their text with a single space. A silence gap >
-    /// `mergeGapThreshold` forces a break even for the same speaker.
+    /// `mergeGapThreshold` forces a break even for the same speaker. Delegates
+    /// to the shared `TranscriptSegments` rule via the segment bridge.
     static func mergeConsecutiveSpeakers(_ segments: [TimedSegment]) -> [TimedSegment] {
-        guard var current = segments.first else { return [] }
-        var merged: [TimedSegment] = []
-        for seg in segments.dropFirst() {
-            let gap = seg.start - current.end
-            if seg.speaker == current.speaker, gap <= mergeGapThreshold {
-                current.end = seg.end
-                current.text = "\(current.text) \(seg.text)"
-            } else {
-                merged.append(current)
-                current = seg
-            }
-        }
-        merged.append(current)
-        return merged
+        TranscriptSegments.mergeConsecutiveSpeakers(segments.map(\.timestamped)).map(TimedSegment.init)
     }
 
     /// Convenience: assign + merge in one call.

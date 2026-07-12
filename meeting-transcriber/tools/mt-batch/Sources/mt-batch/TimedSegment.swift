@@ -1,15 +1,31 @@
 import Foundation
+import MTPipelineCore
 
 /// Lightweight transcript segment with timestamps and an optional speaker label.
 ///
-/// Mirrors `TimestampedSegment` in the main app but is duplicated here
-/// because the app's `Sources/` is an internal-visibility executableTarget
-/// and cannot be linked into another target.
+/// This is mt-batch's stable on-disk shape (the `transcript.json` schema and
+/// the `[HH:MM:SS] Speaker: text` line format). It bridges to the shared
+/// `TimestampedSegment` in `MTPipelineCore` — the type the word-attribution
+/// core reads and writes — via `timestamped` / `init(_:)`, so the shared
+/// pipeline logic runs on one segment type while mt-batch keeps its own I/O
+/// type and helpers.
 struct TimedSegment: Codable {
     var start: TimeInterval
     var end: TimeInterval
     var text: String
     var speaker: String = ""
+}
+
+extension TimedSegment {
+    /// This segment as the shared `TimestampedSegment`.
+    var timestamped: TimestampedSegment {
+        TimestampedSegment(start: start, end: end, text: text, speaker: speaker)
+    }
+
+    /// Adopt a shared `TimestampedSegment` produced by the attribution core.
+    init(_ segment: TimestampedSegment) {
+        self.init(start: segment.start, end: segment.end, text: segment.text, speaker: segment.speaker)
+    }
 }
 
 extension TimedSegment {

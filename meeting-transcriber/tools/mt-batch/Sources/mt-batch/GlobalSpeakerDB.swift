@@ -1,4 +1,5 @@
 import Foundation
+import MTPipelineCore
 
 /// Read-only consumer of a globally-shared `speakers.json` for cross-meeting
 /// speaker recognition.
@@ -19,22 +20,21 @@ import Foundation
 /// normalize because the cosine ratio absorbs vector magnitude.
 enum GlobalSpeakerDB {
     /// Default similarity threshold for the primary match. Same-voice
-    /// embeddings from the WeSpeaker model typically score 0.95+; the 0.65
-    /// floor is conservative enough that a cross-talk-contaminated centroid
-    /// can't quietly steal a different speaker's name.
+    /// embeddings from the WeSpeaker model typically score 0.95+; the floor is
+    /// conservative enough that a cross-talk-contaminated centroid can't
+    /// quietly steal a different speaker's name.
     ///
-    /// This mirrors the unified decision rule the main app defines in
-    /// `SpeakerMatcher.matchSimilarityFloor` (0.65). The two matchers live in
-    /// separate SPM packages today, so the value is duplicated with this
-    /// cross-reference rather than imported; the shared pipeline target will
-    /// collapse them into one definition. Keep the numbers in lock-step.
-    static let defaultMatchThreshold: Float = 0.65
+    /// Sourced from the shared `SpeakerMatchRule` in `MTPipelineCore` — the
+    /// same definition the app's `SpeakerMatcher` reads, so the two matchers no
+    /// longer duplicate the number. Kept under this name because the CLI's
+    /// `--match-threshold` default references it.
+    static let defaultMatchThreshold: Float = SpeakerMatchRule.similarityFloor
 
-    /// Default confidence margin between top-1 and top-2 candidates. Stops
-    /// the case where two enrolled speakers both score around the threshold —
+    /// Default confidence margin between top-1 and top-2 candidates. Stops the
+    /// case where two enrolled speakers both score around the threshold —
     /// without the gap we'd flip-flop between them on tiny embedding noise.
-    /// Mirrors `SpeakerMatcher.matchSimilarityMargin` (0.08) — see above.
-    static let defaultMatchMargin: Float = 0.08
+    /// Also sourced from `SpeakerMatchRule` (see above).
+    static let defaultMatchMargin: Float = SpeakerMatchRule.similarityMargin
 
     /// Outcome of matching one detected speaker against the enrolled DB.
     struct MatchResult {
