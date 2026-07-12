@@ -1865,8 +1865,13 @@ class PipelineQueue {
             case .refining:
                 // The FAST result was already persisted before the refine
                 // started, so a refine interrupted by a crash/quit settles at
-                // `.done` (discarded below). A stale `.refining` marker on disk
-                // self-heals on the Timbre side (stale-status cap).
+                // `.done` (discarded below). Nothing resumes this job, so remove
+                // the orphaned `.refining` marker here — otherwise it would pin
+                // the meeting to a perpetual "Refining…" state on the Timbre
+                // side, since no live job remains to clean it up.
+                if let transcriptPath = loaded[i].transcriptPath {
+                    removeRefineMarker(transcriptPath: transcriptPath)
+                }
                 loaded[i].state = .done
 
             default:

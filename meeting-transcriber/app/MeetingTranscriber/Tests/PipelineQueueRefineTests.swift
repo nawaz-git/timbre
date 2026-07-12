@@ -94,6 +94,36 @@ final class PipelineQueueRefineTests: XCTestCase {
         XCTAssertEqual(try? String(contentsOf: txtURL, encoding: .utf8), "FAST", "FAST transcript untouched by a cancelled refine")
     }
 
+    func testLoadSnapshotRemovesOrphanedRefineMarker() throws {
+        // Simulate a crash mid-refine: a persisted `.refining` job plus its
+        // marker file, with the FAST transcript already on disk.
+        let stem = "20260712_1400_orphan"
+        let ipcDir = root.appendingPathComponent("ipc")
+        try FileManager.default.createDirectory(at: ipcDir, withIntermediateDirectories: true)
+        let txtURL = root.appendingPathComponent("protocols/\(stem).txt")
+        try "FAST".write(to: txtURL, atomically: true, encoding: .utf8)
+        let marker = txtURL.deletingPathExtension().appendingPathExtension("refining")
+        try Data().write(to: marker)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+
+        var job = PipelineJob(meetingTitle: "Orphan", appName: "Chrome", mixPath: nil, appPath: nil, micPath: nil, micDelay: 0)
+        job.transcriptPath = txtURL
+        job.state = .refining
+        try PipelineSnapshot.save([job], to: ipcDir)
+
+        // A fresh queue restoring that snapshot must discard the stale refine
+        // job AND delete the orphaned marker so Timbre doesn't show the meeting
+        // as perpetually "Refining…".
+        let queue = PipelineQueue(logDir: ipcDir, outputDir: root)
+        queue.loadSnapshot()
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: marker.path),
+            "orphaned .refining marker removed on snapshot restore",
+        )
+        XCTAssertNil(queue.jobs.first { $0.id == job.id }, "the interrupted refine job is discarded")
+    }
+
     func testFastModeSkipsRefine() async {
         // processingMode fast → no refine, straight to done.
         let stem = "20260712_1300_fast"
