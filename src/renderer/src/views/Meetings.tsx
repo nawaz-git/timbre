@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import { formatDate, formatDuration } from '../state/format'
 import { useTags } from '../state/tags'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { PencilIcon } from '../components/PencilIcon'
 import { RowMenu } from '../components/RowMenu'
 import { SpeakerPicker } from '../components/SpeakerPicker'
@@ -266,6 +267,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
 
   // Status banner
   const [statusBanner, setStatusBanner] = useState<string | null>(null)
+
+  // Meeting pending a Move-to-Trash confirmation (drives the ConfirmDialog).
+  const [deletePending, setDeletePending] = useState<MeetingSummary | null>(null)
 
   // Animated tab indicator. We measure the currently-active tab button's
   // offsetLeft + offsetWidth and slide a single underline pseudo-element to
@@ -786,27 +790,30 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     }
   }, [rowEditingId, rowEditingValue, meetings, refresh])
 
-  const onDeleteMeeting = useCallback(
-    async (m: MeetingSummary) => {
-      const ok = window.confirm(
-        `Delete "${m.title}"?\n\nThis permanently removes its transcript and recording from disk. This can't be undone.`
-      )
-      if (!ok) return
-      try {
-        await window.api.meetings.delete(m.id)
-        // If the deleted meeting was open in the detail pane, clear it.
-        if (selectedId === m.id) {
-          setSelectedId(null)
-          setTranscript(null)
-        }
-        await refresh()
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        setStatusBanner(`Delete failed: ${msg}`)
+  const onDeleteMeeting = useCallback((m: MeetingSummary) => {
+    // Open the confirmation modal; the actual trash happens on confirm.
+    setDeletePending(m)
+  }, [])
+
+  const performDeleteMeeting = useCallback(async () => {
+    const m = deletePending
+    if (!m) return
+    try {
+      await window.api.meetings.delete(m.id)
+      // If the deleted meeting was open in the detail pane, clear it.
+      if (selectedId === m.id) {
+        setSelectedId(null)
+        setTranscript(null)
       }
-    },
-    [selectedId, refresh]
-  )
+      setDeletePending(null)
+      setStatusBanner('Moved to Trash.')
+      await refresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setDeletePending(null)
+      setStatusBanner(`Delete failed: ${msg}`)
+    }
+  }, [deletePending, selectedId, refresh])
 
   const onPickSpeaker = useCallback(
     async (clusterName: string, newName: string) => {
@@ -2396,6 +2403,17 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
           </>
         )}
       </div>
+
+      {deletePending && (
+        <ConfirmDialog
+          title={`Move "${deletePending.title}" to Trash?`}
+          body="The transcript, audio, and video move to the macOS Trash. You can restore them from there."
+          confirmLabel="Move to Trash"
+          danger
+          onConfirm={performDeleteMeeting}
+          onCancel={() => setDeletePending(null)}
+        />
+      )}
     </div>
   )
 }
