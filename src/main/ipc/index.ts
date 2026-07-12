@@ -207,18 +207,27 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     IPC.meetingsReanalyze,
-    async (_event, meetingId: string, numSpeakers?: number): Promise<BackendJob> => {
+    async (
+      _event,
+      meetingId: string,
+      numSpeakers?: number,
+      mode?: 'fast' | 'max'
+    ): Promise<BackendJob> => {
       const jobId = randomUUID()
       const settings = await readSettings()
       const hint =
         typeof numSpeakers === 'number' ? numSpeakers : numSpeakersToArg(settings.numSpeakers)
-      console.log('[meetings:reanalyze]', { jobId, meetingId, hint })
+      // Explicit mode wins (e.g. the "Re-process (Max accuracy)" action); else
+      // fall back to the user's default processing tier.
+      const effectiveMode = mode ?? settings.processingMode
+      console.log('[meetings:reanalyze]', { jobId, meetingId, hint, mode: effectiveMode })
       reanalyzeMeetingProc({
         outputFolder: settings.outputFolder,
         meetingId,
         jobId,
         numSpeakers: hint,
-        language: settings.asrLanguage
+        language: settings.asrLanguage,
+        mode: effectiveMode
       })
         .then((result) => {
           console.log('[meetings:reanalyze] done', result)
