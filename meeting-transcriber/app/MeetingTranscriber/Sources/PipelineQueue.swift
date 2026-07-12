@@ -1250,10 +1250,13 @@ class PipelineQueue {
         }
 
         let recordingsDir = outputDir.appendingPathComponent("recordings")
+        // Name the durable audio off the transcript's exact stem (not a fresh
+        // timestamp) so `<stem>_{app,mic,mix}.wav` always match the saved `.txt`
+        // — the MAX refine and re-analysis both find the audio by that stem.
         let movedMedia = Self.copyAudioToOutput(
             mixPath: ctx.mixPath, appPath: ctx.appPath, micPath: ctx.micPath,
             screenPath: ctx.screenPath,
-            title: ctx.title, outputDir: recordingsDir,
+            slug: txtPath.deletingPathExtension().lastPathComponent, outputDir: recordingsDir,
         )
 
         // Mux the captured audio mix into the screen video so the saved .mp4
@@ -1998,7 +2001,7 @@ class PipelineQueue {
     @discardableResult
     private static func copyAudioToOutput(
         mixPath: URL?, appPath: URL?, micPath: URL?, screenPath: URL?,
-        title: String, outputDir: URL,
+        slug: String, outputDir: URL,
     ) -> (mix: URL?, screen: URL?) {
         // Each move below renames-in-place — if two of the three URLs point at
         // the same file, the first move destroys the source for the next one.
@@ -2019,7 +2022,12 @@ class PipelineQueue {
 
         let fm = FileManager.default
         try? fm.createDirectory(at: outputDir, withIntermediateDirectories: true)
-        let slug = ProtocolGenerator.filename(title: title, ext: "").dropLast() // remove trailing "."
+        // `slug` is the caller-supplied transcript stem — NOT a freshly
+        // timestamped `filename(title:)`. Sharing the transcript's exact prefix
+        // guarantees the durable `<stem>_{app,mic,mix}.wav` line up with the
+        // saved `.txt`, so a minute-boundary crossing between the two can't
+        // desync them and silently strand the MAX refine / re-analysis (which
+        // both locate the audio by the transcript stem).
         let audioPaths: [(URL, String)] = [
             mixPath.map { ($0, "\(slug)\(RecordingFileSuffix.mix)") },
             appPath.map { ($0, "\(slug)\(RecordingFileSuffix.app)") },
