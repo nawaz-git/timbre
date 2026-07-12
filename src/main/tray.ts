@@ -39,13 +39,16 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import type {
   AppStatus,
+  RecordingState,
   PermissionStatus,
+  PermissionState,
   HelperPermissionSnapshot,
   GrantStatus
 } from '../shared/types'
 import { onStatusChange, getStatus, startWatching, stopWatching } from './recording'
 import { getPermissionStatus, openPrivacyPane } from './permissions'
 import { getWatchdogSignal, getLastReadyPrefix } from './captureWatchdog'
+import { getChromeMeetSnapshot } from './chromeProbe'
 import { probeHelperPermissions } from './onboarding'
 import { getAppStatus, onAppStatusChange, confirmIfRecording } from './status'
 import { liveRecordingsRoot } from './meetings'
@@ -73,6 +76,39 @@ function permMissing(s: GrantStatus): boolean {
   return s === 'denied' || s === 'not-determined'
 }
 
+/** How often to re-probe engine permissions while a grant is still missing. */
+const SLOW_PERM_POLL_MS = 5 * 60_000
+/** The slow re-probe timer — only alive while a grant is unhealthy. */
+let slowPermTimer: NodeJS.Timeout | null = null
+
+/** True while any engine grant is not yet confirmed healthy. */
+function anyEngineGrantUnhealthy(): boolean {
+  return (
+    enginePerms.screenRecording !== 'granted' ||
+    enginePerms.microphone !== 'granted' ||
+    enginePerms.accessibility !== 'granted'
+  )
+}
+
+/**
+ * Start the slow 5-min re-probe ONLY while a grant is still missing, and stop
+ * it the moment everything is healthy. Once granted, the tray relies purely on
+ * the click + activate probes — so a fully-granted idle app spawns zero
+ * periodic `log show` scans (the old code re-probed every 10 s forever, each
+ * run costing two multi-second unified-log shell-outs).
+ */
+function reconcileSlowPermPoll(): void {
+  const needPoll = anyEngineGrantUnhealthy()
+  if (needPoll && !slowPermTimer) {
+    slowPermTimer = setInterval(() => {
+      void refreshEnginePerms()
+    }, SLOW_PERM_POLL_MS)
+  } else if (!needPoll && slowPermTimer) {
+    clearInterval(slowPermTimer)
+    slowPermTimer = null
+  }
+}
+
 /** Re-probe the engine verdict, cache it, and repaint the tray. Bounded + safe. */
 async function refreshEnginePerms(): Promise<void> {
   try {
@@ -80,9 +116,56 @@ async function refreshEnginePerms(): Promise<void> {
   } catch {
     // keep the last-known verdict on any probe error
   }
+  reconcileSlowPermPoll()
   rebuildMenu()
   refreshTitle()
 }
+
+/**
+ * The small set of values the tray menu is actually derived from. The 1.5 s
+ * repaint tick rebuilds the menu only when one of these changed
+ * (`menuInputsChanged`) — rebuilding the whole menu unconditionally every tick
+ * is wasted work and risks snapping an open menu shut on macOS.
+ */
+interface TrayMenuInputs {
+  state: RecordingState
+  chromeMeetingId: string | null
+  screenRecording: GrantStatus
+  microphone: GrantStatus
+  automationChrome: PermissionState
+  watchdogFlag: boolean
+}
+
+/** Pure diff: did anything the tray menu depends on change? */
+export function menuInputsChanged(prev: TrayMenuInputs, next: TrayMenuInputs): boolean {
+  return (
+    prev.state !== next.state ||
+    prev.chromeMeetingId !== next.chromeMeetingId ||
+    prev.screenRecording !== next.screenRecording ||
+    prev.microphone !== next.microphone ||
+    prev.automationChrome !== next.automationChrome ||
+    prev.watchdogFlag !== next.watchdogFlag
+  )
+}
+
+/** Sample the current menu inputs from the various state sources. */
+function currentMenuInputs(): TrayMenuInputs {
+  const status = getStatus()
+  const chrome = getChromeMeetSnapshot()
+  const perms = getPermissionStatus()
+  const watchdog = getWatchdogSignal()
+  return {
+    state: status.state,
+    chromeMeetingId: chrome.tab?.meetingId ?? null,
+    screenRecording: enginePerms.screenRecording,
+    microphone: enginePerms.microphone,
+    automationChrome: perms.automationChrome,
+    watchdogFlag: watchdog.helperPermissionLikely
+  }
+}
+
+/** Inputs snapshot from the last menu rebuild — the diff baseline for the tick. */
+let lastMenuInputs: TrayMenuInputs | null = null
 /**
  * Repaint tick — refreshes the title timer (e.g. "Meeting · 4:23") once a
  * second while a meeting is live. We do NOT rebuild the menu every tick;
@@ -163,8 +246,11 @@ export function createTray(): void {
   rebuildMenu()
 
   // Tap the icon to pop the menu. Right-click also pops it (Tray default
-  // on macOS) — both routes share the same handler.
+  // on macOS) — both routes share the same handler. Kick a fresh engine-perm
+  // probe on open (fire-and-forget) so the menu appears instantly with cached
+  // state and repaints if the verdict changed.
   tray.on('click', () => {
+    void refreshEnginePerms()
     if (tray) tray.popUpContextMenu(buildMenu())
   })
 
@@ -175,25 +261,39 @@ export function createTray(): void {
     refreshTitle()
   })
 
-  // The engine holds the real Screen Recording / Microphone grants, so poll
-  // its live verdict and repaint. Initial probe immediately; re-probe every
-  // 10s so a just-granted permission clears the tray warning quickly without
-  // waiting on a push event we don't have.
+  // The engine holds the real Screen Recording / Microphone grants. Probe once
+  // now, then only on demand: the tray-click hook above, the activate hook
+  // below, and a slow 5-min interval that runs ONLY while a grant is still
+  // missing (see reconcileSlowPermPoll). A fully-granted idle app therefore
+  // spawns no periodic permission scans — the old 10 s poll ran two multi-
+  // second `log show` shell-outs forever.
   void refreshEnginePerms()
-  setInterval(() => {
+
+  // Re-probe when the user returns to the app (Cmd-Tab back, dock click) —
+  // the most likely moment a just-granted permission needs to clear.
+  app.on('activate', () => {
     void refreshEnginePerms()
-  }, 10_000)
+  })
 
   // The single status source pushes on every meaningful change (recording,
   // processing, meet-detected, attention) — repaint the tray off that instead
-  // of a blind 1.5s poll. A slow 10s safety poll covers anything time-based
-  // that didn't push (e.g. a stuck threshold crossing while idle).
+  // of a blind 1.5s poll.
   onAppStatusChange(() => {
     rebuildMenu()
     refreshTitle()
   })
+
+  // Safety poll for anything time-based that didn't push (chrome-probe snapshot,
+  // watchdog flag, a stuck threshold crossing while idle). chromeProbe.ts
+  // broadcasts to renderer windows but the tray lives in main and doesn't get
+  // those pushes, so we sample every 10 s and rebuild ONLY when a value the menu
+  // depends on actually changed (menuInputsChanged) — the per-tick diet.
+  // refreshTitle still runs every tick (cheap, and can't snap an open menu shut).
   setInterval(() => {
-    rebuildMenu()
+    const next = currentMenuInputs()
+    if (!lastMenuInputs || menuInputsChanged(lastMenuInputs, next)) {
+      rebuildMenu()
+    }
     refreshTitle()
   }, 10_000)
 
@@ -207,6 +307,10 @@ export function destroyTray(): void {
     clearInterval(titleTimer)
     titleTimer = null
   }
+  if (slowPermTimer) {
+    clearInterval(slowPermTimer)
+    slowPermTimer = null
+  }
   if (tray && !tray.isDestroyed()) {
     tray.destroy()
   }
@@ -215,6 +319,9 @@ export function destroyTray(): void {
 
 function rebuildMenu(): void {
   if (!tray) return
+  // Refresh the diff baseline on every rebuild (event-driven or tick) so the
+  // 1.5 s tick only rebuilds when something changed since the last paint.
+  lastMenuInputs = currentMenuInputs()
   tray.setContextMenu(buildMenu())
 }
 
@@ -504,4 +611,3 @@ export function showMainWindow(): void {
   }
   console.warn('[tray] showMainWindow has no window and no factory registered')
 }
-
