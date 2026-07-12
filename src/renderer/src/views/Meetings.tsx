@@ -636,16 +636,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     // Don't fetch audio/video preview when the file isn't present.
     if (fmt === 'audio' && !selectedMeeting.hasAudio) return
     if (fmt === 'video' && !selectedMeeting.hasVideo) return
-    // Engine meetings only support txt/md/video — don't ask the backend for
-    // the rest (json/srt/audio).
-    if (
-      selectedMeeting.id.startsWith('engine:') &&
-      fmt !== 'txt' &&
-      fmt !== 'md' &&
-      fmt !== 'video'
-    ) {
-      return
-    }
+    // Engine meetings now support every text format too — the backend throws
+    // a readable message (rendered in the pane) when a structured transcript
+    // is missing, so no format is gated client-side here.
     // Already fetched (or in-flight) — let the cached entry stand.
     if (previewCache[fmt]) return
     let cancelled = false
@@ -2192,15 +2185,13 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 >
                   {EXPORT_FORMATS.map((f) => {
                     const Icon = f.Icon
-                    const isEngineOnly = selectedMeeting.id.startsWith('engine:')
-                    // Engine (live-recording) meetings export txt/md AND the
-                    // whole-screen video; everything else (json/srt/audio) is
-                    // unavailable for them.
-                    const engineDisabled =
-                      isEngineOnly && f.value !== 'txt' && f.value !== 'md' && f.value !== 'video'
+                    // Every format is offered for both engine and imported
+                    // meetings; a format with no source file (or no structured
+                    // transcript) surfaces a readable error in the preview pane
+                    // rather than a disabled chip.
                     const audioDisabled = f.value === 'audio' && !selectedMeeting.hasAudio
                     const videoDisabled = f.value === 'video' && !selectedMeeting.hasVideo
-                    const disabled = engineDisabled || audioDisabled || videoDisabled
+                    const disabled = audioDisabled || videoDisabled
                     const active = previewFormat === f.value
                     return (
                       <button
@@ -2210,13 +2201,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                         aria-selected={active}
                         disabled={disabled}
                         title={
-                          engineDisabled
-                            ? 'Live recordings only support Plain text, Markdown, and screen-video export.'
-                            : audioDisabled
-                              ? 'This meeting has no audio file.'
-                              : videoDisabled
-                                ? 'This meeting has no screen video.'
-                                : undefined
+                          audioDisabled
+                            ? 'This meeting has no audio file.'
+                            : videoDisabled
+                              ? 'This meeting has no screen video.'
+                              : undefined
                         }
                         className={
                           'export-preview__chip' +
@@ -2262,10 +2251,9 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       exportBusy ||
                       (previewFormat === 'audio' && !selectedMeeting.hasAudio) ||
                       (previewFormat === 'video' && !selectedMeeting.hasVideo) ||
-                      (selectedMeeting.id.startsWith('engine:') &&
-                        previewFormat !== 'txt' &&
-                        previewFormat !== 'md' &&
-                        previewFormat !== 'video')
+                      // A format whose preview failed (e.g. no structured
+                      // transcript) can't be exported — the pane shows why.
+                      previewCache[previewFormat]?.status === 'error'
                     }
                   >
                     {exportBusy ? 'Exporting…' : 'Export…'}
@@ -2285,25 +2273,11 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                 <div className="export-preview__pane-wrap">
                   {(() => {
                     const cached = previewCache[previewFormat]
-                    const isEngineOnly = selectedMeeting.id.startsWith('engine:')
-                    const engineUnsupported =
-                      isEngineOnly &&
-                      previewFormat !== 'txt' &&
-                      previewFormat !== 'md' &&
-                      previewFormat !== 'video'
                     const audioUnavailable =
                       previewFormat === 'audio' && !selectedMeeting.hasAudio
                     const videoUnavailable =
                       previewFormat === 'video' && !selectedMeeting.hasVideo
 
-                    if (engineUnsupported) {
-                      return (
-                        <div className="export-preview__placeholder">
-                          Live-recording meetings only support Plain text,
-                          Markdown, and screen-video export.
-                        </div>
-                      )
-                    }
                     if (audioUnavailable) {
                       return (
                         <div className="export-preview__placeholder">
