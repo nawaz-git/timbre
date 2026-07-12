@@ -279,10 +279,16 @@ class WatchLoop {
         watchTask?.cancel()
         watchTask = nil
 
+        // Honour the app-audio kill switch here too (read FRESH, same as the
+        // auto-detected path) so it is a global mitigation, not one that only
+        // covers auto-detected meetings.
+        let cfg = EngineConfig.read()
+
         let recorder = recorderFactory()
         try recorder.start(
             appPID: pid, noMic: noMic(), micDeviceUID: micDeviceUID,
             debugLogging: verboseDiagnostics(),
+            disableAppAudioTap: cfg.disableAppAudioTap,
         )
 
         activeRecorder = recorder
@@ -566,6 +572,7 @@ class WatchLoop {
             noMic: noMic(),
             micDeviceUID: micDeviceUID,
             debugLogging: verboseDiagnostics(),
+            disableAppAudioTap: cfg.disableAppAudioTap,
         )
         activeRecorder = recorder
         defer { activeRecorder = nil }

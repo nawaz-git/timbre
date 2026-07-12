@@ -44,7 +44,16 @@ struct CaptureFormat {
 /// Abstraction for recording, enabling mock injection in tests.
 @MainActor
 protocol RecordingProvider {
-    func start(appPID: pid_t, noMic: Bool, micDeviceUID: String?, debugLogging: Bool) throws
+    /// - Parameter disableAppAudioTap: when true, record the microphone (and
+    ///   screen video) only — create NO CoreAudio process tap (the T13 kill
+    ///   switch). The mix falls back to the mic track.
+    func start(
+        appPID: pid_t,
+        noMic: Bool,
+        micDeviceUID: String?,
+        debugLogging: Bool,
+        disableAppAudioTap: Bool,
+    ) throws
     func stop() throws -> RecordingResult
 
     /// Instantaneous app-audio level in dBFS. -120 when no capture session is
@@ -155,11 +164,17 @@ class DualSourceRecorder: RecordingProvider {
     var appLiveSink: LiveAudioSink?
 
     /// Start recording app audio and optionally mic.
+    ///
+    /// - Parameter disableAppAudioTap: when true (the T13 kill switch) the app
+    ///   audio process tap is skipped entirely — no aggregate device, no tap,
+    ///   no IOProc — and the recording is mic-only. `buildRecording` already
+    ///   falls the mix back to the mic track when the app track is absent.
     func start(
         appPID: pid_t,
         noMic: Bool = false,
         micDeviceUID: String? = nil,
         debugLogging: Bool = false,
+        disableAppAudioTap: Bool = false,
     ) throws {
         guard !isRecording else { return }
         guard #available(macOS 14.2, *) else {
@@ -172,16 +187,23 @@ class DualSourceRecorder: RecordingProvider {
         let ts = Self.timestamp()
         startTimestamp = ts
 
+        // In kill-switch mode the microphone is the ONLY audio source, so keep
+        // it on regardless of `noMic` — a mic-only recording with no mic would
+        // capture nothing at all. (In practice the product always records the
+        // mic, so this only matters defensively.)
+        let effectiveNoMic = disableAppAudioTap ? false : noMic
+
         // ── AudioTapLib capture session ──
         let appTempURL = recDir.appendingPathComponent("\(ts)_app_raw.tmp")
-        let micURL: URL? = noMic ? nil : recDir.appendingPathComponent("\(ts)\(RecordingFileSuffix.mic)")
+        let micURL: URL? = effectiveNoMic ? nil : recDir.appendingPathComponent("\(ts)\(RecordingFileSuffix.mic)")
 
         // Electron/WebView2 apps (Teams 2.x, Slack, Discord) render call
         // audio in helper/renderer children rather than the shell process
         // the OS sees as the window owner. Tap the whole bundle tree so we
         // catch whichever child holds the audio handle; fall back to the
-        // root PID alone if the bundle URL is unavailable.
-        let effectivePids = Self.resolveTapPIDs(rootPID: appPID)
+        // root PID alone if the bundle URL is unavailable. Skipped when the
+        // tap is disabled — the process-tree enumeration would be wasted work.
+        let effectivePids = disableAppAudioTap ? [appPID] : Self.resolveTapPIDs(rootPID: appPID)
 
         let session = AudioCaptureSession(
             pids: effectivePids,
@@ -193,6 +215,7 @@ class DualSourceRecorder: RecordingProvider {
             debugLogging: debugLogging,
             appLiveSink: appLiveSink,
             micLiveSink: micLiveSink,
+            captureAppAudio: !disableAppAudioTap,
         )
         try session.start()
         captureSession = session
@@ -200,7 +223,11 @@ class DualSourceRecorder: RecordingProvider {
         isRecording = true
         recordingStartTime = ProcessInfo.processInfo.systemUptime
 
-        logger.info("Recording started: PID \(appPID), \(self.recordRate) Hz, \(self.appChannels)ch")
+        if disableAppAudioTap {
+            logger.info("Recording started: PID \(appPID) — app audio tap DISABLED (mic + screen only)")
+        } else {
+            logger.info("Recording started: PID \(appPID), \(self.recordRate) Hz, \(self.appChannels)ch")
+        }
     }
 
     /// Stop recording and produce a mixed WAV. The capture session is the only
