@@ -2,8 +2,8 @@ import type { ReactNode } from 'react'
 import { useCallback, useState } from 'react'
 import {
   Folder,
+  Gauge,
   Info,
-  Languages,
   Monitor,
   Palette,
   Play,
@@ -19,8 +19,9 @@ import { PermissionChecklist } from '../components/PermissionChecklist'
 import { useSettings } from '../state/settings'
 import { allGranted, useHelperPermissions, useOnboardingComplete } from '../state/onboarding'
 import { useTags } from '../state/tags'
+import { bridgeSupports } from '../state/bridgeSupports'
 import { ASR_LANGUAGES } from '../../../shared/types'
-import type { ProcessingMode, ScreenCaptureScope, TagDef, ThemeMode } from '../../../shared/types'
+import type { ScreenCaptureScope, TagDef, ThemeMode } from '../../../shared/types'
 
 const THEME_OPTIONS: ThemeMode[] = ['auto', 'light', 'dark']
 const THEME_LABEL: Record<ThemeMode, string> = {
@@ -34,10 +35,22 @@ const SCREEN_SCOPE_OPTIONS: ReadonlyArray<{ value: ScreenCaptureScope; label: st
   { value: 'entireScreen', label: 'Entire screen' }
 ]
 
-const PROCESSING_MODE_OPTIONS: ReadonlyArray<{ value: ProcessingMode; label: string }> = [
+/**
+ * Processing quality tiers, named by outcome (speed vs accuracy) rather than
+ * by model — the useful lesson from Superwhisper. `max` advertises its real
+ * cost (20–30 min) up front so the trade-off is honest.
+ */
+const PROCESSING_QUALITY_OPTIONS: ReadonlyArray<{ value: 'fast' | 'max'; label: string }> = [
   { value: 'fast', label: 'Fast' },
-  { value: 'max', label: 'Max accuracy' }
+  { value: 'max', label: 'Best (20–30 min)' }
 ]
+
+const PROCESSING_QUALITY_HINT: Record<'fast' | 'max', string> = {
+  fast: 'Ready soon after the meeting ends — great for daily notes.',
+  max:
+    'Highest accuracy. A meeting takes 20–30 minutes to process; Timbre works in the background ' +
+    "and notifies you when it's ready."
+}
 
 const APP_VERSION = APP_VERSION_PLACEHOLDER
 
@@ -229,7 +242,12 @@ export function SettingsView(): JSX.Element {
       </Section>
 
       {/* ── Processing ─────────────────────────────────────────────── */}
-      <Section icon={<Languages size={16} />} title="Processing">
+      {/* The single Processing home. The transcription-language row is honoured
+          by the engine today, so it is ALWAYS visible. The quality tier (and
+          its dependent LLM-repair toggle) stay gated behind
+          bridgeSupports.processingMode — while "Best" produces the same output
+          as "Fast", showing the control would be a lie (state/bridgeSupports.ts). */}
+      <Section icon={<Gauge size={16} />} title="Processing">
         <SettingsRow
           label="Transcription language"
           description="Auto-detect works for most meetings. Pick a language to lock it in if detection drifts."
@@ -250,47 +268,54 @@ export function SettingsView(): JSX.Element {
           </select>
         </SettingsRow>
 
-        <SettingsRow
-          label="Processing quality"
-          description="Fast matches today's speed. Max accuracy runs a slower (20–30 min) refinement pass for the best speaker attribution — the meeting is ready fast either way, then upgraded in the background."
-        >
-          <div className="theme-toggle" role="group" aria-label="Processing quality">
-            {PROCESSING_MODE_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                className={
-                  'theme-toggle__option' +
-                  (settings.processingMode === opt.value ? ' theme-toggle__option--active' : '')
-                }
-                onClick={() => {
-                  void setSettings({ processingMode: opt.value })
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </SettingsRow>
+        {bridgeSupports.processingMode && (
+          <>
+            <SettingsRow
+              label="Transcription quality"
+              description="Applies to meetings recorded from now on."
+            >
+              <div className="theme-toggle" role="group" aria-label="Transcription quality">
+                {PROCESSING_QUALITY_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    className={
+                      'theme-toggle__option' +
+                      (settings.processingMode === opt.value ? ' theme-toggle__option--active' : '')
+                    }
+                    onClick={() => {
+                      void setSettings({ processingMode: opt.value })
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </SettingsRow>
+            <div className="settings-row__description" role="status">
+              {PROCESSING_QUALITY_HINT[settings.processingMode]}
+            </div>
 
-        <SettingsRow
-          label="LLM speaker repair (Max accuracy)"
-          description="During a Max-accuracy refine, use your configured LLM (Claude CLI or a local model) to fix speaker labels — under a strict validator that only lets it relabel, never change your words. Requires a protocol provider and only runs in Max mode."
-        >
-          <label className="toggle-switch" title="LLM speaker repair">
-            <input
-              type="checkbox"
-              checked={settings.llmRepair}
-              disabled={settings.processingMode !== 'max'}
-              onChange={(e) => {
-                void setSettings({ llmRepair: e.target.checked })
-              }}
-            />
-            <span className="toggle-switch__track" aria-hidden="true">
-              <span className="toggle-switch__thumb" />
-            </span>
-            <span className="toggle-switch__label">{settings.llmRepair ? 'On' : 'Off'}</span>
-          </label>
-        </SettingsRow>
+            <SettingsRow
+              label="LLM speaker repair (Max accuracy)"
+              description="During a Max-accuracy refine, use your configured LLM (Claude CLI or a local model) to fix speaker labels — under a strict validator that only lets it relabel, never change your words. Requires a protocol provider and only runs in Max mode."
+            >
+              <label className="toggle-switch" title="LLM speaker repair">
+                <input
+                  type="checkbox"
+                  checked={settings.llmRepair}
+                  disabled={settings.processingMode !== 'max'}
+                  onChange={(e) => {
+                    void setSettings({ llmRepair: e.target.checked })
+                  }}
+                />
+                <span className="toggle-switch__track" aria-hidden="true">
+                  <span className="toggle-switch__thumb" />
+                </span>
+                <span className="toggle-switch__label">{settings.llmRepair ? 'On' : 'Off'}</span>
+              </label>
+            </SettingsRow>
+          </>
+        )}
       </Section>
 
       {/* ── Storage ────────────────────────────────────────────────── */}

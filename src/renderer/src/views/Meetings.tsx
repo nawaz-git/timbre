@@ -1104,16 +1104,16 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
     if (!selectedId) return
     const hint: number | undefined =
       reanalyzeSpeakers === 'auto' ? undefined : reanalyzeSpeakers
-    setStatusBanner('Re-processing at max accuracy — this can take several minutes…')
+    toast('Re-processing at max accuracy — this can take several minutes…', { kind: 'info' })
     try {
       const job = await window.api.meetings.reanalyze(selectedId, hint, 'max')
       setReanalyzeJobId(job.jobId)
       setReanalyzePending(false)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      setStatusBanner(`Re-process failed: ${msg}`)
+      toast(`Re-process failed: ${msg}`, { kind: 'error' })
     }
-  }, [selectedId, reanalyzeSpeakers])
+  }, [selectedId, reanalyzeSpeakers, toast])
 
   /**
    * One-click cascade from the banner: re-run mt-batch with the meeting's
