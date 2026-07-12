@@ -45,6 +45,7 @@ import {
   removeSpeakerLabelInMeeting,
   renameMeetingTitle,
   renameSpeakerInMeeting,
+  retryFailedMeeting,
   searchTranscripts,
   setMeetingTags,
   type ExportPreview
@@ -403,6 +404,27 @@ export function registerIpcHandlers(): void {
     // in meetings.ts, so a stat storm never blocks the Storage settings pane.
     return computeStorageUsage()
   })
+
+  ipcMain.handle(
+    IPC.meetingsRetryFailed,
+    async (_event, meetingId: string): Promise<{ ok: boolean; jobId?: string; error?: string }> => {
+      const settings = await readSettings()
+      const numSpeakers = numSpeakersToArg(settings.numSpeakers)
+      return retryFailedMeeting(
+        meetingId,
+        settings.outputFolder,
+        async (mixPath, outputFolder) => {
+          const jobId = randomUUID()
+          // Fire-and-forget the batch (same pattern as backend:spawn): the
+          // renderer refreshes off the folder-watcher event when it lands.
+          importFile(mixPath, outputFolder, jobId, numSpeakers).catch((err: Error) => {
+            console.error('[meetings:retryFailed] import failed', err.message)
+          })
+          return { jobId }
+        }
+      )
+    }
+  )
 
   // ── system:* — tray + permissions surface ─────────────────────────────
   // These are the channels the new Home banner + the tray menu hit. They

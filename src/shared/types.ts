@@ -303,8 +303,19 @@ export interface MeetingSummary {
    * better speaker attribution. It is derived from a `<prefix>.refining` marker
    * file the engine writes during the refine and removes on completion —
    * processing-not-stuck, so a stale-status cap should treat it as in-progress.
+   *
+   * `'failed'` is set for a meeting whose engine pipeline terminated in error
+   * (an `.error.json` sidecar exists next to where its transcript would be, or
+   * a processing meeting went stale with no output). The renderer shows a
+   * failed badge + `errorMessage` + a retry action.
    */
-  status?: 'processing' | 'ready' | 'refining'
+  status?: 'processing' | 'ready' | 'refining' | 'failed'
+  /**
+   * Human-readable failure reason, present only when `status === 'failed'`.
+   * Sourced from the engine's error sidecar (falls back to a generic line for
+   * stale-but-sidecar-less meetings).
+   */
+  errorMessage?: string
 }
 
 /**
@@ -471,6 +482,8 @@ export const IPC = {
   meetingsReveal: 'meetings:reveal',
   /** Disk footprint of the live-recordings library → StorageUsage (10s cache). */
   storageUsage: 'storage:usage',
+  /** Retry a failed engine meeting by re-importing its recorded source audio. */
+  meetingsRetryFailed: 'meetings:retryFailed',
   tagsList: 'tags:list',
   tagsAdd: 'tags:add',
   tagsUpdate: 'tags:update',

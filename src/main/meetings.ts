@@ -215,6 +215,21 @@ interface TranscriptJSON {
 }
 
 /**
+ * Shape of the engine's `<prefix>.error.json` sidecar (written when a pipeline
+ * job fails). Only the fields the desktop layer consumes are typed here; the
+ * engine writer owns the full schema (`version`, `jobShortID`, `warnings`, …).
+ */
+interface EngineErrorSidecar {
+  version?: number
+  title?: string
+  error?: string
+  /** ISO8601 timestamp of the failure. */
+  failedAt?: string
+  /** Absolute path to the recorded mix audio (retry re-imports this). */
+  mixPath?: string
+}
+
+/**
  * v0.17+: engine-format sidecar discovery.
  *
  * The bundled Swift engine writes its output across TWO subfolders:
@@ -669,6 +684,34 @@ async function listEnginePrefixMeetings(root: string): Promise<MeetingSummary[]>
 const RAW_AUDIO_SUFFIXES = ['_mix.wav', '_app.wav', '_mic.wav'] as const
 
 /**
+ * A processing meeting older than this (raw audio on disk, still no transcript
+ * and no error sidecar) is treated as failed — the engine almost certainly
+ * died mid-pipeline and will never finish it on its own.
+ */
+const ENGINE_PROCESSING_STALE_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Pure staleness/failure classifier for a raw-audio engine prefix that has no
+ * transcript yet. Kept side-effect-free so it can be unit-tested exhaustively.
+ *
+ *   - `hasTxt`   — a transcript landed (caller normally skips these; treated as
+ *                  still-processing here for completeness).
+ *   - `hasErrorSidecar` — an `.error.json` sits next to it → definitely failed.
+ *   - otherwise, fail once the raw audio is older than the stale cap.
+ */
+export function deriveEngineStatus(
+  hasTxt: boolean,
+  hasErrorSidecar: boolean,
+  rawAudioMtimeMs: number,
+  nowMs: number
+): 'processing' | 'failed' {
+  if (hasTxt) return 'processing'
+  if (hasErrorSidecar) return 'failed'
+  if (nowMs - rawAudioMtimeMs > ENGINE_PROCESSING_STALE_MS) return 'failed'
+  return 'processing'
+}
+
+/**
  * Surface meetings that have FINISHED recording but whose engine pipeline
  * hasn't produced a transcript yet. The engine writes the raw audio
  * (`recordings/<prefix>_{mix,app,mic}.wav`, optional `<prefix>_screen.mp4`)
@@ -729,15 +772,23 @@ async function listEngineProcessingMeetings(root: string): Promise<MeetingSummar
     // match tolerates the `_<runId>_segments.json` infix, and gives the same
     // audioPath the mt-audio:// route resolves, so the card can play now.
     const { audioPath } = await findEngineSidecars(root, prefix)
-    let dateIso = new Date().toISOString()
+    const nowMs = Date.now()
+    let dateIso = new Date(nowMs).toISOString()
+    let rawAudioMtimeMs = nowMs
     if (audioPath) {
       try {
         const st = await fs.stat(audioPath)
         dateIso = st.mtime.toISOString()
+        rawAudioMtimeMs = st.mtimeMs
       } catch {
         // fall back to now
       }
     }
+    // Cap the processing state: a run that stalled (dead engine) or already
+    // wrote an error sidecar is surfaced as failed instead of a spinner that
+    // never resolves.
+    const hasErrorSidecar = await pathExists(join(protocolsDir, `${prefix}.error.json`))
+    const status = deriveEngineStatus(false, hasErrorSidecar, rawAudioMtimeMs, nowMs)
     const meta = await safeReadJson<MetadataFile>(engineMetaPath(prefix))
     results.push({
       id: `engine:${prefix}`,
@@ -754,7 +805,77 @@ async function listEngineProcessingMeetings(root: string): Promise<MeetingSummar
         : [],
       // No transcript yet — speakers unknown until the pipeline finishes.
       speakerNames: [],
-      status: 'processing'
+      status,
+      // A stale-timeout failure has no sidecar of its own — give it a generic
+      // line. A sidecar-backed failure is superseded by the richer failed row
+      // (same prefix, concatenated first) in `listMeetings`.
+      ...(status === 'failed' ? { errorMessage: 'Processing did not complete.' } : {})
+    })
+  }
+  return results
+}
+
+/**
+ * Surface meetings whose engine pipeline FAILED. The engine writes a
+ * `protocols/<prefix>.error.json` sidecar (its own engine-prefix identity) when
+ * a job terminates in error — the transcript never lands and the raw audio
+ * never leaves Application Support, so the meeting would otherwise be invisible.
+ *
+ * One `readdir` of `protocols/`; each `*.error.json` with no sibling
+ * `<prefix>.txt` (a later retry that succeeded supersedes the failure) becomes a
+ * `status: 'failed'` row carrying the sidecar's error message. Takes `root` as a
+ * parameter so it is testable without the module-level default.
+ */
+export async function listEngineFailedMeetings(root: string): Promise<MeetingSummary[]> {
+  const protocolsDir = join(root, 'protocols')
+  let entries: string[]
+  try {
+    entries = await fs.readdir(protocolsDir)
+  } catch {
+    return []
+  }
+  const results: MeetingSummary[] = []
+  for (const filename of entries) {
+    if (!filename.endsWith('.error.json')) continue
+    const prefix = filename.slice(0, -'.error.json'.length)
+    // Same ASCII-safety guard the other engine listers apply.
+    if (!/^[A-Za-z0-9_-]+$/.test(prefix)) continue
+    // A landed transcript means a retry (or late run) succeeded — the meeting
+    // is ready, not failed; skip so it isn't shown twice.
+    if (await pathExists(join(protocolsDir, `${prefix}.txt`))) continue
+    const sidecar = await safeReadJson<EngineErrorSidecar>(join(protocolsDir, filename))
+    let dateIso: string
+    if (sidecar?.failedAt) {
+      dateIso = new Date(sidecar.failedAt).toISOString()
+    } else {
+      try {
+        dateIso = (await fs.stat(join(protocolsDir, filename))).mtime.toISOString()
+      } catch {
+        dateIso = new Date().toISOString()
+      }
+    }
+    const meta = await safeReadJson<MetadataFile>(engineMetaPath(prefix))
+    const title = meta?.title?.trim()
+      ? meta.title
+      : sidecar?.title?.trim()
+        ? sidecar.title
+        : titleFromEnginePrefix(prefix)
+    results.push({
+      id: `engine:${prefix}`,
+      title,
+      folderPath: protocolsDir,
+      date: dateIso,
+      durationSeconds: 0,
+      speakerCount: 0,
+      hasAudio: false,
+      hasVideo: false,
+      tagIds: Array.isArray(meta?.tags) ? meta.tags : [],
+      additionalSpeakers: Array.isArray(meta?.additionalSpeakers)
+        ? meta.additionalSpeakers
+        : [],
+      speakerNames: [],
+      status: 'failed',
+      errorMessage: sidecar?.error?.trim() ? sidecar.error : 'Processing did not complete.'
     })
   }
   return results
@@ -898,9 +1019,10 @@ async function estimateWavDurationSec(path: string): Promise<number | null> {
  * De-duped and sorted newest-first.
  */
 export async function listMeetings(outputFolder: string): Promise<MeetingSummary[]> {
-  const [imported, engineDefault, engineProcessing] = await Promise.all([
+  const [imported, engineDefault, engineFailed, engineProcessing] = await Promise.all([
     listPerFolderMeetings(outputFolder),
     listEnginePrefixMeetings(ENGINE_DEFAULT_ROOT),
+    listEngineFailedMeetings(ENGINE_DEFAULT_ROOT),
     listEngineProcessingMeetings(ENGINE_DEFAULT_ROOT)
   ])
   // If the user happens to point the Electron output folder at the engine
@@ -910,7 +1032,11 @@ export async function listMeetings(outputFolder: string): Promise<MeetingSummary
   // ready row is seen first and the processing duplicate is dropped.
   const seen = new Set<string>()
   const merged: MeetingSummary[] = []
-  for (const m of [...imported, ...engineDefault, ...engineProcessing]) {
+  // Concat order sets de-dupe precedence for a shared `id|folderPath`:
+  // ready (engineDefault) > failed > processing. So a meeting that has since
+  // produced a transcript wins over its stale failed/processing row, and a
+  // sidecar-backed failed row wins over a stale processing spinner.
+  for (const m of [...imported, ...engineDefault, ...engineFailed, ...engineProcessing]) {
     const key = `${m.id}|${m.folderPath}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -1661,7 +1787,7 @@ export async function deleteMeeting(
     }
     const protocolsDir = join(ENGINE_DEFAULT_ROOT, 'protocols')
     const removedPermanently = await Promise.all(
-      ['txt', 'md', 'meta.json', 'refining'].map((ext) =>
+      ['txt', 'md', 'meta.json', 'refining', 'error.json'].map((ext) =>
         trashIfExists(join(protocolsDir, `${prefix}.${ext}`))
       )
     )
@@ -1687,6 +1813,47 @@ export async function deleteMeeting(
   }
   const removedPermanently = await trashIfExists(join(outputFolder, folderId))
   return removedPermanently ? 'permanent' : 'trash'
+}
+
+/**
+ * Retry a failed engine meeting by re-importing its recorded source audio.
+ * Reads the `.error.json` sidecar for the mix path; if the audio still exists
+ * on disk it re-runs the standard import pipeline (via the injected `runImport`,
+ * which owns the mt-batch spawn) and deletes the sidecar so the failed row
+ * disappears — a fresh imported row lands via the folder watcher. If the source
+ * is gone, returns a clean error and touches nothing.
+ *
+ * `runImport` is injected so the retry logic is unit-testable without spawning
+ * mt-batch; production passes a thin wrapper around `importFile`.
+ */
+export async function retryFailedMeeting(
+  meetingId: string,
+  outputFolder: string,
+  runImport: (mixPath: string, outputFolder: string) => Promise<{ jobId: string }>,
+  root: string = ENGINE_DEFAULT_ROOT
+): Promise<{ ok: boolean; jobId?: string; error?: string }> {
+  if (!meetingId.startsWith('engine:')) {
+    return { ok: false, error: 'Only engine recordings can be retried.' }
+  }
+  const prefix = meetingId.slice('engine:'.length)
+  if (!/^[A-Za-z0-9_-]+$/.test(prefix)) {
+    return { ok: false, error: `Invalid engine prefix: ${prefix}` }
+  }
+  const sidecarPath = join(root, 'protocols', `${prefix}.error.json`)
+  const sidecar = await safeReadJson<EngineErrorSidecar>(sidecarPath)
+  if (!sidecar) {
+    return { ok: false, error: 'No error details found for this meeting.' }
+  }
+  const mixPath = sidecar.mixPath
+  if (!mixPath || !(await pathExists(mixPath))) {
+    return { ok: false, error: 'Source audio no longer exists.' }
+  }
+  const { jobId } = await runImport(mixPath, outputFolder)
+  // The import kicked off — drop the sidecar so the failed row clears. A fresh
+  // imported row lands via the folder watcher when the batch finishes; if the
+  // batch itself fails, `importFile` surfaces that error on its own path.
+  await fs.rm(sidecarPath, { force: true })
+  return { ok: true, jobId }
 }
 
 /**
