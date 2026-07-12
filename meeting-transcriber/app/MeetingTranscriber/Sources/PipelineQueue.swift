@@ -742,11 +742,14 @@ class PipelineQueue {
     enum PipelineError: LocalizedError {
         case missingMixPath
         case noMixAudioForDiarization
+        case emptyTranscript
 
         var errorDescription: String? {
             switch self {
             case .missingMixPath: "Single-source job missing mixPath"
             case .noMixAudioForDiarization: "No mix audio available for diarization"
+            // Keep this string stable — it surfaces in the error sidecar + UI.
+            case .emptyTranscript: "Empty transcript"
             }
         }
     }
@@ -795,10 +798,13 @@ class PipelineQueue {
                 logger.warning(
                     "[\(ctx.shortID, privacy: .public)] transcription_empty inputRMSdBFS=\(inputRMS, privacy: .public). Likely silent input or ASR misconfiguration — check microphone level and engine settings.",
                 )
-                updateJobState(id: ctx.jobID, to: .error, error: "Empty transcript")
-                isProcessing = false
-                triggerProcessing()
-                return
+                // Throw rather than early-return so the failure flows through the
+                // shared catch → unified tail (isProcessing=false → triggerProcessing
+                // → scheduleIdleUnloadIfDrained). The early-return bypassed that
+                // tail, so a failing LAST job left the model resident indefinitely
+                // (the inline updateJobState armed nothing — isProcessing was still
+                // true when it ran).
+                throw PipelineError.emptyTranscript
             }
 
             let diarized = try await diarize(
