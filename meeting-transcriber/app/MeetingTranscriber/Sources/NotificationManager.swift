@@ -64,10 +64,20 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, App
     /// Electron surfaces (`authorized` / `denied` / `notDetermined` /
     /// `provisional`) so the product can tell the user when engine alerts are
     /// muted. Wraps the async `notificationSettings()` query. Returns
-    /// `notDetermined` when there's no app bundle (UNUserNotificationCenter is
+    /// `notDetermined` in any process that isn't a real `.app` (the query is
     /// unusable then). Static — it reads no instance state.
     static func notificationAuthStatusString() async -> String {
-        guard Bundle.main.bundleIdentifier != nil else { return "notDetermined" }
+        // `UNUserNotificationCenter.current()` throws NSInternalInconsistencyException
+        // ("bundleProxyForCurrentProcess is nil") in any process that isn't a real
+        // `.app`. The xctest harness is exactly that: its `Bundle.main` is Xcode's
+        // toolchain, which HAS a bundle identifier (so the old `bundleIdentifier !=
+        // nil` guard passed) but no app proxy — the call then aborts the process on
+        // a background thread. Gate on the XCTest environment AND on the bundle
+        // actually being an `.app`; `notDetermined` is the neutral fallback.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return "notDetermined"
+        }
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return "notDetermined" }
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         switch settings.authorizationStatus {
         case .authorized: return "authorized"
