@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { coerceAsrLanguage, coerceProcessingMode } from '../settingsCoercion'
 
 test('coerceProcessingMode keeps max and defaults everything else to fast', () => {

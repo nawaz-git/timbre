@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { isRefineMarkerActive, REFINE_MARKER_STALE_MS } from '../engineRefineStatus'
 
 const now = 1_800_000_000_000
