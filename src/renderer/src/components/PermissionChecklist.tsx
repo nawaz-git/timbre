@@ -5,6 +5,7 @@ import {
   Copy,
   ExternalLink,
   FolderOpen,
+  Globe,
   Loader2,
   Mic as MicIcon,
   MonitorPlay,
@@ -12,15 +13,18 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type {
+  ChromeProbeTestResult,
   GrantStatus,
   HelperPermissionSnapshot,
-  OnboardingService
+  OnboardingService,
+  PermissionState
 } from '../../../shared/types'
 import {
   MINTR_ENGINE_PATH,
   allGranted,
   useHelperPermissions
 } from '../state/onboarding'
+import { usePermissions } from '../state/permissions'
 import { useAppStatus } from '../state/appStatus'
 
 interface ServiceMeta {
@@ -71,8 +75,14 @@ const STATUS_LABEL: Record<GrantStatus, string> = {
   granted: 'Granted',
   denied: 'Denied',
   'not-determined': 'Not set',
-  unknown: 'Checking…'
+  // `unknown` = we genuinely couldn't read the state, not "still loading" —
+  // say so honestly rather than implying a spinner that never resolves.
+  unknown: 'No signal yet'
 }
+
+/** Explains the honest `No signal yet` chip on hover (a11y title). */
+const UNKNOWN_STATUS_TITLE =
+  "Timbre couldn't read this permission's state. Use the buttons below to grant it, then Restart engine & verify."
 
 /** Maps a grant status to a chip modifier reusing the existing status tokens. */
 function chipModifier(status: GrantStatus): string {
@@ -83,7 +93,11 @@ function chipModifier(status: GrantStatus): string {
 
 function StatusChip({ status }: { status: GrantStatus }): JSX.Element {
   return (
-    <span className={`status-chip ${chipModifier(status)}`} role="status">
+    <span
+      className={`status-chip ${chipModifier(status)}`}
+      role="status"
+      title={status === 'unknown' ? UNKNOWN_STATUS_TITLE : undefined}
+    >
       <span className="status-chip__dot" aria-hidden="true" />
       {STATUS_LABEL[status]}
     </span>
@@ -156,6 +170,15 @@ function PlusServiceActions({
   onOpenPane: (s: OnboardingService) => void
   onReveal: () => void
 }): JSX.Element {
+  // Once granted, collapse to a single confirmation line — the grant flow
+  // (path, steps, buttons) is noise the user no longer needs.
+  if (status === 'granted') {
+    return (
+      <div className="perm-row__actions">
+        <p className="perm-row__copy perm-row__copy--ok">Granted — no further action needed.</p>
+      </div>
+    )
+  }
   return (
     <div className="perm-row__actions">
       <p className="perm-row__copy">
@@ -186,11 +209,6 @@ function PlusServiceActions({
           <span>Reveal Timbre Engine in Finder</span>
         </button>
       </div>
-      {status === 'granted' && (
-        <p className="perm-row__copy perm-row__copy--ok">
-          Granted — no further action needed.
-        </p>
-      )}
     </div>
   )
 }
@@ -256,6 +274,113 @@ function MicServiceActions({
         </>
       )}
     </div>
+  )
+}
+
+/** Automation-chip labels — distinct from the TCC rows (there's no live probe;
+ *  it's simply "asked or not"). */
+const AUTOMATION_STATUS_LABEL: Record<PermissionState, string> = {
+  granted: 'Granted',
+  denied: 'Denied',
+  'not-determined': 'Not asked yet',
+  unknown: 'Not asked yet'
+}
+
+/** The result line shown after a Chrome-detection test. */
+function chromeTestResultLine(r: ChromeProbeTestResult): string {
+  if (r.automationState === 'granted') {
+    return r.tabFound
+      ? 'Working — found a Meet tab.'
+      : "Working — no Meet tab open right now, that's fine."
+  }
+  if (r.automationState === 'denied') {
+    return 'Denied — open Automation settings and enable Google Chrome under Timbre.'
+  }
+  return 'No signal yet — open Chrome and try Test again.'
+}
+
+/**
+ * The 4th (Automation → Chrome) permission row. Unlike the three TCC services
+ * this has no pre-flight query — macOS only reveals the verdict once osascript
+ * has actually touched Chrome — so it's driven by an explicit "Test" button
+ * that runs a one-shot probe and reports the outcome.
+ */
+function AutomationServiceRow(): JSX.Element {
+  const { status, openPane, refresh } = usePermissions()
+  const auto = status.automationChrome
+  const [testing, setTesting] = useState(false)
+  const [result, setResult] = useState<ChromeProbeTestResult | null>(null)
+
+  const onTest = useCallback(() => {
+    setTesting(true)
+    setResult(null)
+    void window.api.system
+      .testChromeProbe()
+      .then((r) => {
+        setResult(r)
+        // Pull the shared permission state so the chip reflects the probe.
+        void refresh()
+      })
+      .catch((err) => {
+        console.error('testChromeProbe failed', err)
+        setResult({ automationState: 'unknown', tabFound: false })
+      })
+      .finally(() => setTesting(false))
+  }, [refresh])
+
+  return (
+    <li className={'perm-row' + (auto === 'granted' ? ' perm-row--granted' : '')}>
+      <div className="perm-row__head">
+        <span className="perm-row__icon" aria-hidden="true">
+          <Globe size={18} strokeWidth={1.75} />
+        </span>
+        <span className="perm-row__name">Chrome automation</span>
+        <span className={`status-chip ${chipModifier(auto)}`} role="status">
+          <span className="status-chip__dot" aria-hidden="true" />
+          {AUTOMATION_STATUS_LABEL[auto]}
+        </span>
+      </div>
+      <div className="perm-row__actions">
+        <p className="perm-row__copy">
+          Timbre reads Chrome&apos;s open tabs to spot Google Meet calls. Click Test — macOS will
+          ask you to allow Timbre to control Chrome.
+        </p>
+        <div className="perm-row__buttons">
+          <button type="button" className="btn btn--sm" onClick={onTest} disabled={testing}>
+            {testing ? (
+              <Loader2 size={13} aria-hidden="true" className="home-status-icon--spin" />
+            ) : (
+              <Globe size={13} aria-hidden="true" />
+            )}
+            <span>{testing ? 'Testing…' : 'Test Chrome detection'}</span>
+          </button>
+          {result?.automationState === 'denied' && (
+            <button
+              type="button"
+              className="btn btn--sm"
+              onClick={() => void openPane('automation')}
+            >
+              <ExternalLink size={13} aria-hidden="true" />
+              <span>Open Automation settings</span>
+            </button>
+          )}
+        </div>
+        {result && (
+          <p
+            className={
+              'perm-row__copy' +
+              (result.automationState === 'granted'
+                ? ' perm-row__copy--ok'
+                : result.automationState === 'denied'
+                  ? ' perm-row__copy--warn'
+                  : '')
+            }
+          >
+            {chromeTestResultLine(result)}
+          </p>
+        )}
+      </div>
+    </li>
   )
 }
 
@@ -355,6 +480,10 @@ export function PermissionChecklist({
             </li>
           )
         })}
+        {/* 4th row — Automation → Chrome. Not a TCC service (no pre-flight
+            query), so it's a self-contained test row, not part of the
+            three-permission finish gate. */}
+        <AutomationServiceRow />
       </ol>
 
       <div className="perm-checklist__verify">
