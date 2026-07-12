@@ -241,6 +241,21 @@ let liveProcess: ChildProcess | null = null
  */
 let pendingStop: Promise<void> | null = null
 
+/**
+ * Latched on app quit so no relaunch path spawns a fresh engine after
+ * `before-quit`. Without it, a supervisor tick already awaiting `restartEngine`
+ * (or any in-flight `startLiveRecorder`) could reach `open -n` AFTER the app
+ * decided to quit, orphaning a detached engine. Checked at the top of
+ * `startLiveRecorder` and again right before the spawn (to close the race where
+ * quit fires mid-call).
+ */
+let engineLaunchDisabled = false
+
+/** Suppress all future engine launches — called from `app.on('before-quit')`. */
+export function disableEngineLaunch(): void {
+  engineLaunchDisabled = true
+}
+
 export function isLiveActive(): boolean {
   return liveProcess !== null && !liveProcess.killed
 }
@@ -569,6 +584,13 @@ export async function startLiveRecorder(env: Record<string, string> = {}): Promi
   message?: string
   reused?: boolean
 }> {
+  // App is quitting — never launch a fresh engine (would orphan a detached
+  // process after before-quit). Fast path; re-checked right before the spawn.
+  if (engineLaunchDisabled) {
+    console.log('[live-recorder] launch suppressed — app is quitting')
+    return { ok: false, message: 'engine launch disabled (app quitting)' }
+  }
+
   const appPath = resolveLiveRecorderApp()
   if (!appPath) {
     return {
@@ -634,6 +656,13 @@ export async function startLiveRecorder(env: Record<string, string> = {}): Promi
   // ~50ms after dispatching to launchd. The helper itself becomes a
   // child of launchd (PID 1), which is the key to severing the TCC
   // responsibility chain that v0.15-v0.20 had.
+  //
+  // Race-close: quit may have fired while we awaited the reuse probe / graceful
+  // stop above. Re-check before the actual spawn so we never orphan an engine.
+  if (engineLaunchDisabled) {
+    console.log('[live-recorder] launch suppressed before spawn — app is quitting')
+    return { ok: false, message: 'engine launch disabled (app quitting)' }
+  }
   const child = spawn('/usr/bin/open', ['-n', appPath, '--args', '--auto-watch'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
