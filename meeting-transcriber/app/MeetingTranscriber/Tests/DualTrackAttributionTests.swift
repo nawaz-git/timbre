@@ -120,4 +120,42 @@ final class DualTrackAttributionTests: XCTestCase {
         )
         XCTAssertEqual(result.kept.first?.speaker, "Alice")
     }
+
+    // MARK: - per-segment hybrid (no word-path data loss)
+
+    private func tseg(_ start: TimeInterval, _ end: TimeInterval, _ text: String) -> TimestampedSegment {
+        TimestampedSegment(start: start, end: end, text: text, speaker: "")
+    }
+
+    func testWordlessAppSegmentRecoveredViaWholeSegment() {
+        // App track has words for [0,1] but the engine failed DTW on [1,2] —
+        // its text must survive through the whole-segment fallback.
+        let result = DualTrackAttribution.attribute(
+            appWords: [word(0, 1, "hello")],
+            micWords: [word(3, 4, "hi", source: .mic)],
+            appTurns: [turn(0, 2, "SPEAKER_0")],
+            micTurns: nil,
+            appSegments: [tseg(0, 1, "hello"), tseg(1, 2, "dtw failed")],
+            micSegments: [tseg(3, 4, "hi")],
+            micLabel: "Me",
+        )
+        let text = result.kept.map(\.text).joined(separator: " ")
+        XCTAssertTrue(text.contains("dtw failed"), "word-less app segment text preserved")
+        XCTAssertTrue(text.contains("hello"))
+        XCTAssertTrue(text.contains("hi"))
+    }
+
+    func testWordlessMicSegmentRecoveredUnderLocalLabel() {
+        let result = DualTrackAttribution.attribute(
+            appWords: [word(0, 1, "remote")],
+            micWords: [], // engine emitted no mic words this run
+            appTurns: [turn(0, 1, "SPEAKER_0")],
+            micTurns: nil,
+            appSegments: [tseg(0, 1, "remote")],
+            micSegments: [tseg(2, 3, "local line")],
+            micLabel: "Me",
+        )
+        let mine = result.kept.filter { $0.speaker == "Me" }
+        XCTAssertEqual(mine.map(\.text).joined(separator: " "), "local line")
+    }
 }
