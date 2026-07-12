@@ -364,6 +364,21 @@ enum AudioMixer {
         return 20 * log10(max(rms, 1e-10))
     }
 
+    /// RMS in dBFS for a time window `[start, end)` (seconds) of a file.
+    /// Returns `nil` if the file can't be read or the window is empty/invalid.
+    /// Used by cross-track echo dedup to compare mic vs app loudness over the
+    /// span of a duplicate utterance.
+    static func rmsDecibels(file url: URL, start: TimeInterval, end: TimeInterval) -> Float? {
+        guard end > start else { return nil }
+        guard let audioFile = try? AVAudioFile(forReading: url),
+              let samples = try? readSamplesFromAudioFile(audioFile) else { return nil }
+        let sampleRate = audioFile.fileFormat.sampleRate
+        let lo = max(0, Int(start * sampleRate))
+        let hi = min(samples.count, Int(end * sampleRate))
+        guard lo < hi else { return nil }
+        return rmsDecibels(samples: Array(samples[lo ..< hi]))
+    }
+
     /// Convenience: RMS in dBFS for a WAV / AVAudioFile-readable file.
     /// Returns `nil` if the file cannot be read.
     static func rmsDecibels(forFileAt url: URL) -> Float? {
