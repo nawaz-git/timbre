@@ -363,6 +363,13 @@ let watchLoopSeenAt: number | null = null
  * WATCHLOOP_TRUST_MS as long as the engine process is still alive (`pgrep`).
  * This removes the regression where a healthy, unchanged setup kept nagging
  * the user to restart the engine every minute.
+ *
+ * Accepted limitation: the engine only logs "Watch mode started" on (re)start,
+ * never periodically, so the sticky window is the ONLY thing keeping a long
+ * healthy session green. That means a watch loop that dies while its process
+ * stays alive (a hang) is trusted for up to WATCHLOOP_TRUST_MS. Shortening the
+ * trust would just reintroduce the flapping for healthy sessions; a clean fix
+ * needs an engine-side periodic liveness signal (out of scope here).
  */
 async function probeWatchLoopRunning(): Promise<boolean> {
   const out = await runLogShow([
