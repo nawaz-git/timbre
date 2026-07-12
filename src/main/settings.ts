@@ -53,7 +53,9 @@ function defaultSettings(): Settings {
     // Default post-processing tier: fast (today's latency). Max is opt-in.
     processingMode: 'fast',
     // Default ASR language: auto-detect (empty). No more forced German.
-    asrLanguage: ''
+    asrLanguage: '',
+    // MAX-tier LLM speaker repair off by default — opt-in, provider-gated.
+    llmRepair: false
     // onboardingCompletedAt is intentionally absent from defaults —
     // `undefined` is the "wizard not yet completed" sentinel (TICKET-IPC-002).
   }
@@ -91,6 +93,8 @@ export async function readSettings(): Promise<Settings> {
     typeof disableAppAudioTapRaw === 'boolean' ? disableAppAudioTapRaw : defaults.disableAppAudioTap
   const processingMode = coerceProcessingMode(store.get<string>('processingMode'))
   const asrLanguage = coerceAsrLanguage(store.get<string>('asrLanguage'))
+  const llmRepairRaw = store.get<boolean>('llmRepair')
+  const llmRepair = typeof llmRepairRaw === 'boolean' ? llmRepairRaw : defaults.llmRepair
   // TICKET-IPC-002: undefined => wizard not completed (no default).
   const onboardingCompletedAtRaw = store.get<number>('onboardingCompletedAt')
   const onboardingCompletedAt =
@@ -105,6 +109,7 @@ export async function readSettings(): Promise<Settings> {
     autoStartWatching,
     processingMode,
     asrLanguage,
+    llmRepair,
     onboardingCompletedAt
   }
 }
@@ -133,6 +138,9 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
   }
   if (patch.asrLanguage !== undefined) {
     store.set('asrLanguage', coerceAsrLanguage(patch.asrLanguage))
+  }
+  if (patch.llmRepair !== undefined) {
+    store.set('llmRepair', Boolean(patch.llmRepair))
   }
   // TICKET-IPC-002: use `in` (not `!== undefined`) so the reset path can
   // explicitly clear completion by passing `onboardingCompletedAt: undefined`.
