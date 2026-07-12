@@ -381,8 +381,12 @@ struct Transcribe: AsyncParsableCommand {
         let turns = diarization.segments.map {
             SpeakerSegment(start: $0.start, end: $0.end, speaker: $0.speaker)
         }
-        let attributed = WordTimeline.attribute(
-            words: words, diarization: turns, turnSpeakerMap: nameOverrides,
+        // Per-segment hybrid: word-level where the engine emitted words, whole-
+        // segment fallback for any segment it emitted none for (partial DTW
+        // coverage) so that segment's text is never dropped from the rebuild.
+        let attributed = WordTimeline.attributeHybrid(
+            segments: transcript.map(\.timestamped), words: words,
+            diarization: turns, turnSpeakerMap: nameOverrides,
         )
         return TranscriptSegments.mergeConsecutiveSpeakers(attributed).map(TimedSegment.init)
     }

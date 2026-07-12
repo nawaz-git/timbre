@@ -243,6 +243,10 @@ extension Transcribe {
             micWords: engines.micWords,
             appTurns: engines.appDiar.segments.map(Self.speakerSegment),
             micTurns: engines.micDiar?.segments.map(Self.speakerSegment),
+            // Raw per-track segments (native, un-shifted): recover the text of
+            // any segment the engine emitted no word timings for.
+            appSegments: engines.appSegments.map(\.timestamped),
+            micSegments: engines.micSegments.map(\.timestamped),
             appNames: nameOverrides,
             micNames: [:],
             micLabel: micLabel,
