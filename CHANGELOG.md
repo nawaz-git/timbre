@@ -4,6 +4,16 @@ All notable changes to Timbre are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.40.1]
+
+### Fixed
+- **The app no longer launches to a black window.** In 0.40.0 the renderer
+  started running sandboxed, but the preload bridge still tried to load an
+  external module at runtime — which a sandboxed preload cannot do — so it
+  failed silently and the window rendered empty. The preload now bundles that
+  dependency, and a build-time guard fails the build if a sandbox-incompatible
+  `require()` ever creeps back into the preload.
+
 ## [0.40.0]
 
 This release makes Timbre production-solid.
@@ -90,6 +100,7 @@ This release makes Timbre production-solid.
 - On-device transcription (WhisperKit / Parakeet / Qwen3) + speaker diarization
   (FluidAudio), with transcript export (TXT / Markdown / JSON / SRT).
 
+[0.40.1]: https://github.com/nawaz-git/timbre/releases/tag/v0.40.1
 [0.40.0]: https://github.com/nawaz-git/timbre/releases/tag/v0.40.0
 [0.39.0]: https://github.com/nawaz-git/timbre/releases/tag/v0.39.0
 [0.38.0]: https://github.com/nawaz-git/timbre/releases/tag/v0.38.0
