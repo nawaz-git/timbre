@@ -142,6 +142,14 @@ jobs:
         run: npm run test
       - name: Production build
         run: npx electron-vite build
+      # Guard against the v0.40.0 black-screen regression: the renderer runs
+      # sandboxed, so out/preload/index.js may only require('electron'). A stray
+      # externalized npm dep (e.g. @electron-toolkit/preload) throws
+      # "module not found" in the packaged sandboxed preload — which dev mode
+      # and this bundler build never execute — leaving window.api undefined and
+      # a black window. This static check fails the PR the moment that returns.
+      - name: Verify sandboxed preload bundling
+        run: node scripts/check-preload-bundling.mjs
       # ESLint is RED on main today (40 pre-existing errors + 300-odd
       # prettier/prettier warnings). We run it for visibility but keep it
       # NON-BLOCKING (continue-on-error) so it doesn't wall off every PR on a
