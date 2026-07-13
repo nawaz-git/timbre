@@ -4,6 +4,42 @@ All notable changes to Timbre are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.40.0]
+
+This release makes Timbre production-solid.
+
+### Fixed
+- **Recording can no longer freeze the browser or the system.** The capture
+  pipeline is hardened end to end, recovers automatically when a capture stalls,
+  and can fall back to a mic-only recording rather than hanging.
+- **Real speaker names in every meeting.** The two-speaker case that used to
+  collapse everyone into "Remote"/"Me" is fixed, and transcripts now carry
+  word-level timing accuracy.
+- **Failed meetings are visible and retryable** in the library instead of
+  vanishing, and meeting metadata is written atomically so an interrupted run
+  can't corrupt it.
+- **Accurate permission reporting** for Microphone and Screen Recording.
+
+### Added
+- A new opt-in **Best (up to ~30 min)** processing mode for higher-accuracy
+  transcription of shorter meetings.
+- A **Summary** tab, a **searchable** meeting library, and a single unified
+  speaker-naming flow with safer deletes.
+- **Project tags** — the foundation for the upcoming
+  meeting ↔ people ↔ project graph.
+- The renderer now runs **sandboxed**, and global error handlers guard the main
+  process.
+
+### Changed
+- Redesigned experience with **truthful** recording/processing status and more
+  honest onboarding.
+- **Transcription language now auto-detects by default** (still configurable in
+  Settings).
+
+### Removed
+- The **Qwen3** transcription engine was removed after its upstream dependency
+  dropped support. Existing Qwen3 selections migrate automatically to WhisperKit.
+
 ## [0.39.0]
 
 ### Changed
@@ -54,6 +90,7 @@ All notable changes to Timbre are documented here. The format is based on
 - On-device transcription (WhisperKit / Parakeet / Qwen3) + speaker diarization
   (FluidAudio), with transcript export (TXT / Markdown / JSON / SRT).
 
+[0.40.0]: https://github.com/nawaz-git/timbre/releases/tag/v0.40.0
 [0.39.0]: https://github.com/nawaz-git/timbre/releases/tag/v0.39.0
 [0.38.0]: https://github.com/nawaz-git/timbre/releases/tag/v0.38.0
 [0.37.0]: https://github.com/nawaz-git/timbre/releases/tag/v0.37.0
