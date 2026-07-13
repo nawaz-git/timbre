@@ -764,6 +764,33 @@ class PipelineQueue {
         }
     }
 
+    /// Create a clean per-job working directory for intermediate pipeline
+    /// files, first removing any stale directory left by an interrupted prior
+    /// run of the same job.
+    ///
+    /// The pipeline stages 16 kHz resamples (and other intermediates) into a
+    /// temp dir named `pipeline_<jobUUID>`. Because that name derives from the
+    /// stable job UUID and lives in the process-independent shared temp dir, a
+    /// directory from an earlier attempt can still be present when the job runs
+    /// again: the user clicking "Restart engine" force-kills the old engine
+    /// (graceful-shutdown finalize cap → `exit`) before the caller's `defer`
+    /// cleanup runs, and the surviving snapshot re-enqueues the job into its own
+    /// UUID dir on the next launch. `FileManager.createDirectory` with
+    /// `withIntermediateDirectories: true` silently succeeds on an existing
+    /// directory, so its leftover files would collide with the re-run's
+    /// `FileManager.copyItem` — which never overwrites (NSFileWriteFileExists /
+    /// EEXIST). Removing the directory first guarantees idempotent staging
+    /// across restarts and retries. `nonisolated` + injectable `FileManager` so
+    /// it is a pure, testable helper.
+    nonisolated static func prepareCleanWorkDir(
+        at url: URL, fileManager: FileManager = .default,
+    ) throws {
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
     /// Thin orchestrator: take the next waiting job and run it through the
     /// pipeline — transcribe → diarize → generate protocol → done.
     func processNext() async {
@@ -792,9 +819,19 @@ class PipelineQueue {
 
         do {
             // Temp directory for intermediate 16kHz files, cleaned up on any exit.
+            // Staged into a *clean* per-job dir: the name derives from the stable
+            // job UUID and lives in the process-independent shared temp dir, so a
+            // dir from an earlier attempt can still be on disk — e.g. after the
+            // user clicks "Restart engine" and the old engine is force-killed
+            // (graceful-shutdown finalize cap → exit) before the `defer` below
+            // runs, or when a snapshot-restored job re-enters its own UUID dir.
+            // `createDirectory(withIntermediateDirectories:)` no-ops on an
+            // existing dir, so its leftover files would collide with this run's
+            // `copyItem` (EEXIST). `prepareCleanWorkDir` removes any stale dir
+            // first so every (re-)run stages fresh.
             let workDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("pipeline_\(ctx.jobID.uuidString)")
-            try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+            try Self.prepareCleanWorkDir(at: workDir)
             defer { try? FileManager.default.removeItem(at: workDir) }
 
             let transcription = try await transcribe(ctx, engine: engine, workDir: workDir)

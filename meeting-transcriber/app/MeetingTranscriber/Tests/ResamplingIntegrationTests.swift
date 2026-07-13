@@ -37,6 +37,41 @@ final class ResamplingIntegrationTests: XCTestCase { // swiftlint:disable:this b
         XCTAssertGreaterThan(file.length, 0)
     }
 
+    /// A stale file at the destination (left by an interrupted prior run) must
+    /// be overwritten, not trip `copyItem`'s EEXIST. This is the primitive
+    /// behind the field failure where a re-run staged over a leftover
+    /// `app_16k.wav` and the copy threw NSFileWriteFileExistsError.
+    func testResampleFileOverwritesStaleDestination() async throws {
+        let fixture = fixtureURL("three_speakers_de.wav")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: fixture.path), "Fixture not found")
+
+        let output = tmpDir.appendingPathComponent("resampled.wav")
+        try Data("stale-partial-file".utf8).write(to: output)
+
+        // Must not throw despite the pre-existing destination.
+        try await AudioMixer.resampleFile(from: fixture, to: output)
+
+        let file = try AVAudioFile(forReading: output)
+        XCTAssertEqual(Int(file.processingFormat.sampleRate), 16000)
+        XCTAssertEqual(file.processingFormat.channelCount, 1)
+        XCTAssertGreaterThan(file.length, 0)
+    }
+
+    /// Resampling the same source into the same destination twice (a job
+    /// retried again) is safe — the second call overwrites the first.
+    func testResampleFileRunTwiceSucceeds() async throws {
+        let fixture = fixtureURL("three_speakers_de.wav")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: fixture.path), "Fixture not found")
+
+        let output = tmpDir.appendingPathComponent("resampled_twice.wav")
+        try await AudioMixer.resampleFile(from: fixture, to: output)
+        try await AudioMixer.resampleFile(from: fixture, to: output)
+
+        let file = try AVAudioFile(forReading: output)
+        XCTAssertEqual(Int(file.processingFormat.sampleRate), 16000)
+        XCTAssertGreaterThan(file.length, 0)
+    }
+
     // MARK: - M4A resampling (AVAsset fallback path)
 
     func testResampleM4AFixtureTo16kHz() async throws {
