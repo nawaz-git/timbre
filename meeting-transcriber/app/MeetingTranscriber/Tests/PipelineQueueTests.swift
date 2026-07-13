@@ -42,6 +42,49 @@ final class PipelineQueueTests: XCTestCase {
         XCTAssertEqual(queue.jobs.count, 2)
     }
 
+    // MARK: - Working-dir staging (idempotent across restarts / retries)
+
+    /// A working dir leaked by a force-killed prior run must be wiped, so the
+    /// re-run's `copyItem` into it cannot hit EEXIST (the field failure:
+    /// "…_app.wav couldn't be copied to pipeline_<uuid>… already exists").
+    func testPrepareCleanWorkDirRemovesStaleContents() throws {
+        let workDir = tmpDir.appendingPathComponent("pipeline_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        // Simulate a partially-staged file left by an interrupted prior attempt.
+        let stale = workDir.appendingPathComponent("app_16k.wav")
+        try Data("stale".utf8).write(to: stale)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stale.path))
+
+        try PipelineQueue.prepareCleanWorkDir(at: workDir)
+
+        var isDir: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workDir.path, isDirectory: &isDir))
+        XCTAssertTrue(isDir.boolValue)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+        let contents = try FileManager.default.contentsOfDirectory(atPath: workDir.path)
+        XCTAssertTrue(contents.isEmpty, "re-run must stage into an empty dir")
+    }
+
+    /// When no prior dir exists, it is simply created.
+    func testPrepareCleanWorkDirCreatesWhenAbsent() throws {
+        let workDir = tmpDir.appendingPathComponent("pipeline_\(UUID().uuidString)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: workDir.path))
+        try PipelineQueue.prepareCleanWorkDir(at: workDir)
+        var isDir: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workDir.path, isDirectory: &isDir))
+        XCTAssertTrue(isDir.boolValue)
+    }
+
+    /// Calling it twice (job retried again) is safe and still yields a clean dir.
+    func testPrepareCleanWorkDirIsIdempotent() throws {
+        let workDir = tmpDir.appendingPathComponent("pipeline_\(UUID().uuidString)")
+        try PipelineQueue.prepareCleanWorkDir(at: workDir)
+        try Data("leftover".utf8).write(to: workDir.appendingPathComponent("mic_16k.wav"))
+        try PipelineQueue.prepareCleanWorkDir(at: workDir)
+        let contents = try FileManager.default.contentsOfDirectory(atPath: workDir.path)
+        XCTAssertTrue(contents.isEmpty)
+    }
+
     func testSnapshotWrittenOnEnqueue() async {
         queue.enqueue(makeJob())
         await queue.awaitSnapshotFlush()

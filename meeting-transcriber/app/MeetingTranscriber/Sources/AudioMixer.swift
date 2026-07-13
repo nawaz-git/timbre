@@ -335,6 +335,15 @@ enum AudioMixer {
     /// Fast path: if the source is already at `targetRate` (readable by AVAudioFile), copies
     /// the file directly instead of decoding and re-encoding.
     static func resampleFile(from source: URL, to destination: URL, targetRate: Int = AudioConstants.targetSampleRate) async throws {
+        // Idempotent staging: overwrite any stale file already at `destination`.
+        // `copyItem` never overwrites — it throws NSFileWriteFileExistsError
+        // (POSIX EEXIST) — so a re-run that stages into a working dir left over
+        // from an interrupted prior attempt (e.g. a snapshot-restored pipeline
+        // job whose engine was force-killed before its workdir cleanup ran)
+        // would fail on the leftover. Removing it first makes both the copy
+        // fast-path and the resample fallback (saveWAV already truncates)
+        // safe to call repeatedly. Best-effort: a missing file is not an error.
+        try? FileManager.default.removeItem(at: destination)
         // Probe rate without loading all samples — O(1) for WAV/MP3/M4A
         if let audioFile = try? AVAudioFile(forReading: source),
            Int(audioFile.processingFormat.sampleRate) == targetRate {
