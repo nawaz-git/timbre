@@ -4,6 +4,18 @@ All notable changes to Timbre are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.40.3]
+
+### Fixed
+- **Exporting a meeting no longer fails when there is no AI summary.** Opening a
+  meeting's Export tab and choosing Markdown could show "Failed to load preview:
+  ENOENT … .md" for any meeting recorded without summary generation (the common
+  case). The Markdown export is now built directly from the transcript —
+  speakers bolded, with timestamps — and folds in the AI summary only when one
+  exists. Every other format (Plain text, JSON, Subtitles, Audio, Screen video)
+  now shows a clear "not available" message when a meeting is missing that
+  piece, instead of a raw file error.
+
 ## [0.40.2]
 
 ### Fixed
