@@ -4,6 +4,17 @@ All notable changes to Timbre are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.40.2]
+
+### Fixed
+- **Processing no longer fails after you restart the engine.** If you clicked
+  "Restart engine" while a meeting was still being processed, the next attempt
+  could fail with "…couldn't be copied… because an item with the same name
+  already exists" — the interrupted run had left stale working files behind and
+  the retry collided with them. Each run now clears its own working directory
+  first and overwrites stale intermediate audio, so a restarted or retried
+  meeting processes cleanly.
+
 ## [0.40.1]
 
 ### Fixed
