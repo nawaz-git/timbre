@@ -2222,6 +2222,129 @@ function buildSRT(
   return lines.join('\n')
 }
 
+/**
+ * Build the Markdown export body from diarized segments — speaker-bolded,
+ * timestamped — matching the Export-tab hint ("Speakers bolded with
+ * timestamps"). This is the CANONICAL source for the `.md` export: the
+ * transcript, NOT the LLM summary file.
+ *
+ * When an LLM summary (`protocols/<prefix>.md` / `summary.md`) exists it is
+ * prepended as a leading section followed by an `---` rule; its ABSENCE must
+ * never error (most meetings have no summary). When there are no structured
+ * segments the raw transcript text is used as a fallback so the export is
+ * never empty. Pure + never throws.
+ */
+export function buildMarkdownExport(
+  title: string,
+  segments: Array<{ speaker: string; start: number; end: number; text: string }>,
+  summaryMarkdown?: string,
+  rawTranscript?: string
+): string {
+  const summary = summaryMarkdown?.trim()
+  // Lead with the meeting title, unless a summary already leads — then the
+  // segment block is labelled "Transcript" so the two sections read cleanly.
+  const parts: string[] = [summary ? '# Transcript' : `# ${title}`, '']
+  if (segments.length > 0) {
+    for (const seg of segments) {
+      parts.push(
+        `**${seg.speaker}** _(${formatTimestampHHMMSS(seg.start)})_`,
+        '',
+        seg.text.trim(),
+        ''
+      )
+    }
+  } else if (rawTranscript?.trim()) {
+    // No structured segments (e.g. a `.txt`-only meeting) — fall back to the
+    // raw transcript text so the Markdown export still carries the content.
+    parts.push(rawTranscript.trim(), '')
+  }
+  const transcript = parts.join('\n')
+  return summary ? `${summary}\n\n---\n\n${transcript}` : transcript
+}
+
+/**
+ * Build a flat, speaker-tagged plain-text body from segments — the fallback
+ * used for the `.txt` export when a meeting has no raw `transcript.txt`/
+ * `protocols/<prefix>.txt` on disk. Mirrors the engine's `[HH:MM:SS] Name:
+ * text` line format. Pure + never throws.
+ */
+export function buildPlainTextExport(
+  segments: Array<{ speaker: string; start: number; end: number; text: string }>
+): string {
+  return segments
+    .map((seg) => `[${formatTimestampHHMMSS(seg.start)}] ${seg.speaker}: ${seg.text.trim()}`)
+    .join('\n')
+}
+
+/**
+ * Thrown by `exportMeeting` when a requested asset genuinely does not exist
+ * for a meeting — no screen video was recorded, no audio file, or no
+ * structured transcript. Carries a user-facing message (and the would-be
+ * filename/content-type) so the preview pane can render a NEUTRAL
+ * "not available" placeholder instead of surfacing a raw `ENOENT`, and the
+ * export flow can toast a friendly reason.
+ */
+export class ExportUnavailableError extends Error {
+  constructor(
+    readonly userMessage: string,
+    readonly filename: string,
+    readonly contentType: string
+  ) {
+    super(userMessage)
+    this.name = 'ExportUnavailableError'
+  }
+}
+
+/** Strip the `engine:` / `imported:` prefix to a bare filename base. */
+function deriveExportBasename(meetingId: string): string {
+  if (meetingId.startsWith('engine:')) return meetingId.slice('engine:'.length)
+  if (meetingId.startsWith('imported:')) return meetingId.slice('imported:'.length)
+  return meetingId
+}
+
+/** Sanitised Save-dialog default filename base (letters/digits/space/_/-). */
+function exportSafeTitle(title: string, meetingId: string): string {
+  const clean = (s: string): string => s.replace(/[^a-zA-Z0-9 _-]/g, '').trim()
+  return clean(title) || clean(deriveExportBasename(meetingId)) || 'Meeting'
+}
+
+/**
+ * Resolve a meeting's audio file path, or `null` when none exists. Engine
+ * meetings resolve by prefix (mix → app → mic); imported meetings look for
+ * `audio.wav` and confirm it is actually present (so a pruned file degrades
+ * to a friendly message rather than a copy-time `ENOENT`).
+ */
+async function resolveExportAudioPath(
+  outputFolder: string,
+  meetingId: string
+): Promise<string | null> {
+  if (meetingId.startsWith('engine:')) {
+    const prefix = meetingId.slice('engine:'.length)
+    if (!/^[A-Za-z0-9_-]+$/.test(prefix)) throw new Error(`Invalid engine prefix: ${prefix}`)
+    return findEngineAudioForPrefix(prefix)
+  }
+  const folderId = meetingId.startsWith('imported:')
+    ? meetingId.slice('imported:'.length)
+    : meetingId
+  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
+    throw new Error(`Invalid meeting id: ${meetingId}`)
+  }
+  const audioPath = join(outputFolder, folderId, 'audio.wav')
+  return (await pathExists(audioPath)) ? audioPath : null
+}
+
+/**
+ * Resolve a meeting's whole-screen video path, or `null` when none exists.
+ * Only engine (live) recordings carry screen video today — imported meetings
+ * always resolve to `null`.
+ */
+async function resolveExportVideoPath(meetingId: string): Promise<string | null> {
+  if (!meetingId.startsWith('engine:')) return null
+  const prefix = meetingId.slice('engine:'.length)
+  if (!/^[A-Za-z0-9_-]+$/.test(prefix)) throw new Error(`Invalid engine prefix: ${prefix}`)
+  return findEngineVideoForPrefix(prefix)
+}
+
 interface ExportPayload {
   /** Suggested filename (with extension). */
   filename: string
@@ -2253,85 +2376,20 @@ export async function exportMeeting(
   format: 'txt' | 'md' | 'json' | 'srt' | 'audio' | 'video',
   title: string
 ): Promise<ExportPayload> {
-  if (meetingId.startsWith('engine:')) {
-    const prefix = meetingId.slice('engine:'.length)
-    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
-      throw new Error(`Invalid engine prefix: ${prefix}`)
-    }
-    const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || prefix
-    if (format === 'video') {
-      const videoPath = await findEngineVideoForPrefix(prefix)
-      if (!videoPath) throw new Error('This recording has no screen video.')
-      // Copy from disk in the handler rather than buffering — a screen
-      // recording can be multiple GB.
-      return {
-        filename: `${safeTitle}.mp4`,
-        body: '',
-        sourcePath: videoPath,
-        contentType: 'video/mp4'
-      }
-    }
-    if (format === 'audio') {
-      const audioPath = await findEngineAudioForPrefix(prefix)
-      if (!audioPath) throw new Error('This meeting has no audio file.')
-      // Copy from disk in the handler rather than buffering the whole WAV — an
-      // engine recording's audio can be large. Mirrors the imported-audio path.
-      return {
-        filename: `${safeTitle}.wav`,
-        body: '',
-        sourcePath: audioPath,
-        contentType: 'audio/wav'
-      }
-    }
-    if (format === 'json' || format === 'srt') {
-      // Reuse the canonical segment loader so engine json/srt match the shape
-      // the renderer already reads (start/end/speaker/text).
-      const t = await readTranscript(outputFolder, meetingId)
-      const segs = t.segments ?? []
-      if (segs.length === 0) {
-        throw new Error('This meeting has no structured transcript.')
-      }
-      if (format === 'srt') {
-        return {
-          filename: `${safeTitle}.srt`,
-          body: buildSRT(segs),
-          contentType: 'application/x-subrip'
-        }
-      }
-      const speakerCount = new Set(segs.map((s) => s.speaker)).size
-      const jsonBody = JSON.stringify(
-        { segments: segs, duration: t.durationSeconds, speakerCount },
-        null,
-        2
-      )
-      return { filename: `${safeTitle}.json`, body: jsonBody, contentType: 'application/json' }
-    }
-    // txt / md — the engine's protocol file.
-    const srcExt = format === 'md' ? 'md' : 'txt'
-    const srcPath = join(ENGINE_DEFAULT_ROOT, 'protocols', `${prefix}.${srcExt}`)
-    const body = await fs.readFile(srcPath, 'utf-8')
-    return {
-      filename: `${prefix}.${srcExt}`,
-      body,
-      contentType: format === 'md' ? 'text/markdown' : 'text/plain'
-    }
-  }
-  // Imported meetings carry no whole-screen video today — reject cleanly.
-  if (format === 'video') {
-    throw new Error('No screen video available for this meeting.')
-  }
-  const folderId = meetingId.startsWith('imported:')
-    ? meetingId.slice('imported:'.length)
-    : meetingId
-  if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
-    throw new Error(`Invalid meeting id: ${meetingId}`)
-  }
-  const folder = join(outputFolder, folderId)
-  const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || folderId
+  const safeTitle = exportSafeTitle(title, meetingId)
 
+  // ── Binary media: resolved to an on-disk path and copied verbatim by the
+  //    handler (never buffered through the main process). A missing file
+  //    degrades to a friendly ExportUnavailableError — never a raw ENOENT. ──
   if (format === 'audio') {
-    // Copy from disk in the handler rather than buffering the whole WAV.
-    const audioPath = join(folder, 'audio.wav')
+    const audioPath = await resolveExportAudioPath(outputFolder, meetingId)
+    if (!audioPath) {
+      throw new ExportUnavailableError(
+        'This meeting has no audio file.',
+        `${safeTitle}.wav`,
+        'audio/wav'
+      )
+    }
     return {
       filename: `${safeTitle}.wav`,
       body: '',
@@ -2339,39 +2397,78 @@ export async function exportMeeting(
       contentType: 'audio/wav'
     }
   }
+  if (format === 'video') {
+    const videoPath = await resolveExportVideoPath(meetingId)
+    if (!videoPath) {
+      throw new ExportUnavailableError(
+        'No screen video was recorded for this meeting.',
+        `${safeTitle}.mp4`,
+        'video/mp4'
+      )
+    }
+    return {
+      filename: `${safeTitle}.mp4`,
+      body: '',
+      sourcePath: videoPath,
+      contentType: 'video/mp4'
+    }
+  }
+
+  // ── Text formats (txt/md/json/srt): built from the canonical transcript
+  //    loader, which reads whichever sidecars exist (segments.json, .txt, the
+  //    LLM .md summary) and NEVER throws on a missing file. This is why `md`
+  //    no longer ENOENTs when no LLM summary was generated — the summary is
+  //    optional and merely prepended when it happens to exist. ──
+  const t = await readTranscript(outputFolder, meetingId)
+  const segs = t.segments ?? []
+
+  if (format === 'md') {
+    // Speaker-bolded, timestamped transcript, with the LLM summary on top IF
+    // one exists. Absence of the summary is the common case and never errors.
+    const body = buildMarkdownExport(title, segs, t.summaryMarkdown, t.transcript)
+    return { filename: `${safeTitle}.md`, body, contentType: 'text/markdown' }
+  }
+
   if (format === 'txt') {
-    const body = await fs.readFile(join(folder, 'transcript.txt'), 'utf-8')
+    // Prefer the raw transcript; fall back to a flat speaker-tagged rendering
+    // of the segments so a segments-only meeting still exports something.
+    const body = t.transcript.trim() ? t.transcript : buildPlainTextExport(segs)
+    if (!body.trim()) {
+      throw new ExportUnavailableError(
+        'This meeting has no transcript to export.',
+        `${safeTitle}.txt`,
+        'text/plain'
+      )
+    }
     return { filename: `${safeTitle}.txt`, body, contentType: 'text/plain' }
   }
+
   if (format === 'json') {
-    const body = await fs.readFile(join(folder, 'transcript.json'), 'utf-8')
+    if (segs.length === 0) {
+      throw new ExportUnavailableError(
+        'This meeting has no structured transcript to export as JSON.',
+        `${safeTitle}.json`,
+        'application/json'
+      )
+    }
+    const speakerCount = new Set(segs.map((s) => s.speaker)).size
+    const body = JSON.stringify(
+      { segments: segs, duration: t.durationSeconds, speakerCount },
+      null,
+      2
+    )
     return { filename: `${safeTitle}.json`, body, contentType: 'application/json' }
   }
 
-  // For md and srt we synthesise from transcript.json.
-  const tjRaw = await fs.readFile(join(folder, 'transcript.json'), 'utf-8')
-  const tj = JSON.parse(tjRaw) as TranscriptJSON
-  const segments = tj.segments ?? []
-
-  if (format === 'md') {
-    const lines: string[] = [`# ${title}`, '']
-    for (const seg of segments) {
-      lines.push(
-        `**${seg.speaker}** _(${formatTimestampHHMMSS(seg.start)})_`,
-        '',
-        seg.text.trim(),
-        ''
-      )
-    }
-    return { filename: `${safeTitle}.md`, body: lines.join('\n'), contentType: 'text/markdown' }
+  // srt
+  if (segs.length === 0) {
+    throw new ExportUnavailableError(
+      'This meeting has no timed segments to export as subtitles.',
+      `${safeTitle}.srt`,
+      'application/x-subrip'
+    )
   }
-
-  // SRT
-  return {
-    filename: `${safeTitle}.srt`,
-    body: buildSRT(segments),
-    contentType: 'application/x-subrip'
-  }
+  return { filename: `${safeTitle}.srt`, body: buildSRT(segs), contentType: 'application/x-subrip' }
 }
 
 /** Renderer-facing preview payload returned by `previewExportMeeting`. */
@@ -2387,6 +2484,15 @@ export interface ExportPreview {
   /** File size in bytes — only set for binary formats so the renderer
    *  can show a human-readable summary without serialising the bytes. */
   sizeBytes?: number
+  /**
+   * True when the requested asset genuinely doesn't exist for this meeting
+   * (no screen video recorded, no audio file, no structured transcript). The
+   * renderer shows a NEUTRAL "not available" placeholder and disables Export —
+   * this is how a missing source degrades WITHOUT surfacing a raw `ENOENT`.
+   */
+  unavailable?: boolean
+  /** Human-readable reason shown when `unavailable` is true. */
+  message?: string
 }
 
 /**
@@ -2402,74 +2508,65 @@ export async function previewExportMeeting(
   format: 'txt' | 'md' | 'json' | 'srt' | 'audio' | 'video',
   title: string
 ): Promise<ExportPreview> {
-  if (format === 'video') {
-    if (!meetingId.startsWith('engine:')) {
-      throw new Error('No screen video for this meeting.')
-    }
-    const prefix = meetingId.slice('engine:'.length)
-    if (!/^[A-Za-z0-9_\-]+$/.test(prefix)) {
-      throw new Error(`Invalid engine prefix: ${prefix}`)
-    }
-    const videoPath = await findEngineVideoForPrefix(prefix)
-    if (!videoPath) throw new Error('This recording has no screen video.')
-    const stat = await fs.stat(videoPath)
-    const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || prefix
-    return {
-      filename: `${safeTitle}.mp4`,
-      body: '',
-      contentType: 'video/mp4',
-      isBinary: true,
-      sizeBytes: stat.size
-    }
-  }
-  if (format === 'audio') {
-    // Resolve the audio path WITHOUT reading the file. The `audio` branch
-    // of `exportMeeting` would otherwise load the entire WAV into memory
-    // and then serialise it across IPC — wasteful for preview, since the
-    // pane shows only a size/filename card.
-    if (meetingId.startsWith('engine:')) {
-      // Engine meetings resolve their audio by prefix; mirror the imported
-      // branch (stat only, no body) so the preview shows a size card.
-      const prefix = meetingId.slice('engine:'.length)
-      if (!/^[A-Za-z0-9_-]+$/.test(prefix)) {
-        throw new Error(`Invalid engine prefix: ${prefix}`)
-      }
-      const audioPath = await findEngineAudioForPrefix(prefix)
-      if (!audioPath) throw new Error('This meeting has no audio file.')
-      const stat = await fs.stat(audioPath)
-      const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || prefix
+  const safeTitle = exportSafeTitle(title, meetingId)
+
+  // ── Binary media (audio/video): resolve the path WITHOUT reading the file
+  //    (the WAV/MP4 can be multi-GB — the pane shows only a size/filename
+  //    card). A missing or pruned file degrades to a NEUTRAL unavailable
+  //    preview instead of a raw `ENOENT`. ──
+  if (format === 'audio' || format === 'video') {
+    const isVideo = format === 'video'
+    const filename = `${safeTitle}.${isVideo ? 'mp4' : 'wav'}`
+    const contentType = isVideo ? 'video/mp4' : 'audio/wav'
+    const path = isVideo
+      ? await resolveExportVideoPath(meetingId)
+      : await resolveExportAudioPath(outputFolder, meetingId)
+    if (!path) {
       return {
-        filename: `${safeTitle}.wav`,
+        filename,
         body: '',
-        contentType: 'audio/wav',
-        isBinary: true,
-        sizeBytes: stat.size
+        contentType,
+        unavailable: true,
+        message: isVideo
+          ? 'No screen video was recorded for this meeting.'
+          : 'This meeting has no audio file.'
       }
     }
-    const folderId = meetingId.startsWith('imported:')
-      ? meetingId.slice('imported:'.length)
-      : meetingId
-    if (folderId.includes('/') || folderId.includes('\\') || folderId.includes('..')) {
-      throw new Error(`Invalid meeting id: ${meetingId}`)
-    }
-    const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || folderId
-    const audioPath = join(outputFolder, folderId, 'audio.wav')
-    const stat = await fs.stat(audioPath)
-    return {
-      filename: `${safeTitle}.wav`,
-      body: '',
-      contentType: 'audio/wav',
-      isBinary: true,
-      sizeBytes: stat.size
+    try {
+      const stat = await fs.stat(path)
+      return { filename, body: '', contentType, isBinary: true, sizeBytes: stat.size }
+    } catch {
+      // Flagged as present but gone at read time (pruned/moved) — stay graceful.
+      return {
+        filename,
+        body: '',
+        contentType,
+        unavailable: true,
+        message: isVideo
+          ? 'The screen video for this meeting is no longer available.'
+          : 'The audio file for this meeting is no longer available.'
+      }
     }
   }
-  // Text formats: reuse the canonical export helper. Its body is always a
-  // string for txt/md/json/srt (Buffer only for audio, handled above).
-  const payload = await exportMeeting(outputFolder, meetingId, format, title)
-  const body = typeof payload.body === 'string' ? payload.body : payload.body.toString('utf-8')
-  return {
-    filename: payload.filename,
-    body,
-    contentType: payload.contentType
+
+  // ── Text formats: reuse the canonical export helper (byte-identical to the
+  //    Save-dialog writer). A genuinely-missing source throws a typed
+  //    ExportUnavailableError, which we surface as a neutral unavailable
+  //    preview rather than letting it read as a load failure. ──
+  try {
+    const payload = await exportMeeting(outputFolder, meetingId, format, title)
+    const body = typeof payload.body === 'string' ? payload.body : payload.body.toString('utf-8')
+    return { filename: payload.filename, body, contentType: payload.contentType }
+  } catch (err) {
+    if (err instanceof ExportUnavailableError) {
+      return {
+        filename: err.filename,
+        body: '',
+        contentType: err.contentType,
+        unavailable: true,
+        message: err.userMessage
+      }
+    }
+    throw err
   }
 }

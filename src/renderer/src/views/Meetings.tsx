@@ -112,6 +112,10 @@ interface ExportPreviewPayload {
   contentType: string
   isBinary?: boolean
   sizeBytes?: number
+  /** Set when the requested asset doesn't exist (no video recorded, no
+   *  structured transcript, …) — renders a neutral placeholder, not an error. */
+  unavailable?: boolean
+  message?: string
 }
 
 /**
@@ -2695,7 +2699,13 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                       (previewFormat === 'video' && !selectedMeeting.hasVideo) ||
                       // A format whose preview failed (e.g. no structured
                       // transcript) can't be exported — the pane shows why.
-                      previewCache[previewFormat]?.status === 'error'
+                      previewCache[previewFormat]?.status === 'error' ||
+                      // A gracefully-unavailable asset (no video recorded, no
+                      // transcript) is nothing to save either.
+                      (() => {
+                        const c = previewCache[previewFormat]
+                        return c?.status === 'ready' && c.payload.unavailable === true
+                      })()
                     }
                   >
                     {exportBusy ? 'Exporting…' : 'Export…'}
@@ -2749,6 +2759,17 @@ export function MeetingsView(props: MeetingsViewProps): JSX.Element {
                           role="alert"
                         >
                           Failed to load preview: {cached.message}
+                        </div>
+                      )
+                    }
+                    // Gracefully unavailable — the meeting simply has no such
+                    // asset (no screen video recorded, no structured
+                    // transcript, …). Neutral placeholder, NOT an error.
+                    if (cached.payload.unavailable) {
+                      return (
+                        <div className="export-preview__placeholder">
+                          {cached.payload.message ??
+                            'This format is not available for this meeting.'}
                         </div>
                       )
                     }

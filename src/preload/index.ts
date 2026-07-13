@@ -110,6 +110,8 @@ const api = {
       contentType: string
       isBinary?: boolean
       sizeBytes?: number
+      unavailable?: boolean
+      message?: string
     }> => ipcRenderer.invoke(IPC.meetingsExportPreview, meetingId, format, title),
     setTags: (meetingId: string, tagIds: string[]): Promise<{ tagIds: string[] }> =>
       ipcRenderer.invoke(IPC.meetingsSetTags, meetingId, tagIds),
