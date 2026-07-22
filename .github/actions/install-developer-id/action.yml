@@ -1,0 +1,72 @@
+name: Install Developer ID certificate
+description: Import a Developer ID certificate into an ephemeral keychain
+
+inputs:
+  cert:
+    description: Base64-encoded Developer ID Application certificate and private key
+    required: true
+  cert-password:
+    description: Password for the PKCS#12 certificate
+    required: true
+  identity:
+    description: Exact Developer ID Application identity expected after import
+    required: true
+
+outputs:
+  keychain-path:
+    description: Absolute path to the ephemeral signing keychain
+    value: ${{ steps.import.outputs.keychain-path }}
+
+runs:
+  using: composite
+  steps:
+    - id: import
+      shell: bash
+      env:
+        DEVELOPER_ID_CERT: ${{ inputs.cert }}
+        DEVELOPER_ID_CERT_PASSWORD: ${{ inputs.cert-password }}
+        DEVELOPER_ID: ${{ inputs.identity }}
+      run: |
+        set -euo pipefail
+
+        case "$DEVELOPER_ID" in
+          "Developer ID Application: "*) ;;
+          *)
+            echo "::error::Expected a Developer ID Application identity"
+            exit 1
+            ;;
+        esac
+
+        KEYCHAIN_SUFFIX=$(openssl rand -hex 12)
+        KEYCHAIN_PATH="$RUNNER_TEMP/timbre-signing-${KEYCHAIN_SUFFIX}.keychain-db"
+        KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+        echo "keychain-path=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
+
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+        CERT_PATH=$(mktemp "$RUNNER_TEMP/timbre-developer-id.XXXXXX")
+        trap 'rm -f "$CERT_PATH"' EXIT
+        printf '%s' "$DEVELOPER_ID_CERT" | /usr/bin/base64 --decode --output "$CERT_PATH"
+        security import "$CERT_PATH" \
+          -P "$DEVELOPER_ID_CERT_PASSWORD" \
+          -A \
+          -t cert \
+          -f pkcs12 \
+          -k "$KEYCHAIN_PATH"
+        rm -f "$CERT_PATH"
+        trap - EXIT
+
+        security set-key-partition-list \
+          -S apple-tool:,apple:,codesign: \
+          -k "$KEYCHAIN_PASSWORD" \
+          "$KEYCHAIN_PATH"
+
+        "$GITHUB_WORKSPACE/scripts/keychain-prepend.sh" "$KEYCHAIN_PATH"
+
+        identities=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")
+        if ! printf '%s\n' "$identities" | grep -Fq "\"$DEVELOPER_ID\""; then
+          echo "::error::Imported certificate does not provide the configured Developer ID identity"
+          exit 1
+        fi

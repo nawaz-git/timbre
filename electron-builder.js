@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
+
 // Mintr — JS config (filename MUST be `electron-builder.js` — electron-builder
 // 25 auto-detects that, NOT `electron-builder.config.js`).
 //
@@ -12,13 +14,32 @@
 // re-grant-loop fix). When MINTR_SIGN_IDENTITY is unset, afterPack falls back
 // to ad-hoc — preserving CI / other-dev behaviour.
 //
-// Real Developer ID + notarization (prod tier) is a separate ticket; when
-// that lands, set identity to the Developer ID here and flip hardenedRuntime.
+const fs = require('fs')
+const path = require('path')
 
-// Hardened runtime + a self-signed identity + the engine's JIT /
-// unsigned-executable-memory entitlements = launch failure. Self-signed dev
-// tier and ad-hoc both → false. (Only a real Developer ID build flips this on.)
-const hardenedRuntime = false
+const isProductionRelease = process.env.TIMBRE_RELEASE === '1'
+const signIdentity = process.env.MINTR_SIGN_IDENTITY
+
+if (isProductionRelease && !/^Developer ID Application:/.test(signIdentity || '')) {
+  throw new Error(
+    '[electron-builder] TIMBRE_RELEASE=1 requires MINTR_SIGN_IDENTITY beginning with "Developer ID Application:"'
+  )
+}
+
+if (isProductionRelease) {
+  const requiredInputs = [
+    'meeting-transcriber/tools/mt-batch/.build/release/mt-batch',
+    'meeting-transcriber/.build/release/MeetingTranscriber.app'
+  ]
+  const missingInputs = requiredInputs.filter(
+    (input) => !fs.existsSync(path.resolve(__dirname, input))
+  )
+  if (missingInputs.length > 0) {
+    throw new Error(
+      `[electron-builder] production release inputs are missing:\n  - ${missingInputs.join('\n  - ')}`
+    )
+  }
+}
 
 /**
  * @type {import('electron-builder').Configuration}
@@ -85,8 +106,8 @@ module.exports = {
     ],
     // Read from MINTR_SIGN_IDENTITY (see top of file). null → ad-hoc.
     identity: null,
-    // false for ad-hoc + self-signed (dev tier); true only for Developer ID.
-    hardenedRuntime: hardenedRuntime,
+    // afterPack owns signing; this flag records the selected packaging tier.
+    hardenedRuntime: isProductionRelease,
     gatekeeperAssess: false,
     notarize: false,
     entitlements: 'build/entitlements.mac.plist',
@@ -120,5 +141,6 @@ module.exports = {
   // (new bundle id, new display name, new file path). See scripts/afterPack.js
   // for the why + how. This is what finally severs the helper from Mintr's
   // TCC scope and gives it its own fresh permission grants.
-  afterPack: 'scripts/afterPack.js'
+  afterPack: 'scripts/afterPack.js',
+  afterSign: 'scripts/notarize.js'
 }

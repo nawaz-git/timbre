@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to build and publish
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    name: Validate release input
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release-tag: ${{ steps.request.outputs.release-tag }}
+      release-ref: ${{ steps.request.outputs.release-ref }}
+      release-commit: ${{ steps.commit.outputs.release-commit }}
+
+    steps:
+      - name: Resolve explicit tag ref
+        id: request
+        shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_REF_NAME: ${{ github.ref_name }}
+          EVENT_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            release_tag=$DISPATCH_TAG
+            [[ "$EVENT_REF_TYPE" == "tag" && "$EVENT_REF" == "refs/tags/$release_tag" ]] || {
+              echo "Manual release must run from the same explicit tag supplied as input" >&2
+              exit 1
+            }
+          else
+            [[ "$EVENT_REF" == refs/tags/* ]] || {
+              echo "Release pushes must originate from an explicit tag ref" >&2
+              exit 1
+            }
+            release_tag=$EVENT_REF_NAME
+          fi
+
+          [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || {
+            echo "Release tag is not a valid v-prefixed semantic version: $release_tag" >&2
+            exit 1
+          }
+
+          echo "release-tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "release-ref=refs/tags/$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ steps.request.outputs.release-ref }}
+
+      - name: Fetch approved main
+        run: git fetch --force --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+
+      - name: Validate tag commit and approved ancestry
+        env:
+          RELEASE_TAG: ${{ steps.request.outputs.release-tag }}
+        run: bash scripts/release/validate-ref.sh
+
+      - name: Record validated commit
+        id: commit
+        run: echo "release-commit=$(git rev-parse HEAD^{commit})" >> "$GITHUB_OUTPUT"
+
+  package-and-release:
+    name: Package and release macOS arm64
+    needs: validate-release
+    runs-on: macos-26
+    timeout-minutes: 90
+    environment:
+      name: release
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.validate-release.outputs.release-tag }}
+      RELEASE_COMMIT: ${{ needs.validate-release.outputs.release-commit }}
+
+    steps:
+      - name: Check out validated release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.validate-release.outputs.release-commit }}
+
+      - name: Fetch immutable release inputs
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git fetch --force --no-tags origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+
+      - name: Revalidate release commit before credentials
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.validate-release.outputs.release-commit }}
+        run: bash scripts/release/validate-ref.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Run credential preflight
+        env:
+          DEVELOPER_ID_CERT: ${{ secrets.DEVELOPER_ID_CERT }}
+          DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: bash scripts/release/preflight.sh
+
+      - name: Install Developer ID certificate
+        id: developer-id
+        uses: ./.github/actions/install-developer-id
+        with:
+          cert: ${{ secrets.DEVELOPER_ID_CERT }}
+          cert-password: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          identity: ${{ secrets.DEVELOPER_ID }}
+
+      - name: Resolve release paths
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "app=$GITHUB_WORKSPACE/dist/mac-arm64/Timbre.app" >> "$GITHUB_OUTPUT"
+          echo "dmg=$GITHUB_WORKSPACE/dist/Timbre-${VERSION}-arm64.dmg" >> "$GITHUB_OUTPUT"
+          echo "zip=$GITHUB_WORKSPACE/dist/Timbre-${VERSION}-arm64.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Build vendored direct-distribution engine
+        working-directory: meeting-transcriber
+        run: bash scripts/build_release.sh --no-notarize --version=${{ steps.release.outputs.version }}
+
+      - name: Build mt-batch
+        working-directory: meeting-transcriber/tools/mt-batch
+        run: swift build -c release
+
+      - name: Install Electron dependencies
+        run: npm ci
+
+      - name: Build and notarize Timbre app
+        env:
+          TIMBRE_RELEASE: '1'
+          MINTR_SIGN_IDENTITY: ${{ secrets.DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: npm run dist:mac
+
+      - name: Notarize and staple DMG
+        env:
+          TIMBRE_RELEASE: '1'
+          MINTR_SIGN_IDENTITY: ${{ secrets.DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          DMG: ${{ steps.release.outputs.dmg }}
+        run: node scripts/notarize-dmg.js "$DMG"
+
+      - name: Create stapled app ZIP
+        env:
+          APP: ${{ steps.release.outputs.app }}
+          DMG: ${{ steps.release.outputs.dmg }}
+          ZIP: ${{ steps.release.outputs.zip }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -d "$APP"
+          test -f "$DMG"
+          APP_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
+          test "$APP_VERSION" = "$VERSION"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+
+      - name: Verify release artifacts
+        env:
+          APP: ${{ steps.release.outputs.app }}
+          DMG: ${{ steps.release.outputs.dmg }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: bash scripts/verify-release.sh "$APP" "$DMG" "$TEAM_ID"
+
+      - name: Revalidate release commit before publication
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.validate-release.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git fetch --force --no-tags origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          bash scripts/release/validate-ref.sh
+
+      - name: Publish verified draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DMG: ${{ steps.release.outputs.dmg }}
+          ZIP: ${{ steps.release.outputs.zip }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: bash scripts/release/publish.sh "$RELEASE_TAG" "$VERSION" "$DMG" "$ZIP"
+
+      - name: Delete signing keychain
+        if: always()
+        env:
+          KEYCHAIN_PATH: ${{ steps.developer-id.outputs.keychain-path }}
+        run: |
+          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi

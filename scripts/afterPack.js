@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/explicit-function-return-type */
+
 /**
  * electron-builder afterPack hook (v0.19+).
  *
@@ -61,11 +63,9 @@
  *     self-signed cert has no trusted TSA chain, and hardened runtime + the
  *     engine's allow-jit / allow-unsigned-executable-memory entitlements would
  *     kill the app at launch ("code signature invalid").
- *   - DEVELOPER-ID (future, opt-in via MINTR_HARDENED_RUNTIME=1 or a real
- *     "Developer ID Application: …" identity): adds `--options runtime` and
- *     `--timestamp` at EVERY level for notarization. Flipping that env (and
- *     hardenedRuntime=true in electron-builder.js) is all that's needed — the
- *     inside-out order is identical.
+ *   - PRODUCTION (`TIMBRE_RELEASE=1`): requires a "Developer ID Application:"
+ *     identity and adds `--options runtime` and `--timestamp` at EVERY level.
+ *     There is no production fallback.
  *   - AD-HOC fallback (MINTR_SIGN_IDENTITY unset, e.g. CI smoke builds): every
  *     component is still signed inside-out with `--sign -` so the bundle still
  *     deep-verifies. (TCC grants won't persist for ad-hoc — see the warning.)
@@ -118,16 +118,30 @@ function resolveEntitlements(context) {
 }
 
 /**
- * Decide whether to harden + timestamp. DEFAULT (self-signed dev tier) is OFF.
- * Turned ON when the build explicitly opts in via MINTR_HARDENED_RUNTIME=1 OR
- * when the configured identity is a real Developer ID cert (whose name starts
- * with "Developer ID Application:"), since those are the only cases where a
- * trusted TSA chain exists and hardened runtime can actually launch.
+ * Production is deliberately selected by one exact value. Other values,
+ * including "true", remain in the unhardened development lane.
  */
-function isHardenedTier(identity) {
-  if (process.env.MINTR_HARDENED_RUNTIME === '1') return true
-  if (identity && /^Developer ID Application:/i.test(identity)) return true
-  return false
+function isProductionRelease() {
+  return process.env.TIMBRE_RELEASE === '1'
+}
+
+function requireProductionIdentity(identity) {
+  if (!/^Developer ID Application:/.test(identity || '')) {
+    throw new Error(
+      '[afterPack] TIMBRE_RELEASE=1 requires MINTR_SIGN_IDENTITY beginning with "Developer ID Application:"'
+    )
+  }
+}
+
+function requireProductionResources(oldAppPath, newAppPath, mtBatchPath) {
+  const missing = []
+  if (!fs.existsSync(oldAppPath) && !fs.existsSync(newAppPath)) {
+    missing.push(`${oldAppPath} (or ${newAppPath})`)
+  }
+  if (!fs.existsSync(mtBatchPath)) missing.push(mtBatchPath)
+  if (missing.length > 0) {
+    throw new Error(`[afterPack] production resources are missing:\n  - ${missing.join('\n  - ')}`)
+  }
 }
 
 /**
@@ -342,22 +356,31 @@ exports.default = async function afterPack(context) {
 
   const oldAppPath = path.join(resourcesDir, OLD_APP_NAME)
   const newAppPath = path.join(resourcesDir, NEW_APP_NAME)
+  const mtBatchPath = path.join(resourcesDir, 'bin', 'mt-batch')
 
   // ───────────────────────────────────────────────────────────────────────
   // Signing tier resolution.
-  //   identity set   → self-signed dev tier (default) OR Developer-ID tier
-  //                    (if the name is a Developer ID cert / hardened opt-in).
-  //   identity unset → ad-hoc (`--sign -`), still signed inside-out.
+  //   TIMBRE_RELEASE=1 → Developer ID production tier, no fallback.
+  //   any other value → self-signed identity or ad-hoc development tier.
   // ───────────────────────────────────────────────────────────────────────
   const identity = process.env.MINTR_SIGN_IDENTITY
+  const isProduction = isProductionRelease()
+  if (isProduction) {
+    requireProductionIdentity(identity)
+    requireProductionResources(oldAppPath, newAppPath, mtBatchPath)
+  }
   const isAdhoc = !identity
   const signSpec = identity || '-'
-  const hardened = isHardenedTier(identity)
+  const hardened = isProduction
   const entitlements = resolveEntitlements(context)
 
   console.log(
     `[afterPack] signing tier: ${
-      isAdhoc ? 'ad-hoc' : `identity "${identity}"`
+      isProduction
+        ? `production identity "${identity}"`
+        : isAdhoc
+          ? 'ad-hoc development'
+          : `development identity "${identity}"`
     } | hardenedRuntime=${hardened ? 'ON' : 'OFF'}`
   )
   console.log(`[afterPack] entitlements: ${entitlements}`)
@@ -422,6 +445,13 @@ exports.default = async function afterPack(context) {
     console.log(`            display name: ${NEW_DISPLAY_NAME}`)
   }
 
+  if (isProduction) {
+    const engineExecutable = path.join(newAppPath, 'Contents', 'MacOS', NEW_EXEC_NAME)
+    if (!fs.existsSync(engineExecutable)) {
+      throw new Error(`[afterPack] production engine executable is missing: ${engineExecutable}`)
+    }
+  }
+
   // ───────────────────────────────────────────────────────────────────────
   // PART B — SIGN INSIDE-OUT (deepest leaves → outer app, NEVER --deep).
   //
@@ -480,7 +510,6 @@ exports.default = async function afterPack(context) {
   console.log(`            engine app: ${newAppPath}`)
   console.log(`            executable: ${path.join(newAppPath, 'Contents/MacOS', NEW_EXEC_NAME)}`)
   console.log(
-    '[afterPack] verify with: codesign --verify --deep --strict --verbose=4 ' +
-      `'${outerApp}'`
+    '[afterPack] verify with: codesign --verify --deep --strict --verbose=4 ' + `'${outerApp}'`
   )
 }

@@ -4,6 +4,14 @@ All notable changes to Timbre are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.40.4]
+
+### Fixed
+- **Downloaded macOS builds now use Apple's normal direct-distribution trust
+  path.** Release artifacts are Developer ID signed with hardened runtime,
+  notarized, stapled, and verified before GitHub publishes them, so Timbre can
+  be opened normally from the DMG without bypassing Gatekeeper.
+
 ## [0.40.3]
 
 ### Fixed
@@ -123,6 +131,9 @@ This release makes Timbre production-solid.
 - On-device transcription (WhisperKit / Parakeet / Qwen3) + speaker diarization
   (FluidAudio), with transcript export (TXT / Markdown / JSON / SRT).
 
+[0.40.4]: https://github.com/nawaz-git/timbre/releases/tag/v0.40.4
+[0.40.3]: https://github.com/nawaz-git/timbre/releases/tag/v0.40.3
+[0.40.2]: https://github.com/nawaz-git/timbre/releases/tag/v0.40.2
 [0.40.1]: https://github.com/nawaz-git/timbre/releases/tag/v0.40.1
 [0.40.0]: https://github.com/nawaz-git/timbre/releases/tag/v0.40.0
 [0.39.0]: https://github.com/nawaz-git/timbre/releases/tag/v0.39.0

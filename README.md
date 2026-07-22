@@ -8,7 +8,7 @@ Timbre records your meetings, separates who said what, and turns them into
 searchable transcripts — entirely on your Mac. No cloud, no accounts, no API
 keys for the core experience.
 
-![platform](https://img.shields.io/badge/platform-macOS%2014.2%2B%20(Apple%20Silicon)-black)
+![platform](<https://img.shields.io/badge/platform-macOS%2014.2%2B%20(Apple%20Silicon)-black>)
 ![license](https://img.shields.io/badge/license-MIT-black)
 ![status](https://img.shields.io/badge/status-beta-black)
 
@@ -42,29 +42,27 @@ keys for the core experience.
 
 ## Download & install
 
-1. Grab the latest **`Timbre-x.y.z-arm64.dmg`** from the
+1. Grab **`Timbre-0.40.4-arm64.dmg`** or a later version from the
    [**Releases**](https://github.com/nawaz-git/timbre/releases) page.
 2. Open the DMG and drag **Timbre** to **Applications**.
+3. Open **Timbre** normally from Applications.
 
-> **Gatekeeper note.** Timbre is currently **self-signed, not Apple-notarized**, so
-> on first launch macOS will warn that the developer can't be verified. Either
-> **right-click the app → Open** (then confirm once), or clear the quarantine flag:
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/Timbre.app
-> ```
-> A notarized build is on the roadmap.
+Starting with v0.40.4, official release artifacts are signed with an Apple
+Developer ID and notarized by Apple, so macOS Gatekeeper can validate them during
+the normal first launch. The older v0.40.3 artifact is not notarized and is not the
+supported installer.
 
 ### First-launch permissions
 
 The capture work runs in a bundled background engine, so most prompts mention
 **"Timbre Engine"**. Grant, in **System Settings → Privacy & Security**:
 
-| Permission | Why |
-|---|---|
-| **Screen Recording** | meeting/screen video capture + meeting detection |
-| **Microphone** | records your side of the conversation |
-| **Automation → Google Chrome** | detects when a Google Meet tab is live |
-| **Accessibility** *(if prompted)* | reads meeting window context |
+| Permission                        | Why                                              |
+| --------------------------------- | ------------------------------------------------ |
+| **Screen Recording**              | meeting/screen video capture + meeting detection |
+| **Microphone**                    | records your side of the conversation            |
+| **Automation → Google Chrome**    | detects when a Google Meet tab is live           |
+| **Accessibility** _(if prompted)_ | reads meeting window context                     |
 
 ## Build from source
 
